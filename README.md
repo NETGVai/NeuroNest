@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/platform-macOS-000?style=flat-square&logo=apple" alt="macOS" />
+  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-000?style=flat-square&logo=electron" alt="Platforms" />
   <img src="https://img.shields.io/badge/version-0.1.1-blue?style=flat-square" alt="Version" />
   <img src="https://img.shields.io/badge/agents-117-purple?style=flat-square" alt="Agents" />
   <img src="https://img.shields.io/badge/providers-11-green?style=flat-square" alt="Providers" />
@@ -126,17 +126,20 @@ See [Architecture Reference](https://neuronest.cc/docs) for the full system desi
 
 | Platform | Architecture | Download |
 |----------|-------------|----------|
-| macOS | Apple Silicon (M1/M2/M3/M4) | [NeuroNest-0.1.1-arm64.dmg](https://neuronest.cc/download) |
-| macOS | Intel | [NeuroNest-0.1.1-x64.dmg](https://neuronest.cc/download) |
+| macOS | Apple Silicon (M1/M2/M3/M4) | [NeuroNest-0.1.1-mac-arm64.dmg](https://neuronest.cc/download) |
+| macOS | Intel | [NeuroNest-0.1.1-mac-x64.dmg](https://neuronest.cc/download) |
+| Windows | x64 | [NeuroNest-Setup-0.1.1-win-x64.exe](https://neuronest.cc/download) |
+| Linux | x64 (AppImage) | [NeuroNest-0.1.1-linux-x64.AppImage](https://neuronest.cc/download) |
+| Linux | arm64 (AppImage) | [NeuroNest-0.1.1-linux-arm64.AppImage](https://neuronest.cc/download) |
 
-**Requirements:** macOS 11.0 or later.
+**Requirements:** macOS 11.0+, Windows 10+, or Linux (Ubuntu 20.04+ / Fedora 36+).
 
 ---
 
 ## Getting Started
 
-1. Download the DMG for your architecture (Windows & Linux versions - COMING SOOM)
-2. Drag NeuroNest to Applications
+1. Download the appropriate version for your architecture
+2. Drag NeuroNest to Applications (macOS), run the installer (Windows), or make the AppImage executable (Linux)
 3. Launch and enter your invitation code
 4. Add an AI provider in Settings (OpenAI, Anthropic, or any supported provider)
 5. Start chatting — the agents take it from there
