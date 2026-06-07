@@ -1,0 +1,37 @@
+{
+  "name": "@neuronest/cli",
+  "version": "0.1.0",
+  "description": "Standalone NeuroNest CLI — sync typed skills, run specs, drive the headless agent, and serve outbound MCP. Ships without Electron.",
+  "license": "UNLICENSED",
+  "private": true,
+  "type": "commonjs",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "neuronest": "./dist/bin/neuronest.js"
+  },
+  "files": [
+    "dist",
+    "bin"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/copy-bin.js",
+    "build:bin": "node scripts/copy-bin.js",
+    "test": "vitest --run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "yargs": "^17.7.2",
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/yargs": "^17.0.33",
+    "fast-check": "^3.22.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

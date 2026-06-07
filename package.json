@@ -1,0 +1,242 @@
+{
+  "name": "neuronest",
+  "version": "0.1.489",
+  "description": "NeuroNest - The AI Coding SuperAgent",
+  "author": "NeuroNest <admin@neuronest.cc>",
+  "private": true,
+  "main": "dist/main/electron-app.js",
+  "scripts": {
+    "build": "node scripts/bump-version.mjs && tsc -p tsconfig.main.json && node scripts/copy-renderer.mjs",
+    "build:nobump": "tsc -p tsconfig.main.json && node scripts/copy-renderer.mjs",
+    "start": "npx electron-rebuild -f -w better-sqlite3,onnxruntime-node && npm run build && electron .",
+    "cli": "npm rebuild better-sqlite3 && npm run build && node dist/cli/index.js --cli",
+    "test": "npm rebuild better-sqlite3 2>/dev/null; vitest --run",
+    "test:watch": "vitest",
+    "check:proxy-separation": "node scripts/check-proxy-separation.mjs",
+    "bench:tick": "npm run build:nobump && node bench/event-log-tick.mjs",
+    "bench:reducer-warm": "npm run build:nobump && node bench/reducer-warm.mjs",
+    "bench:reducer-cold": "npm run build:nobump && node bench/reducer-cold.mjs",
+    "rebuild:native": "npx @electron/rebuild -f -w better-sqlite3,onnxruntime-node",
+    "dist": "npm run rebuild:native && npm run build:nobump && electron-builder --mac",
+    "dist:mac": "npm run rebuild:native && npm run build:nobump && electron-builder --mac",
+    "dist:mac:arm64": "npm run rebuild:native && npm run build:nobump && electron-builder --mac --arm64",
+    "dist:mac:x64": "npm run rebuild:native && npm run build:nobump && electron-builder --mac --x64",
+    "dist:mac:universal": "CSC_IDENTITY_AUTO_DISCOVERY=false CSC_LINK='' npm run rebuild:native && npm run build:nobump && electron-builder --mac --universal -c.mac.identity=null",
+    "dist:win": "npm run rebuild:native && npm run build:nobump && electron-builder --win",
+    "dist:linux": "npm run rebuild:native && npm run build:nobump && electron-builder --linux",
+    "dist:all": "npm run rebuild:native && npm run build:nobump && electron-builder -mwl"
+  },
+  "workspaces": [
+    "packages/*"
+  ],
+  "dependencies": {
+    "@blackwell-systems/gcf": "0.1.2",
+    "@peculiar/x509": "^1.14.3",
+    "@popperjs/core": "^2.11.8",
+    "@simplewebauthn/server": "^13.3.0",
+    "@slack/bolt": "^4.6.0",
+    "@types/ws": "^8.18.1",
+    "@whiskeysockets/baileys": "github:WhiskeySockets/Baileys",
+    "baileys": "github:WhiskeySockets/Baileys",
+    "better-sqlite3": "^12.8.0",
+    "discord.js": "^14.26.1",
+    "electron-updater": "^6.8.3",
+    "grammy": "^1.42.0",
+    "headroom-ai": "0.22.4",
+    "highlight.js": "^11.11.1",
+    "lucide-static": "^1.14.0",
+    "markdown-it": "^14.1.1",
+    "monaco-editor": "^0.55.1",
+    "node-addon-api": "^8.7.0",
+    "nodemailer": "^8.0.4",
+    "onnxruntime-node": "^1.26.0",
+    "openai": "^6.33.0",
+    "qrcode": "^1.5.4",
+    "tar": "^7.5.13",
+    "tippy.js": "^6.3.7",
+    "twemoji-parser": "^14.0.0",
+    "uuidv7": "^1.2.1",
+    "web-tree-sitter": "^0.24.7",
+    "ws": "^8.20.0",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^3.6.1",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/markdown-it": "^14.1.2",
+    "@types/node": "^22.0.0",
+    "@types/tar": "^6.1.13",
+    "electron": "^33.0.0",
+    "electron-builder": "^25.1.8",
+    "fast-check": "^3.22.0",
+    "jsdom": "^29.0.2",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  },
+  "build": {
+    "appId": "com.neuronest.app",
+    "productName": "NeuroNest",
+    "npmRebuild": true,
+    "nodeGypRebuild": false,
+    "buildDependenciesFromSource": false,
+    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
+    "files": [
+      "dist/**/*",
+      "!dist/**/*.test.*",
+      "!dist/**/__tests__/**",
+      "assets/voice-models/**/*",
+      "LICENSE"
+    ],
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "asarUnpack": [
+      "node_modules/better-sqlite3/**",
+      "node_modules/onnxruntime-node/**",
+      "node_modules/bindings/**",
+      "node_modules/file-uri-to-path/**",
+      "node_modules/node-addon-api/**"
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "icon": "build/icon.icns",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "notarize": true,
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "universal"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "universal"
+          ]
+        }
+      ],
+      "artifactName": "NeuroNest-${version}-mac-universal.${ext}"
+    },
+    "dmg": {
+      "contents": [
+        {
+          "x": 130,
+          "y": 220
+        },
+        {
+          "x": 410,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    },
+    "win": {
+      "icon": "build/icon.png",
+      "sign": "./scripts/sign-windows.cjs",
+      "signingHashAlgorithms": [
+        "sha256"
+      ],
+      "publisherName": "NeuroNest",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "artifactName": "NeuroNest-Setup-${version}-win-x64.${ext}",
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "NeuroNest"
+    },
+    "linux": {
+      "icon": "build/icon.png",
+      "category": "Development",
+      "description": "NeuroNest - The AI Coding SuperAgent",
+      "desktop": {
+        "StartupNotify": "true",
+        "Terminal": "false",
+        "Type": "Application",
+        "Categories": "Development;IDE;"
+      },
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "deb",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "rpm",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "deb": {
+      "depends": [
+        "libgtk-3-0 | libgtk-3-0t64",
+        "libnotify4",
+        "libnss3",
+        "libxss1",
+        "libxtst6",
+        "xdg-utils",
+        "libatspi2.0-0 | libatspi2.0-0t64",
+        "libuuid1",
+        "libsecret-1-0",
+        "libgbm1"
+      ]
+    },
+    "rpm": {
+      "depends": [
+        "gtk3",
+        "libnotify",
+        "nss",
+        "libXScrnSaver",
+        "libXtst",
+        "xdg-utils",
+        "at-spi2-core",
+        "libuuid",
+        "libsecret",
+        "mesa-libgbm"
+      ]
+    },
+    "publish": [
+      {
+        "provider": "generic",
+        "url": "https://neuronest.cc/updates",
+        "channel": "latest"
+      }
+    ]
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

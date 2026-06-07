@@ -1,0 +1,10 @@
+{
+  "appName": "NeuroNest",
+  "appNameLower": "neuronest",
+  "appDescription": "The AI Coding SuperAgent",
+  "appTagline": "Self-improving agents, swarm execution, orchestrated workflows, and compounding memory.",
+  "appUrl": "https://neuronest.cc",
+  "appAuthor": "NETGV AI",
+  "appLogo": "build/icon.png",
+  "appId": "com.neuronest.app"
+}

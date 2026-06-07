@@ -1,0 +1,930 @@
+[
+  {
+    "id": "design-airbnb",
+    "name": "Warm Coral Hospitality",
+    "description": "Warm coral accent, photography-driven, rounded UI for travel and hospitality",
+    "category": "design-template",
+    "tags": [
+      "consumer",
+      "warm",
+      "coral"
+    ],
+    "version": "1.0.0",
+    "file": "templates/airbnb.md",
+    "previewFile": "previews/airbnb-preview.html",
+    "designStyle": "airbnb",
+    "industry": "consumer"
+  },
+  {
+    "id": "design-airtable",
+    "name": "Colorful Data Canvas",
+    "description": "Colorful, friendly, structured data aesthetic for spreadsheet-database hybrids",
+    "category": "design-template",
+    "tags": [
+      "productivity",
+      "colorful",
+      "data"
+    ],
+    "version": "1.0.0",
+    "file": "templates/airtable.md",
+    "previewFile": "previews/airtable-preview.html",
+    "designStyle": "airtable",
+    "industry": "productivity"
+  },
+  {
+    "id": "design-apple",
+    "name": "Premium White Space",
+    "description": "Premium white space, cinematic imagery, refined typography",
+    "category": "design-template",
+    "tags": [
+      "enterprise",
+      "premium",
+      "white"
+    ],
+    "version": "1.0.0",
+    "file": "templates/apple.md",
+    "previewFile": "previews/apple-preview.html",
+    "designStyle": "apple",
+    "industry": "enterprise"
+  },
+  {
+    "id": "design-bmw",
+    "name": "Dark Precision Engineering",
+    "description": "Dark premium surfaces, precise engineering aesthetic for luxury brands",
+    "category": "design-template",
+    "tags": [
+      "automotive",
+      "luxury",
+      "dark"
+    ],
+    "version": "1.0.0",
+    "file": "templates/bmw.md",
+    "previewFile": "previews/bmw-preview.html",
+    "designStyle": "bmw",
+    "industry": "automotive"
+  },
+  {
+    "id": "design-cal",
+    "name": "Clean Neutral Scheduler",
+    "description": "Clean neutral UI, developer-oriented simplicity for scheduling apps",
+    "category": "design-template",
+    "tags": [
+      "productivity",
+      "clean",
+      "neutral"
+    ],
+    "version": "1.0.0",
+    "file": "templates/cal.md",
+    "previewFile": "previews/cal-preview.html",
+    "designStyle": "cal",
+    "industry": "productivity"
+  },
+  {
+    "id": "design-claude",
+    "name": "Warm Terracotta Editorial",
+    "description": "Warm terracotta accent, clean editorial layout for AI assistants",
+    "category": "design-template",
+    "tags": [
+      "ai",
+      "editorial",
+      "warm"
+    ],
+    "version": "1.0.0",
+    "file": "templates/claude.md",
+    "previewFile": "previews/claude-preview.html",
+    "designStyle": "claude",
+    "industry": "ai"
+  },
+  {
+    "id": "design-clay",
+    "name": "Organic Gradient Studio",
+    "description": "Organic shapes, soft gradients, art-directed layout for creative agencies",
+    "category": "design-template",
+    "tags": [
+      "design",
+      "organic",
+      "gradient"
+    ],
+    "version": "1.0.0",
+    "file": "templates/clay.md",
+    "previewFile": "previews/clay-preview.html",
+    "designStyle": "clay",
+    "industry": "design"
+  },
+  {
+    "id": "design-clickhouse",
+    "name": "Yellow Technical Docs",
+    "description": "Yellow-accented, technical documentation style for analytics platforms",
+    "category": "design-template",
+    "tags": [
+      "infrastructure",
+      "yellow",
+      "technical"
+    ],
+    "version": "1.0.0",
+    "file": "templates/clickhouse.md",
+    "previewFile": "previews/clickhouse-preview.html",
+    "designStyle": "clickhouse",
+    "industry": "infrastructure"
+  },
+  {
+    "id": "design-cohere",
+    "name": "Vibrant Gradient Dashboard",
+    "description": "Vibrant gradients, data-rich dashboard aesthetic for enterprise AI",
+    "category": "design-template",
+    "tags": [
+      "ai",
+      "gradient",
+      "dashboard"
+    ],
+    "version": "1.0.0",
+    "file": "templates/cohere.md",
+    "previewFile": "previews/cohere-preview.html",
+    "designStyle": "cohere",
+    "industry": "ai"
+  },
+  {
+    "id": "design-coinbase",
+    "name": "Trust Blue Institutional",
+    "description": "Clean blue identity, trust-focused, institutional feel for finance",
+    "category": "design-template",
+    "tags": [
+      "fintech",
+      "blue",
+      "trust"
+    ],
+    "version": "1.0.0",
+    "file": "templates/coinbase.md",
+    "previewFile": "previews/coinbase-preview.html",
+    "designStyle": "coinbase",
+    "industry": "fintech"
+  },
+  {
+    "id": "design-composio",
+    "name": "Dark Colorful Integrations",
+    "description": "Modern dark with colorful integration icons for tool platforms",
+    "category": "design-template",
+    "tags": [
+      "infrastructure",
+      "dark",
+      "colorful"
+    ],
+    "version": "1.0.0",
+    "file": "templates/composio.md",
+    "previewFile": "previews/composio-preview.html",
+    "designStyle": "composio",
+    "industry": "infrastructure"
+  },
+  {
+    "id": "design-cursor",
+    "name": "Sleek AI-First Dark",
+    "description": "Sleek dark interface, gradient accents for AI-powered code editors",
+    "category": "design-template",
+    "tags": [
+      "devtools",
+      "dark",
+      "ai"
+    ],
+    "version": "1.0.0",
+    "file": "templates/cursor.md",
+    "previewFile": "previews/cursor-preview.html",
+    "designStyle": "cursor",
+    "industry": "devtools"
+  },
+  {
+    "id": "design-elevenlabs",
+    "name": "Cinematic Audio Dark",
+    "description": "Dark cinematic UI, audio-waveform aesthetics for voice platforms",
+    "category": "design-template",
+    "tags": [
+      "ai",
+      "dark",
+      "cinematic"
+    ],
+    "version": "1.0.0",
+    "file": "templates/elevenlabs.md",
+    "previewFile": "previews/elevenlabs-preview.html",
+    "designStyle": "elevenlabs",
+    "industry": "ai"
+  },
+  {
+    "id": "design-expo",
+    "name": "Code-Centric Dark Platform",
+    "description": "Dark theme, tight letter-spacing, code-centric for mobile dev platforms",
+    "category": "design-template",
+    "tags": [
+      "devtools",
+      "dark",
+      "code"
+    ],
+    "version": "1.0.0",
+    "file": "templates/expo.md",
+    "previewFile": "previews/expo-preview.html",
+    "designStyle": "expo",
+    "industry": "devtools"
+  },
+  {
+    "id": "design-ferrari",
+    "name": "Chiaroscuro Red Luxury",
+    "description": "Chiaroscuro black-white editorial with bold red accent for luxury brands",
+    "category": "design-template",
+    "tags": [
+      "automotive",
+      "luxury",
+      "red"
+    ],
+    "version": "1.0.0",
+    "file": "templates/ferrari.md",
+    "previewFile": "previews/ferrari-preview.html",
+    "designStyle": "ferrari",
+    "industry": "automotive"
+  },
+  {
+    "id": "design-figma",
+    "name": "Vibrant Multicolor Playful",
+    "description": "Vibrant multi-color, playful yet professional for design tools",
+    "category": "design-template",
+    "tags": [
+      "design",
+      "vibrant",
+      "multicolor"
+    ],
+    "version": "1.0.0",
+    "file": "templates/figma.md",
+    "previewFile": "previews/figma-preview.html",
+    "designStyle": "figma",
+    "industry": "design"
+  },
+  {
+    "id": "design-framer",
+    "name": "Bold Motion-First Dark",
+    "description": "Bold black and blue, motion-first, design-forward for web builders",
+    "category": "design-template",
+    "tags": [
+      "design",
+      "bold",
+      "motion"
+    ],
+    "version": "1.0.0",
+    "file": "templates/framer.md",
+    "previewFile": "previews/framer-preview.html",
+    "designStyle": "framer",
+    "industry": "design"
+  },
+  {
+    "id": "design-hashicorp",
+    "name": "Enterprise Monochrome Clean",
+    "description": "Enterprise-clean, black and white for infrastructure automation",
+    "category": "design-template",
+    "tags": [
+      "infrastructure",
+      "enterprise",
+      "monochrome"
+    ],
+    "version": "1.0.0",
+    "file": "templates/hashicorp.md",
+    "previewFile": "previews/hashicorp-preview.html",
+    "designStyle": "hashicorp",
+    "industry": "infrastructure"
+  },
+  {
+    "id": "design-ibm",
+    "name": "Carbon Blue Enterprise",
+    "description": "Carbon design system, structured blue palette for enterprise tech",
+    "category": "design-template",
+    "tags": [
+      "enterprise",
+      "blue",
+      "carbon"
+    ],
+    "version": "1.0.0",
+    "file": "templates/ibm.md",
+    "previewFile": "previews/ibm-preview.html",
+    "designStyle": "ibm",
+    "industry": "enterprise"
+  },
+  {
+    "id": "design-intercom",
+    "name": "Friendly Blue Conversational",
+    "description": "Friendly blue palette, conversational UI patterns for messaging",
+    "category": "design-template",
+    "tags": [
+      "productivity",
+      "blue",
+      "conversational"
+    ],
+    "version": "1.0.0",
+    "file": "templates/intercom.md",
+    "previewFile": "previews/intercom-preview.html",
+    "designStyle": "intercom",
+    "industry": "productivity"
+  },
+  {
+    "id": "design-kraken",
+    "name": "Purple Data-Dense Trading",
+    "description": "Purple-accented dark UI, data-dense dashboards for trading platforms",
+    "category": "design-template",
+    "tags": [
+      "fintech",
+      "purple",
+      "dark"
+    ],
+    "version": "1.0.0",
+    "file": "templates/kraken.md",
+    "previewFile": "previews/kraken-preview.html",
+    "designStyle": "kraken",
+    "industry": "fintech"
+  },
+  {
+    "id": "design-lamborghini",
+    "name": "Black Cathedral Gold Accent",
+    "description": "True black cathedral, gold accent, Neo-Grotesk type for luxury",
+    "category": "design-template",
+    "tags": [
+      "automotive",
+      "luxury",
+      "gold"
+    ],
+    "version": "1.0.0",
+    "file": "templates/lamborghini.md",
+    "previewFile": "previews/lamborghini-preview.html",
+    "designStyle": "lamborghini",
+    "industry": "automotive"
+  },
+  {
+    "id": "design-linear-app",
+    "name": "Ultra-Minimal Purple Precision",
+    "description": "Ultra-minimal, precise, purple accent for project management",
+    "category": "design-template",
+    "tags": [
+      "devtools",
+      "minimal",
+      "purple"
+    ],
+    "version": "1.0.0",
+    "file": "templates/linear-app.md",
+    "previewFile": "previews/linear-app-preview.html",
+    "designStyle": "linear-app",
+    "industry": "devtools"
+  },
+  {
+    "id": "design-lovable",
+    "name": "Playful Gradient Builder",
+    "description": "Playful gradients, friendly dev aesthetic for AI full-stack builders",
+    "category": "design-template",
+    "tags": [
+      "devtools",
+      "playful",
+      "gradient"
+    ],
+    "version": "1.0.0",
+    "file": "templates/lovable.md",
+    "previewFile": "previews/lovable-preview.html",
+    "designStyle": "lovable",
+    "industry": "devtools"
+  },
+  {
+    "id": "design-minimax",
+    "name": "Bold Neon Dark Interface",
+    "description": "Bold dark interface with neon accents for AI model providers",
+    "category": "design-template",
+    "tags": [
+      "ai",
+      "dark",
+      "neon"
+    ],
+    "version": "1.0.0",
+    "file": "templates/minimax.md",
+    "previewFile": "previews/minimax-preview.html",
+    "designStyle": "minimax",
+    "industry": "ai"
+  },
+  {
+    "id": "design-mintlify",
+    "name": "Green Reading-Optimized Docs",
+    "description": "Clean, green-accented, reading-optimized for documentation platforms",
+    "category": "design-template",
+    "tags": [
+      "devtools",
+      "green",
+      "documentation"
+    ],
+    "version": "1.0.0",
+    "file": "templates/mintlify.md",
+    "previewFile": "previews/mintlify-preview.html",
+    "designStyle": "mintlify",
+    "industry": "devtools"
+  },
+  {
+    "id": "design-miro",
+    "name": "Bright Yellow Canvas",
+    "description": "Bright yellow accent, infinite canvas aesthetic for visual collaboration",
+    "category": "design-template",
+    "tags": [
+      "productivity",
+      "yellow",
+      "canvas"
+    ],
+    "version": "1.0.0",
+    "file": "templates/miro.md",
+    "previewFile": "previews/miro-preview.html",
+    "designStyle": "miro",
+    "industry": "productivity"
+  },
+  {
+    "id": "design-mistral-ai",
+    "name": "French Minimal Purple AI",
+    "description": "French-engineered minimalism, purple-toned for open-weight LLMs",
+    "category": "design-template",
+    "tags": [
+      "ai",
+      "minimal",
+      "purple"
+    ],
+    "version": "1.0.0",
+    "file": "templates/mistral-ai.md",
+    "previewFile": "previews/mistral-ai-preview.html",
+    "designStyle": "mistral-ai",
+    "industry": "ai"
+  },
+  {
+    "id": "design-mongodb",
+    "name": "Green Leaf Developer Docs",
+    "description": "Green leaf branding, developer documentation focus for databases",
+    "category": "design-template",
+    "tags": [
+      "infrastructure",
+      "green",
+      "documentation"
+    ],
+    "version": "1.0.0",
+    "file": "templates/mongodb.md",
+    "previewFile": "previews/mongodb-preview.html",
+    "designStyle": "mongodb",
+    "industry": "infrastructure"
+  },
+  {
+    "id": "design-notion",
+    "name": "Warm Serif Minimalism",
+    "description": "Warm minimalism, serif headings, soft surfaces for workspace apps",
+    "category": "design-template",
+    "tags": [
+      "productivity",
+      "warm",
+      "minimal"
+    ],
+    "version": "1.0.0",
+    "file": "templates/notion.md",
+    "previewFile": "previews/notion-preview.html",
+    "designStyle": "notion",
+    "industry": "productivity"
+  },
+  {
+    "id": "design-nvidia",
+    "name": "Green-Black Power Technical",
+    "description": "Green-black energy, technical power aesthetic for GPU computing",
+    "category": "design-template",
+    "tags": [
+      "enterprise",
+      "green",
+      "technical"
+    ],
+    "version": "1.0.0",
+    "file": "templates/nvidia.md",
+    "previewFile": "previews/nvidia-preview.html",
+    "designStyle": "nvidia",
+    "industry": "enterprise"
+  },
+  {
+    "id": "design-ollama",
+    "name": "Terminal Monochrome Simple",
+    "description": "Terminal-first, monochrome simplicity for local LLM runners",
+    "category": "design-template",
+    "tags": [
+      "ai",
+      "terminal",
+      "monochrome"
+    ],
+    "version": "1.0.0",
+    "file": "templates/ollama.md",
+    "previewFile": "previews/ollama-preview.html",
+    "designStyle": "ollama",
+    "industry": "ai"
+  },
+  {
+    "id": "design-opencode-ai",
+    "name": "Developer Dark Code Theme",
+    "description": "Developer-centric dark theme for AI coding platforms",
+    "category": "design-template",
+    "tags": [
+      "ai",
+      "dark",
+      "developer"
+    ],
+    "version": "1.0.0",
+    "file": "templates/opencode-ai.md",
+    "previewFile": "previews/opencode-ai-preview.html",
+    "designStyle": "opencode-ai",
+    "industry": "ai"
+  },
+  {
+    "id": "design-pinterest",
+    "name": "Red Masonry Visual Grid",
+    "description": "Red accent, masonry grid, image-first for visual discovery",
+    "category": "design-template",
+    "tags": [
+      "consumer",
+      "red",
+      "visual"
+    ],
+    "version": "1.0.0",
+    "file": "templates/pinterest.md",
+    "previewFile": "previews/pinterest-preview.html",
+    "designStyle": "pinterest",
+    "industry": "consumer"
+  },
+  {
+    "id": "design-posthog",
+    "name": "Playful Developer Analytics",
+    "description": "Playful branding, developer-friendly dark UI for product analytics",
+    "category": "design-template",
+    "tags": [
+      "devtools",
+      "playful",
+      "dark"
+    ],
+    "version": "1.0.0",
+    "file": "templates/posthog.md",
+    "previewFile": "previews/posthog-preview.html",
+    "designStyle": "posthog",
+    "industry": "devtools"
+  },
+  {
+    "id": "design-raycast",
+    "name": "Sleek Chrome Gradient Launcher",
+    "description": "Sleek dark chrome, vibrant gradient accents for productivity launchers",
+    "category": "design-template",
+    "tags": [
+      "devtools",
+      "dark",
+      "gradient"
+    ],
+    "version": "1.0.0",
+    "file": "templates/raycast.md",
+    "previewFile": "previews/raycast-preview.html",
+    "designStyle": "raycast",
+    "industry": "devtools"
+  },
+  {
+    "id": "design-renault",
+    "name": "Vivid Aurora Gradient Auto",
+    "description": "Vivid aurora gradients, proprietary typeface for automotive brands",
+    "category": "design-template",
+    "tags": [
+      "automotive",
+      "gradient",
+      "vivid"
+    ],
+    "version": "1.0.0",
+    "file": "templates/renault.md",
+    "previewFile": "previews/renault-preview.html",
+    "designStyle": "renault",
+    "industry": "automotive"
+  },
+  {
+    "id": "design-replicate",
+    "name": "Clean White Code-Forward",
+    "description": "Clean white canvas, code-forward for ML model API platforms",
+    "category": "design-template",
+    "tags": [
+      "ai",
+      "clean",
+      "code"
+    ],
+    "version": "1.0.0",
+    "file": "templates/replicate.md",
+    "previewFile": "previews/replicate-preview.html",
+    "designStyle": "replicate",
+    "industry": "ai"
+  },
+  {
+    "id": "design-resend",
+    "name": "Minimal Dark Monospace",
+    "description": "Minimal dark theme, monospace accents for developer email APIs",
+    "category": "design-template",
+    "tags": [
+      "devtools",
+      "dark",
+      "minimal"
+    ],
+    "version": "1.0.0",
+    "file": "templates/resend.md",
+    "previewFile": "previews/resend-preview.html",
+    "designStyle": "resend",
+    "industry": "devtools"
+  },
+  {
+    "id": "design-revolut",
+    "name": "Sleek Gradient Fintech Dark",
+    "description": "Sleek dark interface, gradient cards, fintech precision for banking",
+    "category": "design-template",
+    "tags": [
+      "fintech",
+      "dark",
+      "gradient"
+    ],
+    "version": "1.0.0",
+    "file": "templates/revolut.md",
+    "previewFile": "previews/revolut-preview.html",
+    "designStyle": "revolut",
+    "industry": "fintech"
+  },
+  {
+    "id": "design-runwayml",
+    "name": "Cinematic Media-Rich Dark",
+    "description": "Cinematic dark UI, media-rich layout for AI video generation",
+    "category": "design-template",
+    "tags": [
+      "ai",
+      "cinematic",
+      "dark"
+    ],
+    "version": "1.0.0",
+    "file": "templates/runwayml.md",
+    "previewFile": "previews/runwayml-preview.html",
+    "designStyle": "runwayml",
+    "industry": "ai"
+  },
+  {
+    "id": "design-sanity",
+    "name": "Red Editorial Content-First",
+    "description": "Red accent, content-first editorial layout for headless CMS",
+    "category": "design-template",
+    "tags": [
+      "infrastructure",
+      "red",
+      "editorial"
+    ],
+    "version": "1.0.0",
+    "file": "templates/sanity.md",
+    "previewFile": "previews/sanity-preview.html",
+    "designStyle": "sanity",
+    "industry": "infrastructure"
+  },
+  {
+    "id": "design-sentry",
+    "name": "Pink-Purple Data Dashboard",
+    "description": "Dark dashboard, data-dense, pink-purple accent for error monitoring",
+    "category": "design-template",
+    "tags": [
+      "devtools",
+      "dark",
+      "dashboard"
+    ],
+    "version": "1.0.0",
+    "file": "templates/sentry.md",
+    "previewFile": "previews/sentry-preview.html",
+    "designStyle": "sentry",
+    "industry": "devtools"
+  },
+  {
+    "id": "design-spacex",
+    "name": "Stark Futuristic Monochrome",
+    "description": "Stark black and white, full-bleed imagery, futuristic for space tech",
+    "category": "design-template",
+    "tags": [
+      "enterprise",
+      "monochrome",
+      "futuristic"
+    ],
+    "version": "1.0.0",
+    "file": "templates/spacex.md",
+    "previewFile": "previews/spacex-preview.html",
+    "designStyle": "spacex",
+    "industry": "enterprise"
+  },
+  {
+    "id": "design-spotify",
+    "name": "Vibrant Green Music Dark",
+    "description": "Vibrant green on dark, bold type, album-art-driven for streaming",
+    "category": "design-template",
+    "tags": [
+      "consumer",
+      "green",
+      "dark"
+    ],
+    "version": "1.0.0",
+    "file": "templates/spotify.md",
+    "previewFile": "previews/spotify-preview.html",
+    "designStyle": "spotify",
+    "industry": "consumer"
+  },
+  {
+    "id": "design-stripe",
+    "name": "Purple Gradient Elegance",
+    "description": "Signature purple gradients, elegant typography for payment platforms",
+    "category": "design-template",
+    "tags": [
+      "fintech",
+      "purple",
+      "gradient"
+    ],
+    "version": "1.0.0",
+    "file": "templates/stripe.md",
+    "previewFile": "previews/stripe-preview.html",
+    "designStyle": "stripe",
+    "industry": "fintech"
+  },
+  {
+    "id": "design-supabase",
+    "name": "Dark Emerald Code-First",
+    "description": "Dark emerald theme, code-first for open-source backend platforms",
+    "category": "design-template",
+    "tags": [
+      "infrastructure",
+      "dark",
+      "emerald"
+    ],
+    "version": "1.0.0",
+    "file": "templates/supabase.md",
+    "previewFile": "previews/supabase-preview.html",
+    "designStyle": "supabase",
+    "industry": "infrastructure"
+  },
+  {
+    "id": "design-superhuman",
+    "name": "Premium Dark Keyboard-First",
+    "description": "Premium dark UI, keyboard-first, purple glow for fast email clients",
+    "category": "design-template",
+    "tags": [
+      "productivity",
+      "dark",
+      "premium"
+    ],
+    "version": "1.0.0",
+    "file": "templates/superhuman.md",
+    "previewFile": "previews/superhuman-preview.html",
+    "designStyle": "superhuman",
+    "industry": "productivity"
+  },
+  {
+    "id": "design-tesla",
+    "name": "Radical Minimal Cinematic",
+    "description": "Radical subtraction, cinematic photography, minimal for EV brands",
+    "category": "design-template",
+    "tags": [
+      "automotive",
+      "minimal",
+      "cinematic"
+    ],
+    "version": "1.0.0",
+    "file": "templates/tesla.md",
+    "previewFile": "previews/tesla-preview.html",
+    "designStyle": "tesla",
+    "industry": "automotive"
+  },
+  {
+    "id": "design-together-ai",
+    "name": "Technical Blueprint AI Infra",
+    "description": "Technical, blueprint-style design for open-source AI infrastructure",
+    "category": "design-template",
+    "tags": [
+      "ai",
+      "technical",
+      "blueprint"
+    ],
+    "version": "1.0.0",
+    "file": "templates/together-ai.md",
+    "previewFile": "previews/together-ai-preview.html",
+    "designStyle": "together-ai",
+    "industry": "ai"
+  },
+  {
+    "id": "design-uber",
+    "name": "Bold Urban Monochrome",
+    "description": "Bold black and white, tight type, urban energy for mobility platforms",
+    "category": "design-template",
+    "tags": [
+      "consumer",
+      "bold",
+      "monochrome"
+    ],
+    "version": "1.0.0",
+    "file": "templates/uber.md",
+    "previewFile": "previews/uber-preview.html",
+    "designStyle": "uber",
+    "industry": "consumer"
+  },
+  {
+    "id": "design-vercel",
+    "name": "Black-White Geist Precision",
+    "description": "Black and white precision, geometric font for frontend deployment",
+    "category": "design-template",
+    "tags": [
+      "devtools",
+      "monochrome",
+      "minimal"
+    ],
+    "version": "1.0.0",
+    "file": "templates/vercel.md",
+    "previewFile": "previews/vercel-preview.html",
+    "designStyle": "vercel",
+    "industry": "devtools"
+  },
+  {
+    "id": "design-voltagent",
+    "name": "Void Emerald Terminal Native",
+    "description": "Void-black canvas, emerald accent, terminal-native for agent frameworks",
+    "category": "design-template",
+    "tags": [
+      "ai",
+      "dark",
+      "emerald"
+    ],
+    "version": "1.0.0",
+    "file": "templates/voltagent.md",
+    "previewFile": "previews/voltagent-preview.html",
+    "designStyle": "voltagent",
+    "industry": "ai"
+  },
+  {
+    "id": "design-warp",
+    "name": "Dark IDE Block Terminal",
+    "description": "Dark IDE-like interface, block-based command UI for modern terminals",
+    "category": "design-template",
+    "tags": [
+      "devtools",
+      "dark",
+      "terminal"
+    ],
+    "version": "1.0.0",
+    "file": "templates/warp.md",
+    "previewFile": "previews/warp-preview.html",
+    "designStyle": "warp",
+    "industry": "devtools"
+  },
+  {
+    "id": "design-webflow",
+    "name": "Blue Polished Web Builder",
+    "description": "Blue-accented, polished marketing site aesthetic for web builders",
+    "category": "design-template",
+    "tags": [
+      "design",
+      "blue",
+      "polished"
+    ],
+    "version": "1.0.0",
+    "file": "templates/webflow.md",
+    "previewFile": "previews/webflow-preview.html",
+    "designStyle": "webflow",
+    "industry": "design"
+  },
+  {
+    "id": "design-wise",
+    "name": "Bright Green Friendly Finance",
+    "description": "Bright green accent, friendly and clear for money transfer apps",
+    "category": "design-template",
+    "tags": [
+      "fintech",
+      "green",
+      "friendly"
+    ],
+    "version": "1.0.0",
+    "file": "templates/wise.md",
+    "previewFile": "previews/wise-preview.html",
+    "designStyle": "wise",
+    "industry": "fintech"
+  },
+  {
+    "id": "design-x-ai",
+    "name": "Stark Futuristic Minimal AI",
+    "description": "Stark monochrome, futuristic minimalism for AI research labs",
+    "category": "design-template",
+    "tags": [
+      "ai",
+      "monochrome",
+      "futuristic"
+    ],
+    "version": "1.0.0",
+    "file": "templates/x-ai.md",
+    "previewFile": "previews/x-ai-preview.html",
+    "designStyle": "x-ai",
+    "industry": "ai"
+  },
+  {
+    "id": "design-zapier",
+    "name": "Warm Orange Automation",
+    "description": "Warm orange, friendly illustration-driven for automation platforms",
+    "category": "design-template",
+    "tags": [
+      "devtools",
+      "orange",
+      "friendly"
+    ],
+    "version": "1.0.0",
+    "file": "templates/zapier.md",
+    "previewFile": "previews/zapier-preview.html",
+    "designStyle": "zapier",
+    "industry": "devtools"
+  }
+]

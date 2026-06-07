@@ -1,0 +1,17 @@
+{
+  "version": "1.0.0",
+  "patterns": [
+    { "pattern": "^can you\\b", "flags": "i", "weight": 0.7 },
+    { "pattern": "^are you able to\\b", "flags": "i", "weight": 0.8 },
+    { "pattern": "^do you support\\b", "flags": "i", "weight": 0.8 },
+    { "pattern": "^is it possible to\\b", "flags": "i", "weight": 0.7 },
+    { "pattern": "^what can you\\b", "flags": "i", "weight": 0.9 },
+    { "pattern": "^could you\\b", "flags": "i", "weight": 0.5 },
+    { "pattern": "^would you be able to\\b", "flags": "i", "weight": 0.8 },
+    { "pattern": "^does neuronest\\b", "flags": "i", "weight": 0.9 },
+    { "pattern": "^how does.*work", "flags": "i", "weight": 0.85 },
+    { "pattern": "^what happens when", "flags": "i", "weight": 0.85 },
+    { "pattern": "^tell me about\\b", "flags": "i", "weight": 0.9 },
+    { "pattern": "^explain\\b", "flags": "i", "weight": 0.8 }
+  ]
+}

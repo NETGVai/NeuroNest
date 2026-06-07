@@ -1,0 +1,233 @@
+# ============================================================
+# NeuroNest .gitignore
+# Only core source code and config gets committed.
+# ============================================================
+
+# ──────────────────────────────────────────────────────────────
+# OS / IDE generated
+# ──────────────────────────────────────────────────────────────
+.DS_Store
+**/.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ──────────────────────────────────────────────────────────────
+# Dependencies
+# ──────────────────────────────────────────────────────────────
+node_modules/
+.npm
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/sdks
+!.yarn/versions
+jspm_packages/
+web_modules/
+
+# ──────────────────────────────────────────────────────────────
+# Build output / compiled code
+# ──────────────────────────────────────────────────────────────
+dist/
+build/Release
+native/build/
+*.tsbuildinfo
+
+# ──────────────────────────────────────────────────────────────
+# Electron-builder release output
+# ──────────────────────────────────────────────────────────────
+release/
+
+# ──────────────────────────────────────────────────────────────
+# Environment / secrets
+# ──────────────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ──────────────────────────────────────────────────────────────
+# Logs / runtime data
+# ──────────────────────────────────────────────────────────────
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# ──────────────────────────────────────────────────────────────
+# Test coverage
+# ──────────────────────────────────────────────────────────────
+coverage/
+.nyc_output
+*.lcov
+
+# ──────────────────────────────────────────────────────────────
+# Package artifacts
+# ──────────────────────────────────────────────────────────────
+*.tgz
+.yarn-integrity
+
+# ──────────────────────────────────────────────────────────────
+# Docker / infrastructure data volumes
+# ──────────────────────────────────────────────────────────────
+postgres_data/
+timescale_data/
+eventstore_data/
+redis_data/
+rabbitmq_data/
+prometheus_data/
+
+# ──────────────────────────────────────────────────────────────
+# Separate projects / services (not part of the Electron app)
+# ──────────────────────────────────────────────────────────────
+agent-skills-system/
+worker/
+site/
+
+# ──────────────────────────────────────────────────────────────
+# Reference / backup copy of original codebase
+# ──────────────────────────────────────────────────────────────
+original-neuronest/
+
+# ──────────────────────────────────────────────────────────────
+# Duplicate/empty infrastructure directories
+# ──────────────────────────────────────────────────────────────
+certs.neuronest.cc/
+
+# ──────────────────────────────────────────────────────────────
+# Dev-only directories (not needed to build the app)
+# ──────────────────────────────────────────────────────────────
+docs/
+tests/
+bench/
+
+# Test files anywhere in the tree
+**/__tests__/
+**/__smoke__/
+**/*.test.ts
+**/*.test.js
+**/*.spec.ts
+**/*.spec.js
+**/*.property.test.ts
+**/*.pbt.test.ts
+src/test/
+src/smoke.test.ts
+
+# ──────────────────────────────────────────────────────────────
+# Empty / placeholder directories
+# ──────────────────────────────────────────────────────────────
+backups/
+monitoring/
+database/
+
+# ──────────────────────────────────────────────────────────────
+# AI-generated task summaries, analysis reports, comparison files
+# (not part of the app — docs/ has the real documentation)
+# ──────────────────────────────────────────────────────────────
+TASK_*.md
+*_SUMMARY.md
+*_ANALYSIS.md
+OLLAMA_CRASH_FIX_SUMMARY.md
+GRAPHIFY_INTEGRATION.md
+NEURONEST_ARCHITECTURE.md
+enhanced-firewall-system-validation-report.md
+original-neuronest-baseline-analysis.md
+systematic-comparison-analysis.md
+
+# Comparison / diff text files
+current-files.txt
+files-only-in-current.txt
+files-only-in-original.txt
+original-files.txt
+
+# ──────────────────────────────────────────────────────────────
+# One-off test / helper files (not part of the test suite)
+# ──────────────────────────────────────────────────────────────
+test-chat-persistence.html
+test-multica-ipc.js
+build-neuronest
+git-neuronest.sh
+CHANGELOG.md
+jest.config.js
+vitest.config.ts
+vitest.setup.ts
+versions.json
+
+# Dev-only scripts (not needed for build/run)
+scripts/__test-*
+scripts/build-template-index.mjs
+scripts/check-db.mjs
+scripts/check-proxy-separation.mjs
+scripts/check-rollout-gate.mjs
+scripts/clean-preview-brands.mjs
+scripts/error-size-stats.mjs
+scripts/generate-icon.mjs
+scripts/patch-previews.mjs
+scripts/strip-unused-platforms.mjs
+
+# Dead code / example files
+src/events/event-bus-example.ts
+
+# Example / template config files
+*.example
+*.example.*
+
+# Backup files
+*.bak
+*.old
+*.backup
+
+# Inline READMEs inside src (not needed for build)
+src/**/README*.md
+src/**/*_README*.md
+
+# ──────────────────────────────────────────────────────────────
+# Wrangler local state / dev artifacts (Cloudflare Workers)
+# ──────────────────────────────────────────────────────────────
+**/.wrangler/
+**/.config/.wrangler/
+
+# ──────────────────────────────────────────────────────────────
+# Private keys / certificates (NEVER commit)
+# ──────────────────────────────────────────────────────────────
+*.key
+*.pem
+!*.example.key
+
+# ──────────────────────────────────────────────────────────────
+# Replit artifacts (not needed in source)
+# ──────────────────────────────────────────────────────────────
+.replit
+.replitignore
+replit.md
+**/.replit-artifact/
+attached_assets/
+
+# ──────────────────────────────────────────────────────────────
+# Caches
+# ──────────────────────────────────────────────────────────────
+.cache/
+.parcel-cache/
+.next/
+.nuxt/
+.output/
+.vite/
+.eslintcache
+.stylelintcache
+tmp/
+temp/

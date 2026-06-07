@@ -1,0 +1,74 @@
+{
+  "meta": {
+    "source": "https://neuronest.cc",
+    "schemaType": "SoftwareApplication",
+    "lastUpdated": "2026-05-11",
+    "schemaVersion": "1.0.0"
+  },
+  "identity": {
+    "name": "NeuroNest",
+    "tagline": "The Agent-First IDE",
+    "description": "An AI-powered agentic IDE built on Electron that orchestrates 117+ specialized AI agents across 13 departments.",
+    "company": "NETGV AI",
+    "url": "https://neuronest.cc",
+    "type": "Desktop Application"
+  },
+  "entries": [
+    {
+      "keywords": ["what is", "about", "neuronest", "tell me", "who are you", "what are you", "yourself", "introduce"],
+      "answer": "🧠 **NeuroNest — The Agent-First IDE**\n\nNeuroNest is an AI-powered agentic IDE built on Electron that orchestrates 117+ specialized AI agents across 13 departments — with a dual-layer firewall, real-time knowledge graph, local-first inference, and five swarm execution topologies. No cloud required.\n\n**From prompt to production.** NeuroNest decomposes objectives, routes work across expert agents, and synthesizes cross-team outputs into a single coherent result — start to finish.\n\n• Built by **NETGV AI**\n• Available on macOS 13+, Windows 11, and Ubuntu 22.04+\n• Free Community tier — no credit card required\n\n🌐 https://neuronest.cc"
+    },
+    {
+      "keywords": ["pricing", "cost", "plan", "free", "how much", "subscription", "tier", "enterprise", "professional", "community"],
+      "answer": "💰 **NeuroNest Pricing**\n\n• **Community** — Free forever. No credit card.\n  ↳ 117+ AI agents, swarm orchestration, multi-model support, knowledge graphs, firewall engine, all channels, skills & templates, local auth\n\n• **Professional** — $29/mo per workspace\n  ↳ Everything in Community + cloud sync & backup, team collaboration, priority model access, advanced analytics, custom agent training, API access, email support\n\n• **Enterprise** — Custom pricing\n  ↳ Everything in Professional + SSO/SAML auth, enhanced guardrails & firewall, audit logging, role-based access, SLA guarantee, dedicated support, custom integrations\n\n⬇️ Download free: https://neuronest.cc/download"
+    },
+    {
+      "keywords": ["agent", "department", "team", "specialist", "how many agents", "117"],
+      "answer": "🤖 **117+ Agents Across 13 Departments**\n\n• **Engineering** (15) — code architecture, backend, frontend, API design, refactors\n• **Security** (8) — threat modeling, pen testing, dependency audits, SAST/DAST\n• **Data** (10) — ML models, analytics, feature engineering, evaluation\n• **DevOps** (8) — CI/CD, cloud architecture, IaC, observability\n• **Design** (6) — UX, UI engineering, design systems, accessibility\n• **QA** (6) — test planning, property-based testing, mutation runs\n• **Product** (5) — PRDs, roadmaps, competitive scouting\n• **Research** (5) — literature surveys, hypothesis formation\n• **Mobile** (4) — iOS, Android, cross-platform\n• **Blockchain** (4) — smart contracts, DeFi, Web3\n• **AI/ML** (6) — NLP, computer vision, fine-tuning\n• **Infrastructure** (5) — databases, networking, scalability\n• **NeuroNest Orchestration** (1) — central coordinator\n\nEach agent has a defined specialty, system prompt, and skill set. The orchestrator selects the right agents for every task automatically."
+    },
+    {
+      "keywords": ["platform", "download", "install", "mac", "windows", "linux", "requirement", "system", "os"],
+      "answer": "⬇️ **Platforms & System Requirements**\n\n**Supported Platforms:**\n• macOS 13+ (Apple Silicon or Intel)\n• Windows 11\n• Ubuntu 22.04+ (AppImage)\n\n**Minimum Requirements:**\n• 4 CPU cores, 8 GB RAM, 20 GB disk\n\n**Recommended:**\n• Apple M3 Max or GPU-enabled, 32+ GB RAM, SSD 100 GB+\n\n⬇️ Download: https://neuronest.cc/download"
+    },
+    {
+      "keywords": ["security", "firewall", "safe", "privacy", "data", "gdpr", "ccpa", "audit", "encryption"],
+      "answer": "🔒 **Security & Privacy**\n\n• **Local-first architecture** — all inference stays on your hardware. No cloud dependency.\n• **Dual-layer firewall** — regex at the perimeter (<10ms), LLM judge at the gate (~200ms)\n• **4 security tiers** — sanitization, prompt injection detection, secrets scanning, policy enforcement\n• **Human-in-the-loop** — outbound messages, shell commands, and file writes require approval\n• **Secrets in keychain** — API keys stored in macOS Keychain / Windows Credential Manager\n• **Full audit trail** — every firewall decision, agent call, and channel send is logged\n• **GDPR & CCPA ready** — no personal data leaves the workstation\n• **Sandbox isolation** — every agent task runs in a directory-rooted sandbox\n\n🔐 Security brief: https://neuronest.cc/security"
+    },
+    {
+      "keywords": ["provider", "model", "llm", "ai provider", "openai", "anthropic", "ollama", "local", "gemini", "deepseek", "grok", "mistral"],
+      "answer": "🔌 **11 AI Providers Supported**\n\n**Cloud API:**\n• OpenAI\n• Anthropic\n• Google Gemini\n• DeepSeek\n• Grok (xAI)\n• Mistral\n• NVIDIA NIM\n• Groq\n\n**Local Inference (fully offline):**\n• Ollama\n• llama.cpp\n• OpenMythos\n\nProvider-agnostic architecture — swap models without touching agent code. Streaming via SSE, token usage tracking, automatic model listing, and API key validation.\n\n**Run fully offline** with Ollama or llama.cpp. 75 tok/s on Apple M3 Max with 35B models."
+    },
+    {
+      "keywords": ["benchmark", "performance", "speed", "fast", "token", "throughput", "cycle"],
+      "answer": "⚡ **Performance Benchmarks**\n\n• **70% shorter development cycles** — compared to manual coding workflows\n• **75 tokens/second** — local inference on Apple M3 Max (35B models)\n• **50,000 graph nodes** — interactive knowledge graph visualization (Cytoscape.js)\n• **2-second summaries** — real-time project context summarization\n\nNeuroNest is optimized for speed at every layer — from the regex firewall (<10ms) to streaming agent responses via SSE."
+    },
+    {
+      "keywords": ["topology", "swarm", "orchestrat", "parallel", "execution", "sequential", "star", "hierarchy", "mesh"],
+      "answer": "🔀 **Five Execution Topologies**\n\n• **Sequential** — dependent tasks flow step-by-step (design → implement → test)\n• **Star** — one master agent coordinates specialist workers\n• **Hierarchical** — multi-level decomposition for large objectives\n• **Mesh** — peer agents exchange partial results and converge\n• **Swarm** — all agents vote or compete independently for the best answer\n\nThe orchestrator picks the right topology for every task automatically based on task complexity, dependencies, and agent availability."
+    },
+    {
+      "keywords": ["channel", "slack", "discord", "telegram", "whatsapp", "email", "github", "messaging", "integration"],
+      "answer": "💬 **Channel Hub — 6 Integrations**\n\nAll incoming messages are firewall-scanned, processed through the AI pipeline, then the response is sent back to the originating channel.\n\n• **Slack** (Bolt OAuth)\n• **Discord** (discord.js)\n• **Telegram** (Grammy Bot API)\n• **WhatsApp** (Baileys WebSocket)\n• **Email** (Nodemailer + IMAP)\n• **GitHub** (REST API)\n\nEvery outbound message routes through the same security gate. Your approval is required before send."
+    },
+    {
+      "keywords": ["company", "netgv", "who made", "who built", "creator", "developer", "team"],
+      "answer": "🏢 **Built by NETGV AI**\n\nNeuroNest is developed by **NETGV AI** — focused on building intelligent developer tools that bring agentic AI to the software development lifecycle.\n\n• Product: NeuroNest — The Agent-First IDE\n• Website: https://neuronest.cc\n• Architecture: Electron + Node.js + TypeScript\n• Philosophy: Local-first, privacy-respecting, agent-orchestrated development"
+    },
+    {
+      "keywords": ["feature", "capability", "what can", "do", "function"],
+      "answer": "⚡ **Key Capabilities**\n\n• **Orchestration** — 5 topologies: sequential, star, hierarchy, mesh, swarm\n• **ZERA Optimizer** — rewrites prompts for clarity before execution\n• **Knowledge Graph** — live queryable graph of your codebase (50k nodes)\n• **Channel Hub** — Slack, Discord, Telegram, WhatsApp, Email, GitHub\n• **Smart Router** — automatic failover, long-context routing, task-based model selection\n• **Visual Diff Review** — accept/reject AI changes individually\n• **Model Packs** — switch entire LLM configs in one click\n• **Autonomy Levels** — from fully supervised to fully autonomous\n• **Plan Version Control** — branch and rewind agent plans\n• **Kanban Board** — agent tasks as cards\n• **50+ AI features** — brainstorm mode, second opinion, crash recovery, edit lock, project memory, MCP integration, and more\n\n📚 Full docs: https://neuronest.cc/docs"
+    },
+    {
+      "keywords": ["graph", "knowledge graph", "codebase", "cytoscape", "node", "visualization"],
+      "answer": "🧠 **Knowledge Graph**\n\nNeuroNest builds a live, queryable graph of every file, function, class, and relationship in your project — updated incrementally as you work.\n\n• Up to **50,000 nodes** interactive (Cytoscape.js)\n• Tracks: imports, function calls, class inheritance, interface implementations, data flow\n• Languages: JavaScript/TypeScript, Python, Java, Go, Rust, C++\n• Query: `type=\"class\" and depends_on=\"auth.ts\"`\n• Export: JSON, GraphML, PNG, SVG\n\nThe knowledge graph powers grounding enforcement — ensuring agent responses are anchored to real project structure."
+    },
+    {
+      "keywords": ["link", "url", "website", "docs", "documentation", "api", "sdk", "status"],
+      "answer": "🔗 **Official Links**\n\n• 🌐 Website: https://neuronest.cc\n• ⬇️ Download: https://neuronest.cc/download\n• 📚 Documentation: https://neuronest.cc/docs\n• 🔐 Security: https://neuronest.cc/security\n• 🏢 About: https://neuronest.cc/about\n• 🔌 API Reference: https://neuronest.cc/api-reference\n• 📦 SDK: https://neuronest.cc/sdk\n• 📊 Status: https://neuronest.cc/status"
+    },
+    {
+      "keywords": ["real", "exist", "fictional", "imaginary", "fake", "is this real"],
+      "answer": "✅ **NeuroNest is a real product.**\n\nNeuroNest is a fully functional AI-powered IDE developed by NETGV AI. It is available for download at https://neuronest.cc and runs on macOS 13+, Windows 11, and Ubuntu 22.04+.\n\nIt is not fictional, imaginary, or a concept — it is production software with 117+ AI agents, a dual-layer firewall, knowledge graph, and five execution topologies.\n\n🌐 Visit https://neuronest.cc to download and try it free."
+    }
+  ]
+}

@@ -1,0 +1,654 @@
+/* ══════════════════════════════════════════════════════════════
+   chat-ui.css — Enhanced Chat UI styles
+   Typography, code blocks, syntax tokens, and theme integration
+   ══════════════════════════════════════════════════════════════ */
+
+/* ── Input Bar: sticky at bottom ── */
+#input-bar {
+  position: sticky;
+  bottom: 0;
+  z-index: 10;
+  background: var(--bg-chat, var(--bg-primary));
+}
+
+/* ── Message Body Typography ── */
+.message-body {
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+.message-body > *:not(:last-child) {
+  margin-bottom: 12px;
+}
+
+.message-body p,
+.message-body ul,
+.message-body ol,
+.message-body blockquote,
+.message-body table,
+.message-body pre,
+.message-body .code-block-wrapper {
+  margin-bottom: 12px;
+}
+
+.message-body p:last-child,
+.message-body ul:last-child,
+.message-body ol:last-child,
+.message-body blockquote:last-child,
+.message-body table:last-child,
+.message-body pre:last-child,
+.message-body .code-block-wrapper:last-child {
+  margin-bottom: 0;
+}
+
+/* Assistant messages: constrain content width for readability */
+.message.assistant .message-body {
+  max-width: 800px;
+}
+
+/* ── Assistant hover highlight ── */
+.message.assistant .message-inner:hover {
+  background: var(--surface-hover);
+}
+
+/* ── Headings ── */
+.message-body h1,
+.message-body h2,
+.message-body h3,
+.message-body h4,
+.message-body h5,
+.message-body h6 {
+  color: var(--text-primary);
+  font-weight: 600;
+  margin-bottom: 8px;
+  margin-top: 16px;
+}
+
+.message-body h1:first-child,
+.message-body h2:first-child,
+.message-body h3:first-child,
+.message-body h4:first-child,
+.message-body h5:first-child,
+.message-body h6:first-child {
+  margin-top: 0;
+}
+
+.message-body h1 { font-size: 1.6em; }
+.message-body h2 { font-size: 1.4em; }
+.message-body h3 { font-size: 1.2em; }
+.message-body h4 { font-size: 1.1em; }
+.message-body h5 { font-size: 1.0em; }
+.message-body h6 { font-size: 0.95em; color: var(--text-secondary); }
+
+/* ── Inline Code ── */
+.message-body code {
+  background: var(--surface-container-high, rgba(128,128,128,0.1));
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: 'SF Mono', 'JetBrains Mono', 'Menlo', 'Consolas', monospace;
+  font-size: 0.9em;
+  color: var(--text-primary);
+}
+
+/* Reset inline code styles inside code blocks */
+.message-body pre code,
+.message-body .code-block-wrapper code {
+  background: transparent;
+  padding: 0;
+  border-radius: 0;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+/* ── Lists ── */
+.message-body ul,
+.message-body ol {
+  padding-left: 24px;
+  color: var(--text-secondary);
+}
+
+.message-body li {
+  margin-bottom: 4px;
+}
+
+.message-body li > ul,
+.message-body li > ol {
+  margin-top: 4px;
+  margin-bottom: 4px;
+}
+
+/* ── Blockquote ── */
+.message-body blockquote {
+  border-left: 3px solid var(--accent);
+  background: var(--surface-container, rgba(128,128,128,0.06));
+  padding: 8px 14px;
+  border-radius: 0 4px 4px 0;
+  color: var(--text-secondary);
+}
+
+.message-body blockquote p {
+  margin-bottom: 4px;
+}
+
+.message-body blockquote p:last-child {
+  margin-bottom: 0;
+}
+
+/* ── Tables ── */
+.message-body .table-wrapper {
+  overflow-x: auto;
+  margin-bottom: 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border-color);
+}
+
+.message-body table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  margin-bottom: 0;
+}
+
+.message-body thead th {
+  background: var(--surface-container-high, rgba(128,128,128,0.1));
+  color: var(--text-primary);
+  font-weight: 600;
+  text-align: left;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.message-body tbody td {
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border-color);
+  color: var(--text-secondary);
+}
+
+.message-body tbody tr:last-child td {
+  border-bottom: none;
+}
+
+/* ── Horizontal Rule ── */
+.message-body hr {
+  border: none;
+  height: 1px;
+  background: var(--border-color);
+  margin: 16px 0;
+}
+
+/* ── Links ── */
+.message-body a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.message-body a:hover {
+  color: var(--accent-hover);
+  text-decoration: underline;
+}
+
+/* ── Strong / Em / Del ── */
+.message-body strong {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.message-body em {
+  font-style: italic;
+}
+
+.message-body del {
+  text-decoration: line-through;
+  opacity: 0.7;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   Typing Cursor (streaming indicator)
+   ══════════════════════════════════════════════════════════════ */
+
+.typing-cursor {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  background: var(--accent, #007aff);
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  animation: blink 0.8s step-end infinite;
+}
+
+@keyframes blink {
+  50% { opacity: 0; }
+}
+
+/* ══════════════════════════════════════════════════════════════
+   Stream Error Indicator
+   ══════════════════════════════════════════════════════════════ */
+
+.stream-error-indicator {
+  margin-top: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--error-border, #e5484d);
+  border-radius: 6px;
+  background: var(--error-bg, rgba(229, 72, 77, 0.08));
+  color: var(--error-text, #e5484d);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   Thinking Indicator
+   ══════════════════════════════════════════════════════════════ */
+
+.thinking-indicator {
+  padding: 10px 16px;
+  margin: 4px 0;
+  color: var(--text-dim, #888);
+  font-size: 13px;
+  font-style: italic;
+  animation: thinking-pulse 2s ease-in-out infinite;
+}
+
+@keyframes thinking-pulse {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 1; }
+}
+
+/* ══════════════════════════════════════════════════════════════
+   Code Block Wrapper
+   ══════════════════════════════════════════════════════════════ */
+
+.code-block-wrapper {
+  position: relative;
+  border-radius: 8px;
+  border: 1px solid var(--code-block-border, var(--border-color));
+  overflow: hidden;
+  margin-bottom: 12px;
+  background: var(--code-block-bg, var(--surface-container));
+}
+
+.code-block-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  background: var(--code-block-header-bg, var(--surface-container-high));
+  border-bottom: 1px solid var(--code-block-border, var(--border-color));
+  min-height: 32px;
+}
+
+.code-lang-badge {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-dim);
+  font-family: 'SF Mono', 'JetBrains Mono', 'Menlo', 'Consolas', monospace;
+  text-transform: lowercase;
+}
+
+.code-copy-btn {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 2px 8px;
+  font-size: 12px;
+  transition: background var(--motion-quick, 0.15s ease), color var(--motion-quick, 0.15s ease);
+}
+
+.code-copy-btn:hover {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+
+.code-block-wrapper:hover .code-copy-btn {
+  display: flex;
+}
+
+.code-block-wrapper pre.code-block-pre {
+  margin: 0;
+  padding: 14px 16px;
+  overflow-x: auto;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+}
+
+.code-block-wrapper pre.code-block-pre code {
+  background: transparent;
+  padding: 0;
+  font-family: 'SF Mono', 'JetBrains Mono', 'Menlo', 'Consolas', monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-primary);
+}
+
+/* ══════════════════════════════════════════════════════════════
+   Syntax Highlighting Token Selectors (referencing CSS variables)
+   ══════════════════════════════════════════════════════════════ */
+
+.hljs {
+  color: var(--text-primary);
+  background: transparent;
+}
+
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-deletion {
+  color: var(--hljs-keyword);
+}
+
+.hljs-string,
+.hljs-template-variable,
+.hljs-addition {
+  color: var(--hljs-string);
+}
+
+.hljs-number,
+.hljs-selector-id {
+  color: var(--hljs-number);
+}
+
+.hljs-comment,
+.hljs-quote {
+  color: var(--hljs-comment);
+  font-style: italic;
+}
+
+.hljs-title,
+.hljs-title.function_,
+.hljs-section {
+  color: var(--hljs-function);
+}
+
+.hljs-type,
+.hljs-selector-class {
+  color: var(--hljs-type);
+}
+
+.hljs-literal,
+.hljs-symbol,
+.hljs-bullet {
+  color: var(--hljs-literal);
+}
+
+.hljs-built_in,
+.hljs-builtin-name {
+  color: var(--hljs-built-in);
+}
+
+.hljs-attr,
+.hljs-attribute {
+  color: var(--hljs-attr);
+}
+
+.hljs-tag,
+.hljs-name {
+  color: var(--hljs-tag);
+}
+
+.hljs-meta,
+.hljs-doctag {
+  color: var(--hljs-keyword);
+  font-weight: 500;
+}
+
+.hljs-variable,
+.hljs-template-tag {
+  color: var(--hljs-attr);
+}
+
+.hljs-params {
+  color: var(--text-secondary);
+}
+
+.hljs-regexp {
+  color: var(--hljs-string);
+}
+
+.hljs-emphasis {
+  font-style: italic;
+}
+
+.hljs-strong {
+  font-weight: 700;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   Theme-Specific Syntax Tokens & Code Block Variables
+   ══════════════════════════════════════════════════════════════ */
+
+/* ── Dark (default / :root) ── */
+:root {
+  --hljs-keyword: #c586c0;
+  --hljs-string: #ce9178;
+  --hljs-number: #b5cea8;
+  --hljs-comment: #6a9955;
+  --hljs-function: #dcdcaa;
+  --hljs-type: #4ec9b0;
+  --hljs-literal: #569cd6;
+  --hljs-built-in: #4fc1ff;
+  --hljs-attr: #9cdcfe;
+  --hljs-tag: #569cd6;
+  --code-block-bg: var(--surface-container);
+  --code-block-header-bg: var(--surface-container-high);
+  --code-block-border: var(--border-color);
+}
+
+/* ── Light ── */
+.theme-light {
+  --hljs-keyword: #af00db;
+  --hljs-string: #a31515;
+  --hljs-number: #098658;
+  --hljs-comment: #008000;
+  --hljs-function: #795e26;
+  --hljs-type: #267f99;
+  --hljs-literal: #0000ff;
+  --hljs-built-in: #267f99;
+  --hljs-attr: #001080;
+  --hljs-tag: #800000;
+  --code-block-bg: var(--surface-container);
+  --code-block-header-bg: var(--surface-container-high);
+  --code-block-border: var(--border-color);
+}
+
+/* ── Midnight ── */
+.theme-midnight {
+  --hljs-keyword: #b48ead;
+  --hljs-string: #a3be8c;
+  --hljs-number: #d08770;
+  --hljs-comment: #4c566a;
+  --hljs-function: #88c0d0;
+  --hljs-type: #8fbcbb;
+  --hljs-literal: #81a1c1;
+  --hljs-built-in: #5e81ac;
+  --hljs-attr: #d8dee9;
+  --hljs-tag: #81a1c1;
+  --code-block-bg: var(--surface-container);
+  --code-block-header-bg: var(--surface-container-high);
+  --code-block-border: var(--border-color);
+}
+
+/* ── Sepia ── */
+.theme-sepia {
+  --hljs-keyword: #8b4513;
+  --hljs-string: #6b4226;
+  --hljs-number: #2e7d32;
+  --hljs-comment: #8b7355;
+  --hljs-function: #5d4037;
+  --hljs-type: #00695c;
+  --hljs-literal: #1565c0;
+  --hljs-built-in: #4e342e;
+  --hljs-attr: #3e2723;
+  --hljs-tag: #795548;
+  --code-block-bg: var(--surface-container);
+  --code-block-header-bg: var(--surface-container-high);
+  --code-block-border: var(--border-color);
+}
+
+/* ── Nord ── */
+.theme-nord {
+  --hljs-keyword: #81a1c1;
+  --hljs-string: #a3be8c;
+  --hljs-number: #b48ead;
+  --hljs-comment: #616e88;
+  --hljs-function: #88c0d0;
+  --hljs-type: #8fbcbb;
+  --hljs-literal: #81a1c1;
+  --hljs-built-in: #5e81ac;
+  --hljs-attr: #d8dee9;
+  --hljs-tag: #81a1c1;
+  --code-block-bg: var(--surface-container);
+  --code-block-header-bg: var(--surface-container-high);
+  --code-block-border: var(--border-color);
+}
+
+/* ── Terminal ── */
+.theme-terminal {
+  --hljs-keyword: #00ff41;
+  --hljs-string: #66ff66;
+  --hljs-number: #ffcc00;
+  --hljs-comment: #116611;
+  --hljs-function: #33ff99;
+  --hljs-type: #00cc88;
+  --hljs-literal: #00ffcc;
+  --hljs-built-in: #33ccff;
+  --hljs-attr: #99ff99;
+  --hljs-tag: #00ff41;
+  --code-block-bg: var(--surface-container);
+  --code-block-header-bg: var(--surface-container-high);
+  --code-block-border: var(--border-color);
+}
+
+/* ── Zen ── */
+.theme-zen {
+  --hljs-keyword: #8b6914;
+  --hljs-string: #6b7c3e;
+  --hljs-number: #2e7d32;
+  --hljs-comment: #9c9484;
+  --hljs-function: #5d4e37;
+  --hljs-type: #4e7a6e;
+  --hljs-literal: #5a7093;
+  --hljs-built-in: #6b6456;
+  --hljs-attr: #3d3929;
+  --hljs-tag: #8b7355;
+  --code-block-bg: var(--surface-container);
+  --code-block-header-bg: var(--surface-container-high);
+  --code-block-border: var(--border-color);
+}
+
+/* ── Chat Attachments Strip ──────────────────────────────────────────
+   Pending image attachments shown above the chat input. Populated by
+   the file picker, paste, and drag & drop handlers in setupChatAttachments
+   (src/renderer/index.ts). Travels with the next sendChat dispatch.
+   ─────────────────────────────────────────────────────────────────── */
+
+#chat-attachments-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 8px 0;
+  align-items: stretch;
+}
+
+.chat-attach-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px 6px 6px;
+  background: var(--surface-container-high, rgba(128, 128, 128, 0.12));
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  font-size: 11px;
+  max-width: 240px;
+  position: relative;
+}
+
+.chat-attach-thumb {
+  width: 36px;
+  height: 36px;
+  object-fit: cover;
+  border-radius: 4px;
+  flex-shrink: 0;
+  background: var(--bg-input);
+}
+
+.chat-attach-meta {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+
+.chat-attach-name {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 140px;
+}
+
+.chat-attach-size {
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+.chat-attach-remove {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.chat-attach-remove:hover {
+  color: var(--red);
+  background: rgba(239, 68, 68, 0.12);
+}
+
+.chat-attach-error {
+  font-size: 11px;
+  color: var(--red);
+  background: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.25);
+  padding: 4px 8px;
+  border-radius: 6px;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+#chat-attach-btn:hover {
+  background: var(--surface-hover, var(--bg-input)) !important;
+  color: var(--text-primary) !important;
+  border-color: var(--accent, var(--border-color)) !important;
+}
+
+#input-bar.chat-attach-dragover {
+  outline: 2px dashed var(--accent, #89b4fa);
+  outline-offset: -4px;
+  background: color-mix(in srgb, var(--accent, #89b4fa) 8%, transparent);
+}
+
+/* Chip variant for non-image attachments (text/code/binary). Uses an emoji
+   icon in place of the image thumbnail; same layout footprint so the strip
+   stays aligned across mixed attachment kinds. */
+.chat-attach-icon {
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  background: var(--bg-input);
+  font-size: 18px;
+  flex-shrink: 0;
+  border: 1px solid var(--border-color);
+}

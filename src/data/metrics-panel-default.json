@@ -1,0 +1,27 @@
+{
+  "panels": [
+    {
+      "title": "Unified state size",
+      "keys": ["unified_state.bytes", "unified_state.estimated_tokens"]
+    },
+    {
+      "title": "Error compaction savings",
+      "keys": [
+        "errors.compacted.input_estimated_tokens",
+        "errors.compacted.output_estimated_tokens"
+      ]
+    },
+    {
+      "title": "Orchestrator tick latency",
+      "keys": ["orchestrator.tick_latency_ms"]
+    },
+    {
+      "title": "Event log health",
+      "keys": [
+        "event_log.reconciled",
+        "event_log.reconciler_unmatched",
+        "event_log.gap_detected"
+      ]
+    }
+  ]
+}

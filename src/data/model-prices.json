@@ -1,0 +1,107 @@
+{
+  "openai": {
+    "gpt-4o": { "input_mtok": 2.50, "output_mtok": 10.00 },
+    "gpt-4o-mini": { "input_mtok": 0.15, "output_mtok": 0.60 },
+    "gpt-4o-2024-08-06": { "input_mtok": 2.50, "output_mtok": 10.00 },
+    "gpt-4o-2024-11-20": { "input_mtok": 2.50, "output_mtok": 10.00 },
+    "gpt-4-turbo": { "input_mtok": 10.00, "output_mtok": 30.00 },
+    "gpt-4-turbo-2024-04-09": { "input_mtok": 10.00, "output_mtok": 30.00 },
+    "gpt-4": { "input_mtok": 30.00, "output_mtok": 60.00 },
+    "gpt-3.5-turbo": { "input_mtok": 0.50, "output_mtok": 1.50 },
+    "o3": { "input_mtok": 2.00, "output_mtok": 8.00 },
+    "o3-mini": { "input_mtok": 1.10, "output_mtok": 4.40 },
+    "o1": { "input_mtok": 15.00, "output_mtok": 60.00 },
+    "o1-mini": { "input_mtok": 3.00, "output_mtok": 12.00 },
+    "o1-preview": { "input_mtok": 15.00, "output_mtok": 60.00 }
+  },
+  "anthropic": {
+    "claude-sonnet-4-20250514": { "input_mtok": 3.00, "output_mtok": 15.00 },
+    "claude-opus-4-20250514": { "input_mtok": 15.00, "output_mtok": 75.00 },
+    "claude-4-sonnet": { "input_mtok": 3.00, "output_mtok": 15.00 },
+    "claude-4-opus": { "input_mtok": 15.00, "output_mtok": 75.00 },
+    "claude-3-5-sonnet-20241022": { "input_mtok": 3.00, "output_mtok": 15.00 },
+    "claude-3-5-sonnet": { "input_mtok": 3.00, "output_mtok": 15.00 },
+    "claude-3-5-haiku-20241022": { "input_mtok": 0.80, "output_mtok": 4.00 },
+    "claude-3-5-haiku": { "input_mtok": 0.80, "output_mtok": 4.00 },
+    "claude-haiku-3-5-20241022": { "input_mtok": 0.80, "output_mtok": 4.00 },
+    "claude-3-opus-20240229": { "input_mtok": 15.00, "output_mtok": 75.00 },
+    "claude-3-opus": { "input_mtok": 15.00, "output_mtok": 75.00 },
+    "claude-3-sonnet-20240229": { "input_mtok": 3.00, "output_mtok": 15.00 },
+    "claude-3-haiku-20240307": { "input_mtok": 0.25, "output_mtok": 1.25 },
+    "claude-3-haiku": { "input_mtok": 0.25, "output_mtok": 1.25 }
+  },
+  "deepseek": {
+    "deepseek-chat": { "input_mtok": 0.14, "output_mtok": 0.28 },
+    "deepseek-coder": { "input_mtok": 0.14, "output_mtok": 0.28 },
+    "deepseek-reasoner": { "input_mtok": 0.55, "output_mtok": 2.19 },
+    "deepseek-r1": { "input_mtok": 0.55, "output_mtok": 2.19 }
+  },
+  "gemini": {
+    "gemini-2.5-pro": { "input_mtok": 1.25, "output_mtok": 10.00 },
+    "gemini-2.5-flash": { "input_mtok": 0.15, "output_mtok": 0.60 },
+    "gemini-2.0-flash": { "input_mtok": 0.10, "output_mtok": 0.40 },
+    "gemini-2.0-flash-lite": { "input_mtok": 0.075, "output_mtok": 0.30 },
+    "gemini-1.5-pro": { "input_mtok": 1.25, "output_mtok": 5.00 },
+    "gemini-1.5-flash": { "input_mtok": 0.075, "output_mtok": 0.30 },
+    "gemini-1.5-flash-8b": { "input_mtok": 0.0375, "output_mtok": 0.15 },
+    "gemini-pro": { "input_mtok": 0.50, "output_mtok": 1.50 }
+  },
+  "mistral": {
+    "mistral-large-latest": { "input_mtok": 2.00, "output_mtok": 6.00 },
+    "mistral-large-2411": { "input_mtok": 2.00, "output_mtok": 6.00 },
+    "mistral-medium-latest": { "input_mtok": 2.70, "output_mtok": 8.10 },
+    "mistral-small-latest": { "input_mtok": 0.10, "output_mtok": 0.30 },
+    "mistral-small-2503": { "input_mtok": 0.10, "output_mtok": 0.30 },
+    "codestral-latest": { "input_mtok": 0.30, "output_mtok": 0.90 },
+    "codestral-2501": { "input_mtok": 0.30, "output_mtok": 0.90 },
+    "open-mistral-nemo": { "input_mtok": 0.15, "output_mtok": 0.15 },
+    "open-mixtral-8x22b": { "input_mtok": 2.00, "output_mtok": 6.00 },
+    "open-mixtral-8x7b": { "input_mtok": 0.70, "output_mtok": 0.70 },
+    "pixtral-large-latest": { "input_mtok": 2.00, "output_mtok": 6.00 },
+    "ministral-8b-latest": { "input_mtok": 0.10, "output_mtok": 0.10 }
+  },
+  "groq": {
+    "llama-3.3-70b-versatile": { "input_mtok": 0.59, "output_mtok": 0.79 },
+    "llama-3.1-70b-versatile": { "input_mtok": 0.59, "output_mtok": 0.79 },
+    "llama-3.1-8b-instant": { "input_mtok": 0.05, "output_mtok": 0.08 },
+    "llama-3.2-90b-vision-preview": { "input_mtok": 0.90, "output_mtok": 0.90 },
+    "llama-3.2-11b-vision-preview": { "input_mtok": 0.18, "output_mtok": 0.18 },
+    "llama-3.2-3b-preview": { "input_mtok": 0.06, "output_mtok": 0.06 },
+    "llama-3.2-1b-preview": { "input_mtok": 0.04, "output_mtok": 0.04 },
+    "mixtral-8x7b-32768": { "input_mtok": 0.24, "output_mtok": 0.24 },
+    "gemma2-9b-it": { "input_mtok": 0.20, "output_mtok": 0.20 },
+    "deepseek-r1-distill-llama-70b": { "input_mtok": 0.75, "output_mtok": 0.99 },
+    "qwen-2.5-coder-32b": { "input_mtok": 0.79, "output_mtok": 0.79 },
+    "qwen-qwq-32b": { "input_mtok": 0.29, "output_mtok": 0.39 }
+  },
+  "grok": {
+    "grok-3": { "input_mtok": 3.00, "output_mtok": 15.00 },
+    "grok-3-mini": { "input_mtok": 0.30, "output_mtok": 0.50 },
+    "grok-2": { "input_mtok": 2.00, "output_mtok": 10.00 },
+    "grok-2-mini": { "input_mtok": 0.20, "output_mtok": 1.00 },
+    "grok-beta": { "input_mtok": 5.00, "output_mtok": 15.00 }
+  },
+  "nvidia": {
+    "meta/llama-3.1-405b-instruct": { "input_mtok": 5.00, "output_mtok": 5.00 },
+    "meta/llama-3.1-70b-instruct": { "input_mtok": 0.35, "output_mtok": 0.40 },
+    "meta/llama-3.1-8b-instruct": { "input_mtok": 0.10, "output_mtok": 0.10 },
+    "nvidia/nemotron-4-340b-instruct": { "input_mtok": 4.20, "output_mtok": 4.20 },
+    "mistralai/mixtral-8x22b-instruct-v0.1": { "input_mtok": 1.20, "output_mtok": 1.20 },
+    "google/gemma-2-27b-it": { "input_mtok": 0.40, "output_mtok": 0.40 }
+  },
+  "openmythos": {
+    "mythos_1b": { "input_mtok": 0, "output_mtok": 0 },
+    "mythos_3b": { "input_mtok": 0, "output_mtok": 0 },
+    "mythos_10b": { "input_mtok": 0, "output_mtok": 0 },
+    "mythos_50b": { "input_mtok": 0, "output_mtok": 0 },
+    "mythos_100b": { "input_mtok": 0, "output_mtok": 0 },
+    "mythos_500b": { "input_mtok": 0, "output_mtok": 0 },
+    "mythos_1t": { "input_mtok": 0, "output_mtok": 0 }
+  },
+  "ollama": {
+    "_default": { "input_mtok": 0, "output_mtok": 0 }
+  },
+  "llamacpp": {
+    "_default": { "input_mtok": 0, "output_mtok": 0 }
+  }
+}
