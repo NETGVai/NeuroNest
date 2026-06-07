@@ -124,13 +124,15 @@ See [Architecture Reference](https://neuronest.cc/docs) for the full system desi
 
 ## Download
 
-| Platform | Architecture | Download |
-|----------|-------------|----------|
-| macOS | Apple Silicon (M1/M2/M3/M4) | [NeuroNest-0.1.1-mac-arm64.dmg](https://neuronest.cc/download) |
-| macOS | Intel | [NeuroNest-0.1.1-mac-x64.dmg](https://neuronest.cc/download) |
-| Windows | x64 | [NeuroNest-Setup-0.1.1-win-x64.exe](https://neuronest.cc/download) |
-| Linux | x64 (AppImage) | [NeuroNest-0.1.1-linux-x64.AppImage](https://neuronest.cc/download) |
-| Linux | arm64 (AppImage) | [NeuroNest-0.1.1-linux-arm64.AppImage](https://neuronest.cc/download) |
+| Platform | Download |
+|----------|----------|
+| macOS | [NeuroNest-LATEST-mac-universal.dmg](https://neuronest.cc/download) |
+| Windows | [NeuroNest-Setup-LATEST-win-x64.exe](https://neuronest.cc/download) |
+| Linux | [NeuroNest-LATEST-linux-x64.AppImage](https://neuronest.cc/download) |
+| Linux | [NeuroNest-LATEST-linux-x64.deb](https://neuronest.cc/download) |
+| Linux | [NeuroNest-LATEST-linux-x64.rpm](https://neuronest.cc/download) |
+| Linux | [NeuroNest-LATEST-linux-arm64.AppImage](https://neuronest.cc/download) |
+| Linux | [NeuroNest-LATEST-linux-arm64.deb](https://neuronest.cc/download) |
 
 **Requirements:** macOS 11.0+, Windows 10+, or Linux (Ubuntu 20.04+ / Fedora 36+).
 
