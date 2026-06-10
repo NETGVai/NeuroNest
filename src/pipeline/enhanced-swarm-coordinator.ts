@@ -8,6 +8,8 @@ import { ExecutionPlan, AgentTask as OrchestratorAgentTask } from './orchestrato
 import { EnhancedAgentManager, type AgentTask, type EnhancedAgentEvent } from '../agents/enhanced-agent-manager';
 import { LLMClient } from './llm-client';
 import { AGENT_REGISTRY } from '../agents/agent-registry';
+import { PERF_FLAGS } from '../main/performance/feature-flags';
+import { GCF_PRIMER } from '../serializers/gcf-encoder';
 import type Database from 'better-sqlite3';
 
 // ── Enhanced Event Types ──
@@ -478,6 +480,11 @@ export class EnhancedSwarmCoordinator extends SwarmCoordinator {
       '=== END FORMAT ===';
 
     let systemPrompt = (agentDef?.systemPrompt || 'You are a helpful AI assistant.') + outputFormat;
+
+    // ── F10 GCF primer injection ──
+    if (PERF_FLAGS.GCF_WIRE_FORMAT) {
+      systemPrompt = GCF_PRIMER + '\n\n' + systemPrompt;
+    }
 
     const contextSummary = this.enhancedMemoryPool.getContextSummary ? this.enhancedMemoryPool.getContextSummary() : '';
     let fullTask = (contextPrefix ? `${agentTask.task}\n\nPrior context:\n${contextPrefix}` : agentTask.task) +

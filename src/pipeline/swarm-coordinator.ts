@@ -5,7 +5,7 @@
 import { AGENT_REGISTRY, AgentDefinition } from '../agents/agent-registry';
 import { LLMClient } from './llm-client';
 import { ExecutionPlan, AgentTask } from './orchestrator-planner';
-import { encodeGeneric, encodeGraph, type GraphPayload } from '../serializers/gcf-encoder';
+import { encodeGeneric, encodeGraph, GCF_PRIMER, type GraphPayload } from '../serializers/gcf-encoder';
 import { PERF_FLAGS } from '../main/performance/feature-flags';
 import { logger } from '../utils/logger';
 
@@ -484,6 +484,12 @@ export class SwarmCoordinator {
               : PRODUCTION_OUTPUT_FORMAT;
 
             let agentSystemPrompt = (agentDef?.systemPrompt || 'You are a helpful AI assistant.') + outputFormat;
+
+            // ── F10 GCF primer injection ──
+            // Prepend the GCF comprehension primer when the wire format is active.
+            if (PERF_FLAGS.GCF_WIRE_FORMAT) {
+              agentSystemPrompt = GCF_PRIMER + '\n\n' + agentSystemPrompt;
+            }
             
             // Truncate system prompt if it exceeds budget (leave room for task)
             const taskBudget = Math.floor(promptBudgetChars * 0.4);

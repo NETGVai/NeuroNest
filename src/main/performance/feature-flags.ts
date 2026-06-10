@@ -174,7 +174,7 @@ export const PERF_FLAGS = {
    * provider must be marked `gcf_capable: true` (accuracy within 5 percentage
    * points of its JSON baseline).
    */
-  GCF_WIRE_FORMAT: false,
+  GCF_WIRE_FORMAT: true,
   /**
    * Toggle GCF_Wire_Format shadow-mode telemetry (Requirement 55 Phase 0).
    *

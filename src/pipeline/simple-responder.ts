@@ -10,6 +10,8 @@
  */
 
 import { createLLMClientWithProMode } from './pro-mode-state';
+import { PERF_FLAGS } from '../main/performance/feature-flags';
+import { GCF_PRIMER } from '../serializers/gcf-encoder';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { APP_NAME } from '../branding';
@@ -118,6 +120,14 @@ ${this.projectContext ? `\n--- ACTIVE PROJECT CONTEXT ---\n${this.projectContext
       // flag state. Errors are swallowed: a transient reducer / sink
       // failure must never tear down the chat-message handler.
       let systemPromptWithState = systemPrompt;
+
+      // ── F10 GCF primer injection ──
+      // When the GCF wire format is active, prepend the LLM comprehension
+      // primer so the model knows how to parse GCF-encoded tool responses.
+      if (PERF_FLAGS.GCF_WIRE_FORMAT) {
+        systemPromptWithState = GCF_PRIMER + '\n\n' + systemPromptWithState;
+      }
+
       if (this.stateBlockProvider) {
         try {
           const stateBlock = await this.stateBlockProvider(this.sessionId);

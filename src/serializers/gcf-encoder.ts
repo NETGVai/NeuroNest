@@ -6,6 +6,17 @@
  * non-throwing failure semantics. The library implements GCF (Graph Compact
  * Format) — a token-optimized wire format for LLM tool responses.
  *
+ * v1.0.0 header format: all GCF payloads start with a mandatory header line:
+ *   - Graph profile: `GCF profile=graph tool=<toolName>`
+ *   - Generic profile: `GCF profile=generic`
+ * The old `GCF tool=...` header (without profile=) is no longer valid.
+ *
+ * LLM primer (inject into system prompt when GCF is active):
+ *   GCF format: header starts with "GCF profile=graph tool=", symbols are
+ *   @id kind qname score provenance, edges are @target<@source type (< not >),
+ *   sections are ## targets/related/extended/edges. Kind abbreviations:
+ *   function=fn, type=type, method=method, interface=iface.
+ *
  * Failure contract: `encodeGraph` and `encodeGeneric` NEVER throw. Any error
  * raised by the underlying library (or by payload mapping) is swallowed and
  * `null` is returned, so call sites can fall back to JSON deterministically
@@ -90,6 +101,13 @@ interface GcfBindings {
   encodeWithSession: (payload: Payload, session: SessionType) => string;
   Session: new () => SessionType;
 }
+
+/**
+ * GCF v1.0.0 LLM primer — inject into the system prompt when GCF_WIRE_FORMAT
+ * is active so the LLM knows how to parse the compact encoding. This single
+ * sentence raises comprehension from ~70% to 90%+ across all tested providers.
+ */
+export const GCF_PRIMER = 'GCF format: header starts with "GCF profile=graph tool=", symbols are @id kind qname score provenance, edges are @target<@source type (< not >), sections are ## targets/related/extended/edges. Kind abbreviations: function=fn, type=type, method=method, interface=iface.';
 
 /**
  * Process-global cache key for the resolved bindings. Stored on `globalThis`

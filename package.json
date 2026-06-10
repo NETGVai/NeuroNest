@@ -1,6 +1,6 @@
 {
   "name": "neuronest",
-  "version": "0.1.489",
+  "version": "0.1.493",
   "description": "NeuroNest - The AI Coding SuperAgent",
   "author": "NeuroNest <admin@neuronest.cc>",
   "private": true,
@@ -30,7 +30,7 @@
     "packages/*"
   ],
   "dependencies": {
-    "@blackwell-systems/gcf": "0.1.2",
+    "@blackwell-systems/gcf": "^1.0.0",
     "@peculiar/x509": "^1.14.3",
     "@popperjs/core": "^2.11.8",
     "@simplewebauthn/server": "^13.3.0",

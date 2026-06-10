@@ -1,6 +1,7 @@
 /**
  * Shared type contracts for Sub_Agent definitions.
  *
+ * Phase 4 (internal-integration) consumes the Phase 3
  * Sub_Agent_Runner / SubAgentDefinition surface. Phase 3 designates
  * `src/agent-skills/sub-agents/` as the location for this type. This
  * file defines the minimal contract that Phase 4's `AskSubAgent`
