@@ -2,8 +2,8 @@
   "name": "@neuronest/cli",
   "version": "0.1.0",
   "description": "Standalone NeuroNest CLI — sync typed skills, run specs, drive the headless agent, and serve outbound MCP. Ships without Electron.",
-  "license": "UNLICENSED",
-  "private": true,
+  "license": "MIT",
+  "private": false,
   "type": "commonjs",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -12,13 +12,37 @@
   },
   "files": [
     "dist",
-    "bin"
+    "bin",
+    "README.md",
+    "LICENSE"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json && node scripts/copy-bin.js",
     "build:bin": "node scripts/copy-bin.js",
+    "prepublishOnly": "npm run build",
     "test": "vitest --run",
     "test:watch": "vitest"
+  },
+  "keywords": [
+    "neuronest",
+    "ai",
+    "coding",
+    "agent",
+    "cli",
+    "mcp"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/neuronest/neuronest.git",
+    "directory": "packages/neuronest-cli"
+  },
+  "homepage": "https://neuronest.cc",
+  "bugs": {
+    "url": "https://github.com/neuronest/neuronest/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
   },
   "dependencies": {
     "yargs": "^17.7.2",

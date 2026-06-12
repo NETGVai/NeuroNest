@@ -15,3 +15,9 @@ export {
 export type { TTSConfig, TTSResult } from './tts-engine';
 export { downloadVoiceModels } from './model-downloader';
 export type { DownloadProgress, ProgressCallback } from './model-downloader';
+export {
+  TTSUtilityProcessManager,
+  getTTSProcessManager,
+  disposeTTSProcessManager,
+} from './tts-utility-process';
+export type { TTSSynthesizeRequest, ProcessHealth, TTSProcessManager } from './tts-utility-process';

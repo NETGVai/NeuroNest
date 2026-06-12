@@ -9,6 +9,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import type { WindowConfig, WindowState } from '../shared/types.js';
+import { getSecureWebPreferences } from './security/window-hardener';
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -149,11 +150,9 @@ export class ElectronNativeShell implements NativeShell {
       minWidth: config.minWidth,
       minHeight: config.minHeight,
       titleBarStyle: config.titleBarStyle,
-      webPreferences: {
+      webPreferences: getSecureWebPreferences({
         preload: path.join(__dirname, '..', 'renderer', 'preload.js'),
-        contextIsolation: true,
-        nodeIntegration: false,
-      },
+      }),
     });
 
     if (saved.isMaximized) {

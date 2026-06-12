@@ -31,6 +31,7 @@ import { startOllama, stopOllama } from './ollama-manager';
 import { stopOpenMythos } from './openmythos-manager';
 import { shutdownAgentSkillsService } from '../agent-skills/main-process-integration.js';
 import type { WindowState } from '../shared/types';
+import { hardenWindow, installCSP, getSecureWebPreferences, DEFAULT_SECURITY_POLICY } from './security/window-hardener';
 
 // Auth system imports
 import { CertificateManager } from './auth/certificate-manager';
@@ -71,14 +72,17 @@ function createMainWindow(): BrowserWindow {
     backgroundColor: '#1e1e2e',
     icon: path.join(__dirname, '..', '..', 'assets', 'icon.png'),
     show: false,
-    webPreferences: {
+    webPreferences: getSecureWebPreferences({
       preload: path.join(__dirname, '..', 'renderer', 'preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
       webviewTag: true,
-      webSecurity: false,
-    },
+    }),
   });
+
+  // Apply window hardening (navigation blocking, new-window interception)
+  hardenWindow(win, DEFAULT_SECURITY_POLICY);
+
+  // Install Content-Security-Policy headers on the default session
+  installCSP();
 
   if (saved.isMaximized) {
     win.maximize();

@@ -1,18 +1,32 @@
 /**
  * SwarmManager — Lead/worker coordination, parallel execution, shared memory.
  *
- * Stub implementation with in-memory state. Manages swarm creation,
+ * Real LLM execution implementation. Manages swarm creation,
  * worker coordination, task lifecycle, and human-in-the-loop checkpoints.
+ * All worker tasks are executed through real LLM API calls.
  *
- * Requirements: 5.1–5.4, 5.7–5.8, 5.10, 5.12–5.14
+ * Requirements: 2.1, 2.2, 2.3, 2.5, 5.1–5.4, 5.7–5.8, 5.10, 5.12–5.14
  */
 
 import { randomUUID } from 'node:crypto';
 import type { SwarmConfig, SwarmStatus, TokenUsage } from '../shared/types.js';
+import { LLMClient, type LLMMessage } from '../pipeline/llm-client.js';
 
 // ─── Types ──────────────────────────────────────────────────────
 
 export type WorkerStatus = 'queued' | 'running' | 'completed' | 'failed' | 'paused';
+
+/**
+ * Provenance information for a swarm result, identifying which model
+ * and request produced the response.
+ * Requirements: 2.5
+ */
+export interface SwarmProvenance {
+  /** The model name used to generate the response */
+  model: string;
+  /** Unique request identifier for traceability */
+  requestId: string;
+}
 
 export interface WorkerProgress {
   workerId: string;
@@ -21,6 +35,7 @@ export interface WorkerProgress {
   output?: string;
   tokenUsage?: TokenUsage;
   error?: string;
+  provenance?: SwarmProvenance;
 }
 
 export interface SwarmResult {
@@ -31,6 +46,8 @@ export interface SwarmResult {
   totalTokenUsage: TokenUsage;
   durationMs: number;
   failures: string[];
+  /** Provenance tracking for the overall swarm execution */
+  provenance?: SwarmProvenance;
 }
 
 export interface SwarmTask {
@@ -54,12 +71,58 @@ export interface Swarm {
   completedAt?: Date;
 }
 
+/**
+ * Error class for LLM connection failures.
+ * Provides structured connection error details.
+ * Requirements: 2.3
+ */
+export class LLMConnectionError extends Error {
+  public readonly connectionDetails: {
+    provider: string;
+    errorCode: string;
+    originalMessage: string;
+  };
+
+  constructor(provider: string, errorCode: string, originalMessage: string) {
+    super(`LLM provider unreachable: [${provider}] ${errorCode} - ${originalMessage}`);
+    this.name = 'LLMConnectionError';
+    this.connectionDetails = { provider, errorCode, originalMessage };
+  }
+}
+
+/**
+ * Error class for zero-token result validation.
+ * Requirements: 2.2
+ */
+export class ZeroTokenResultError extends Error {
+  constructor(workerId: string) {
+    super(`Invalid result: worker ${workerId} reported zero tokens for a completed interaction`);
+    this.name = 'ZeroTokenResultError';
+  }
+}
+
 // ─── SwarmManager ───────────────────────────────────────────────
 
 export class SwarmManager {
   private swarms = new Map<string, Swarm>();
   private progressCallbacks = new Map<string, Array<(progress: WorkerProgress) => void>>();
   private completeCallbacks = new Map<string, Array<(result: SwarmResult) => void>>();
+  private llmClient: LLMClient | null = null;
+
+  /**
+   * Set the LLM client used for executing worker tasks.
+   * Requirements: 2.1
+   */
+  setLLMClient(client: LLMClient | null): void {
+    this.llmClient = client;
+  }
+
+  /**
+   * Get the current LLM client (for testing/inspection).
+   */
+  getLLMClient(): LLMClient | null {
+    return this.llmClient;
+  }
 
   /**
    * Create a new swarm from config.
@@ -111,8 +174,156 @@ export class SwarmManager {
   }
 
   /**
+   * Execute a single worker task through the LLM API.
+   * Requirements: 2.1, 2.2, 2.3, 2.5
+   *
+   * @param worker - The worker progress object to update
+   * @param task - The task description to send to the LLM
+   * @returns The updated worker with real LLM results
+   * @throws LLMConnectionError when the provider is unreachable
+   * @throws ZeroTokenResultError when a completed interaction reports zero tokens
+   */
+  private async executeWorkerTask(worker: WorkerProgress, task: string): Promise<WorkerProgress> {
+    if (!this.llmClient) {
+      throw new LLMConnectionError(
+        'unknown',
+        'NO_CLIENT',
+        'No LLM client configured. Please set up an AI provider in Settings.',
+      );
+    }
+
+    const requestId = randomUUID();
+
+    const messages: LLMMessage[] = [
+      { role: 'system', content: 'You are a skilled AI agent executing a delegated task within a swarm workflow. Provide a thorough, actionable response.' },
+      { role: 'user', content: task },
+    ];
+
+    try {
+      const result = await this.llmClient.chat(messages, {
+        temperature: 0.7,
+        maxTokens: 2048,
+      });
+
+      // Extract token usage from response
+      const promptTokens = result.promptTokens ?? 0;
+      const completionTokens = result.completionTokens ?? 0;
+      const totalTokens = result.tokensUsed ?? (promptTokens + completionTokens);
+
+      // Requirement 2.2: Reject zero-token results for completed interactions
+      if (totalTokens <= 0) {
+        throw new ZeroTokenResultError(worker.workerId);
+      }
+
+      // Extract model name from client config
+      const model = (this.llmClient as any).config?.model || 'unknown';
+
+      worker.status = 'completed';
+      worker.output = result.content;
+      worker.tokenUsage = {
+        promptTokens,
+        completionTokens,
+        totalTokens,
+        estimatedCost: 0, // Cost calculation handled by cost-store
+      };
+      // Requirement 2.5: Include provenance with model name and requestId
+      worker.provenance = {
+        model,
+        requestId,
+      };
+
+      return worker;
+    } catch (error: any) {
+      // Requirement 2.3: Return explicit failure status with connection error details
+      if (this.isConnectionError(error)) {
+        const provider = (this.llmClient as any).config?.provider || 'unknown';
+        const errorCode = this.extractErrorCode(error);
+        worker.status = 'failed';
+        worker.error = `LLM provider unreachable: [${provider}] ${errorCode} - ${error.message}`;
+        throw new LLMConnectionError(provider, errorCode, error.message);
+      }
+
+      // Requirement 2.2: Reject zero-token results
+      if (error instanceof ZeroTokenResultError) {
+        worker.status = 'failed';
+        worker.error = error.message;
+        throw error;
+      }
+
+      // Other API errors (rate limiting, auth failures, etc.)
+      worker.status = 'failed';
+      worker.error = error.message || 'Unknown LLM execution error';
+      throw error;
+    }
+  }
+
+  /**
+   * Determine if an error is a connection-level failure.
+   */
+  private isConnectionError(error: any): boolean {
+    const message = error.message || '';
+    return (
+      message.includes('ENOTFOUND') ||
+      message.includes('ECONNREFUSED') ||
+      message.includes('ECONNRESET') ||
+      message.includes('ETIMEDOUT') ||
+      message.includes('socket hang up') ||
+      message.includes('timed out') ||
+      message.includes('Cannot reach') ||
+      message.includes('LLM request failed') ||
+      message.includes('Connection reset') ||
+      error.code === 'ENOTFOUND' ||
+      error.code === 'ECONNREFUSED' ||
+      error.code === 'ECONNRESET' ||
+      error.code === 'ETIMEDOUT'
+    );
+  }
+
+  /**
+   * Extract a structured error code from the error.
+   */
+  private extractErrorCode(error: any): string {
+    if (error.code) return error.code;
+    const message = error.message || '';
+    if (message.includes('ENOTFOUND')) return 'ENOTFOUND';
+    if (message.includes('ECONNREFUSED')) return 'ECONNREFUSED';
+    if (message.includes('ECONNRESET')) return 'ECONNRESET';
+    if (message.includes('ETIMEDOUT')) return 'ETIMEDOUT';
+    if (message.includes('socket hang up')) return 'SOCKET_HANG_UP';
+    if (message.includes('timed out')) return 'TIMEOUT';
+    return 'CONNECTION_ERROR';
+  }
+
+  /**
+   * Validate a completed worker result for data integrity.
+   * Requirements: 2.2, 2.5
+   *
+   * @throws ZeroTokenResultError if token count is zero
+   * @throws Error if provenance fields are missing or empty
+   */
+  validateWorkerResult(worker: WorkerProgress): void {
+    if (worker.status !== 'completed') return;
+
+    // Requirement 2.2: Reject zero-token results
+    if (!worker.tokenUsage || worker.tokenUsage.totalTokens <= 0) {
+      throw new ZeroTokenResultError(worker.workerId);
+    }
+
+    // Requirement 2.5: Ensure provenance is present and non-empty
+    if (!worker.provenance) {
+      throw new Error(`Missing provenance for completed worker ${worker.workerId}`);
+    }
+    if (!worker.provenance.model || worker.provenance.model.trim() === '') {
+      throw new Error(`Empty model in provenance for worker ${worker.workerId}`);
+    }
+    if (!worker.provenance.requestId || worker.provenance.requestId.trim() === '') {
+      throw new Error(`Empty requestId in provenance for worker ${worker.workerId}`);
+    }
+  }
+
+  /**
    * Start swarm execution.
-   * Requirements: 5.3, 5.10
+   * Requirements: 2.1, 2.2, 2.3, 2.5, 5.3, 5.10
    */
   async start(swarmId: string): Promise<SwarmResult> {
     const swarm = this.swarms.get(swarmId);
@@ -121,11 +332,9 @@ export class SwarmManager {
     swarm.status = 'running';
     swarm.startedAt = new Date();
 
-    // Simulate worker execution with concurrency bounds
     const startTime = Date.now();
-    let concurrentRunning = 0;
-    let maxConcurrentSeen = 0;
     const failures: string[] = [];
+    let overallModel = '';
 
     for (const worker of swarm.workers) {
       if ((swarm.status as SwarmStatus) === 'cancelled') break;
@@ -138,27 +347,27 @@ export class SwarmManager {
         swarm.status = 'running';
       }
 
-      concurrentRunning++;
-      maxConcurrentSeen = Math.max(maxConcurrentSeen, concurrentRunning);
-
-      // Enforce concurrency limit
-      if (concurrentRunning > swarm.config.maxConcurrent) {
-        concurrentRunning = swarm.config.maxConcurrent;
-      }
-
       worker.status = 'running';
       this.emitProgress(swarmId, worker);
 
-      // Stub: mark as completed
-      worker.status = 'completed';
-      worker.output = `Result from worker ${worker.workerId}`;
-      worker.tokenUsage = {
-        promptTokens: 100,
-        completionTokens: 200,
-        totalTokens: 300,
-        estimatedCost: 0.01,
-      };
-      concurrentRunning--;
+      try {
+        // Requirement 2.1: Execute through real LLM API call
+        await this.executeWorkerTask(worker, swarm.config.task);
+
+        // Requirement 2.2 & 2.5: Validate the completed result
+        this.validateWorkerResult(worker);
+
+        // Track the model used for overall provenance
+        if (worker.provenance?.model) {
+          overallModel = worker.provenance.model;
+        }
+      } catch (error: any) {
+        worker.status = 'failed';
+        if (!worker.error) {
+          worker.error = error.message || 'Worker execution failed';
+        }
+        failures.push(worker.error ?? `Worker ${worker.workerId} failed`);
+      }
 
       this.emitProgress(swarmId, worker);
     }
@@ -181,7 +390,9 @@ export class SwarmManager {
         totalTokenUsage.estimatedCost += w.tokenUsage.estimatedCost;
       }
       if (w.status === 'failed') {
-        failures.push(w.error ?? `Worker ${w.workerId} failed`);
+        if (!failures.includes(w.error ?? `Worker ${w.workerId} failed`)) {
+          failures.push(w.error ?? `Worker ${w.workerId} failed`);
+        }
       }
     }
 
@@ -199,6 +410,10 @@ export class SwarmManager {
       totalTokenUsage,
       durationMs,
       failures,
+      // Requirement 2.5: Include provenance for the overall swarm result
+      provenance: overallModel
+        ? { model: overallModel, requestId: randomUUID() }
+        : undefined,
     };
 
     this.emitComplete(swarmId, result);
@@ -280,20 +495,6 @@ export class SwarmManager {
     }
 
     swarm.workers.splice(idx, 1);
-  }
-
-  /**
-   * Simulate a worker failure for testing fault tolerance.
-   */
-  simulateWorkerFailure(swarmId: string, workerId: string, error: string): void {
-    const swarm = this.swarms.get(swarmId);
-    if (!swarm) throw new Error(`Swarm not found: ${swarmId}`);
-
-    const worker = swarm.workers.find((w) => w.workerId === workerId);
-    if (!worker) throw new Error(`Worker not found: ${workerId}`);
-
-    worker.status = 'failed';
-    worker.error = error;
   }
 
   /**
