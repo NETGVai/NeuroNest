@@ -1,6 +1,6 @@
 {
   "name": "neuronest",
-  "version": "0.1.497",
+  "version": "0.1.498",
   "description": "NeuroNest - The AI Coding SuperAgent",
   "author": "NeuroNest <admin@neuronest.cc>",
   "private": true,
@@ -40,7 +40,7 @@
     "dist:all": "npm run rebuild:native && npm run build:nobump && electron-builder -mwl",
     "changeset": "changeset",
     "changeset:status": "changeset status",
-    "version": "changeset version",
+    "changeset:version": "changeset version",
     "release": "changeset version && changeset tag"
   },
   "workspaces": [
