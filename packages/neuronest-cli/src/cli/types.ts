@@ -34,9 +34,19 @@ export interface AgentArgv     { _: ['agent', string /* prompt */] }
 /** `neuronest mcp` — starts the Outbound_MCP_Server (Req 5.7). */
 export interface McpArgv       { _: ['mcp'] }
 
+/** `neuronest task <description>` — runs a task through the agent loop
+ *  directly (without headless transport), using the same ToolSystem
+ *  and AgentLoopController as the GUI (Req 14.1, 14.2, 14.3, 14.4). */
+export interface TaskArgv      {
+  _: ['task', string /* task description */];
+  mode: 'auto' | 'plan';
+  projectDir: string;
+  args?: string;
+}
+
 /** Discriminated union over all CLI subcommand argv shapes. Drives
  *  the strict-mode yargs configuration in `main.ts`. */
-export type CliArgv = SyncArgv | RunArgv | SkillsArgv | AgentArgv | McpArgv;
+export type CliArgv = SyncArgv | RunArgv | SkillsArgv | AgentArgv | McpArgv | TaskArgv;
 
 /** Process exit code returned by `NeuronestCli.main`. The three-value
  *  set is locked: 0 success, 1 error, 2 unknown subcommand

@@ -26,6 +26,18 @@ export interface SessionFilter {
   until?: Date;
 }
 
+// ─── Multi-Chat Session Types ──────────────────────────────────
+
+export interface ChatSession {
+  id: string;
+  projectId: string;
+  title: string;
+  createdAt: Date;
+  lastMessageAt: Date;
+  messageCount: number;
+  preview: string;
+}
+
 // ─── SessionManager ────────────────────────────────────────────
 
 export class SessionManager {
@@ -262,5 +274,99 @@ export class SessionManager {
 
     insertAll(session.messages);
     return session;
+  }
+
+  // ─── Multi-Chat Session Methods ────────────────────────────────
+
+  /**
+   * Current active chat session ID for routing messages.
+   */
+  private activeChatSessionId: string | null = null;
+
+  /**
+   * Create a new chat session within a project.
+   * Each chat session has independent message history but shares the project directory.
+   * Requirements: 7.1, 7.2
+   */
+  createChatSession(projectId: string, title?: string): ChatSession {
+    const id = randomUUID();
+    const now = new Date();
+    const sessionTitle = title ?? 'New Chat';
+
+    this.db
+      .prepare(
+        'INSERT INTO chat_sessions (id, project_id, title, created_at, last_message_at, message_count, preview) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      )
+      .run(id, projectId, sessionTitle, now.toISOString(), now.toISOString(), 0, '');
+
+    const chatSession: ChatSession = {
+      id,
+      projectId,
+      title: sessionTitle,
+      createdAt: now,
+      lastMessageAt: now,
+      messageCount: 0,
+      preview: '',
+    };
+
+    // Automatically switch to the newly created session
+    this.activeChatSessionId = id;
+
+    return chatSession;
+  }
+
+  /**
+   * List all chat sessions for a given project, ordered by last message time (most recent first).
+   * Requirements: 7.3
+   */
+  listChatSessions(projectId: string): ChatSession[] {
+    const rows = this.db
+      .prepare(
+        'SELECT id, project_id, title, created_at, last_message_at, message_count, preview FROM chat_sessions WHERE project_id = ? ORDER BY last_message_at DESC',
+      )
+      .all(projectId) as Array<{
+      id: string;
+      project_id: string;
+      title: string;
+      created_at: string;
+      last_message_at: string;
+      message_count: number;
+      preview: string;
+    }>;
+
+    return rows.map((r) => ({
+      id: r.id,
+      projectId: r.project_id,
+      title: r.title,
+      createdAt: new Date(r.created_at),
+      lastMessageAt: new Date(r.last_message_at),
+      messageCount: r.message_count,
+      preview: r.preview,
+    }));
+  }
+
+  /**
+   * Switch the active chat session. Restores the session context so subsequent
+   * messages are routed to the selected chat session.
+   * Requirements: 7.3
+   */
+  switchChatSession(sessionId: string): void {
+    // Verify the chat session exists
+    const row = this.db
+      .prepare('SELECT id FROM chat_sessions WHERE id = ?')
+      .get(sessionId) as { id: string } | undefined;
+
+    if (!row) {
+      throw new Error(`Chat session not found: ${sessionId}`);
+    }
+
+    this.activeChatSessionId = sessionId;
+  }
+
+  /**
+   * Get the currently active chat session ID.
+   */
+  getActiveChatSessionId(): string | null {
+    return this.activeChatSessionId;
   }
 }

@@ -152,6 +152,13 @@ export const EXECUTION_CONFIRMERS: QualifierPattern[] = [
   { pattern: /\bgo ahead\b/i, weight: 0.6 },
   { pattern: /\bstart (building|creating|coding)\b/i, weight: 0.7 },
   { pattern: /^(build|rebuild|create|make|write|implement|deploy|fix|refactor|redesign|restructure|setup|develop|configure|migrate|convert|upgrade)\b/i, weight: 0.8 },
+  // Analysis/review task patterns — these are execution tasks, not questions
+  { pattern: /^(scan|analyze|audit|review|check|inspect|examine|assess|evaluate|verify|validate|test|benchmark|profile|lint|format)\b/i, weight: 0.8 },
+  { pattern: /\b(scan|analyze|audit|review|check|inspect|examine)\b.*\b(codebase|code|project|files|security|performance|dependencies|vulnerabilities)\b/i, weight: 0.75 },
+  { pattern: /\b(owasp|security|vulnerability|penetration|pentest)\b.*\b(review|scan|check|audit|test|analysis)\b/i, weight: 0.85 },
+  { pattern: /\b(focus on|check|do|run|perform|execute|start)\b.*\b(everything|all|entire|whole|full)\b/i, weight: 0.7 },
+  // Continuation/confirmation patterns — user responding to a follow-up question
+  { pattern: /^(yes|yeah|yep|sure|ok|okay|alright|confirm|do it|go ahead|proceed|continue|start|just do it)[\s!.]*$/i, weight: 0.8 },
   // Project-specific action patterns — "can you [verb] [thing] from/in/to the project"
   // These indicate a polite imperative, not a capability question
   { pattern: /\b(delete|remove|rename|move|copy|add|update|modify|edit|change|clean|clear|reset)\b.*\b(file|folder|directory|project|code|module|component)\b/i, weight: 0.6 },

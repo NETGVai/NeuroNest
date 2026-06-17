@@ -16,6 +16,46 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { APP_NAME } from '../branding';
 
+export interface AIRulesResult {
+  content: string;
+  truncated: boolean;
+  path: string;
+}
+
+const AI_RULES_MAX_LENGTH = 4000;
+
+/**
+ * Load AI rules from the project's `.neuronest/rules.md` file.
+ *
+ * Returns the rules content (truncated at 4000 chars if needed), or null if
+ * the file doesn't exist. Errors during reading are treated as "no rules"
+ * to avoid blocking the pipeline.
+ *
+ * @param projectDir - Absolute path to the project directory
+ * @returns AIRulesResult or null if the rules file is not present
+ */
+export function loadAIRules(projectDir: string): AIRulesResult | null {
+  const rulesPath = path.join(projectDir, '.neuronest', 'rules.md');
+
+  let raw: string;
+  try {
+    raw = fs.readFileSync(rulesPath, 'utf-8');
+  } catch {
+    // File doesn't exist or is unreadable — proceed without rules
+    return null;
+  }
+
+  let truncated = false;
+  let content = raw;
+
+  if (content.length > AI_RULES_MAX_LENGTH) {
+    content = content.slice(0, AI_RULES_MAX_LENGTH) + '\n\n[Rules truncated — limit: 4000 characters]';
+    truncated = true;
+  }
+
+  return { content, truncated, path: rulesPath };
+}
+
 export interface SimpleResponse {
   content: string;
   agent: string;
@@ -73,7 +113,15 @@ export class SimpleResponder {
     }
 
     try {
-      const systemPrompt = `You are ${APP_NAME}, an AI coding assistant with FULL access to the user's project directory.
+      // Reload AI rules on every message (requirement 5.5)
+      const aiRules = this.projectDir ? loadAIRules(this.projectDir) : null;
+
+      let rulesSection = '';
+      if (aiRules) {
+        rulesSection = `## Project Rules\n${aiRules.content}\n\n`;
+      }
+
+      const systemPrompt = `${rulesSection}You are ${APP_NAME}, an AI coding assistant with FULL access to the user's project directory.
 
 You CAN perform real file operations when the user asks. You have access to:
 - Delete files/folders

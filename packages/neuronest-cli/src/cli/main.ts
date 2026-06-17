@@ -36,6 +36,7 @@ import {
   type OpenedTransport,
 } from '../transport/headless-transport.js';
 import { CliSubcommands } from './subcommands.js';
+import { runAgentTask, type AgentRunnerMode } from './agent-runner.js';
 import type {
   AgentArgv,
   CliExitCode,
@@ -55,6 +56,7 @@ const SUBCOMMAND_DESCRIPTIONS = Object.freeze({
   skills: 'Inspect installed skills',
   agent: 'One-shot agent invocation against the headless instance',
   mcp: 'Start the outbound MCP server',
+  task: 'Run a task through the agent loop (standalone, no headless)',
 } as const);
 
 const USAGE_HEADER = 'Usage: neuronest <subcommand> [args...]';
@@ -277,6 +279,55 @@ export function createMain(deps: MainDeps = {}): NeuronestCli {
             exitCode = await withTransport(factory, stderr, (transport) =>
               CliSubcommands.mcp(argvShape, transport),
             );
+          },
+        )
+        // ─ task <description..> ─────────────────────────────
+        //
+        // Runs a task through the agent loop directly (Req 14.1-14.4).
+        // Does NOT use headless transport — it initializes the same
+        // ToolSystem and AgentLoopController as the GUI, running the
+        // loop in-process and streaming output to stdout.
+        .command(
+          'task <description..>',
+          SUBCOMMAND_DESCRIPTIONS.task,
+          (y) =>
+            y
+              .positional('description', {
+                describe: 'Task description for the agent to execute',
+                type: 'string',
+                array: true,
+                demandOption: true,
+              })
+              .option('mode', {
+                describe: 'Execution mode: auto (default) or plan',
+                type: 'string',
+                choices: ['auto', 'plan'] as const,
+                default: 'auto',
+              })
+              .option('project-dir', {
+                describe: 'Working directory for the project',
+                type: 'string',
+                default: process.cwd(),
+              })
+              .option('args', {
+                describe: 'Additional arguments to pass to the agent',
+                type: 'string',
+              }),
+          async (parsed) => {
+            dispatched = true;
+            const descParts = parsed.description;
+            const description = Array.isArray(descParts)
+              ? descParts.map(String).join(' ')
+              : String(descParts ?? '');
+            const mode = (parsed.mode || 'auto') as AgentRunnerMode;
+            const projectDir = parsed['project-dir'] || parsed.projectDir || process.cwd();
+
+            exitCode = await runAgentTask({
+              task: description,
+              mode,
+              projectDir: String(projectDir),
+              args: parsed.args ? String(parsed.args) : undefined,
+            });
           },
         );
 

@@ -43,3 +43,6 @@ export type {
   SerializeGraphExtractOptions,
   MetricsSink as GraphExportMetricsSink,
 } from './graph-export.js';
+
+export { CodeExplorer } from './code-explorer.js';
+export type { IndexResult, IndexResultType, IndexStats } from './code-explorer.js';

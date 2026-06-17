@@ -81,6 +81,11 @@ interface LLMResponse {
   tokensUsed?: number;
   promptTokens?: number;
   completionTokens?: number;
+  tool_calls?: Array<{
+    id: string;
+    type: 'function';
+    function: { name: string; arguments: string };
+  }>;
 }
 
 export interface StreamChunk {
@@ -250,7 +255,7 @@ export class LLMClient {
     this.config = config;
   }
 
-  async chat(messages: LLMMessage[], options?: { temperature?: number; maxTokens?: number }): Promise<LLMResponse> {
+  async chat(messages: LLMMessage[], options?: { temperature?: number; maxTokens?: number; tools?: Array<{ type: string; function: { name: string; description: string; parameters: Record<string, unknown> } }> }): Promise<LLMResponse> {
     // ─── Professional Mode pre-flight ─────────────────────────────────
     // Per Requirement 11.6, the auth-token check MUST happen BEFORE any header
     // construction or HTTP call so that no `X-Provider` / `X-Model` headers can
@@ -347,6 +352,10 @@ export class LLMClient {
     if (isLocalModel) {
       bodyObj.stop = LOCAL_MODEL_STOP_SEQUENCES;
     }
+    // Add tools for function calling if provided
+    if (options?.tools && options.tools.length > 0) {
+      bodyObj.tools = options.tools;
+    }
     const body = JSON.stringify(bodyObj);
 
     const https = require('node:https');
@@ -416,6 +425,7 @@ export class LLMClient {
                 }
                 const content = parsed.choices?.[0]?.message?.content || '';
                 const reasoning = parsed.choices?.[0]?.message?.reasoning_content || undefined;
+                const toolCalls = parsed.choices?.[0]?.message?.tool_calls || undefined;
                 const tokens = parsed.usage?.total_tokens || 0;
                 const promptTokens = parsed.usage?.prompt_tokens || undefined;
                 const completionTokens = parsed.usage?.completion_tokens || undefined;
@@ -431,8 +441,12 @@ export class LLMClient {
                   return;
                 }
 
-                console.log(`[LLMClient] Success - ${sanitizedContent.length} chars, ${tokens} tokens${reasoning ? ', reasoning: ' + reasoning.length + ' chars' : ''}`);
-                resolve({ content: sanitizedContent, reasoning, tokensUsed: tokens, promptTokens, completionTokens });
+                console.log(`[LLMClient] Success - ${sanitizedContent.length} chars, ${tokens} tokens${reasoning ? ', reasoning: ' + reasoning.length + ' chars' : ''}${toolCalls ? ', tool_calls: ' + toolCalls.length : ''}`);
+                const llmResult: LLMResponse = { content: sanitizedContent, reasoning, tokensUsed: tokens, promptTokens, completionTokens };
+                if (toolCalls && toolCalls.length > 0) {
+                  llmResult.tool_calls = toolCalls;
+                }
+                resolve(llmResult);
               } catch (e) {
                 console.error('[LLMClient] Parse error:', e, 'Response:', data.slice(0, 200));
                 reject(new Error('Failed to parse LLM response: ' + data.slice(0, 200)));

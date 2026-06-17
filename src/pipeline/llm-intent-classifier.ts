@@ -40,12 +40,19 @@ Classify the user's message into exactly ONE of these intents:
    - "Remove unused imports" (imperative: do this)
    - "Refactor this function" (imperative: do this)
 
-3. "build_task" — The user wants something BUILT or CREATED. These are IMPERATIVE commands for complex multi-step work. Examples:
+3. "build_task" — The user wants something BUILT, CREATED, or ANALYZED. These are IMPERATIVE commands for complex multi-step work. Examples:
    - "Build me a todo app" (imperative: create this)
    - "Create a REST API with authentication" (imperative: build this)
    - "Add a login page with form validation" (imperative: build this)
    - "Set up a CI/CD pipeline" (imperative: build this)
    - "Build a nodejs app" (imperative: build this — no question mark, no "can I")
+   - "Check the codebase for OWASP adherence" (imperative: analyze this)
+   - "Scan the entire codebase for security issues" (imperative: analyze this)
+   - "Review my code for vulnerabilities" (imperative: analyze this)
+   - "Audit the project dependencies" (imperative: analyze this)
+   - "Run a security review" (imperative: do this)
+   - "Focus on everything" (continuing a previous analysis request)
+   - "Start building" (confirmation of a previous task)
 
 4. "ambiguous" — Genuinely unclear. Use this sparingly.
 
@@ -54,7 +61,10 @@ CRITICAL RULES:
 - "Can I build X?" is informational (asking permission/capability). "Build X" is build_task (commanding action).
 - The PRESENCE of a question word (can, could, is, how, what, should, would, will, does, do) at the START makes it informational.
 - File operations (delete, rename, move) in imperative form are "simple_action".
-- Only classify as "build_task" when the user is clearly COMMANDING you to create/build something (imperative mood, no question marks).
+- Only classify as "build_task" when the user is clearly COMMANDING you to create/build/analyze something (imperative mood, no question marks).
+- Analysis commands (scan, audit, review, check, inspect, examine) are "build_task" NOT "informational".
+- Short confirmations like "yes", "start building", "go ahead", "focus on everything", "do it" after a previous assistant message are "build_task" (user is confirming the previous action).
+- "start building" is ALWAYS "build_task" — it is a direct command to proceed.
 
 Respond with ONLY a JSON object, no markdown, no explanation:
 {"intent": "informational"|"simple_action"|"build_task"|"ambiguous", "confidence": 0.0-1.0, "reasoning": "brief reason"}`;

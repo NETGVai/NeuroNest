@@ -82,6 +82,10 @@ export interface ToolContext {
   sessionId: string;
   projectDir?: string;
   permissionMode: PermissionMode;
+  /** Optional approval handler for tools that require user confirmation (e.g., BashTool).
+   *  Returns true if the action is approved, false otherwise.
+   *  If not provided and permissionMode is not 'auto-approve', commands are rejected. */
+  approvalHandler?: (command: string) => Promise<boolean>;
 }
 
 export interface ToolResult {

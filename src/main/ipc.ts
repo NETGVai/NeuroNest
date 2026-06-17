@@ -45,6 +45,8 @@ import { AGENT_REGISTRY, DEPARTMENTS, getDepartmentCounts, getAgentsByDepartment
 import { registerSkillsIPC } from './skills-ipc.js';
 import { registerAgentSkillsIPC } from '../agent-skills/ipc-handler.js';
 import { registerDiagnosticsIPC } from './diagnostics-ipc.js';
+import { registerToolApprovalIPC, createApprovalHandler } from './tool-approval-ipc.js';
+import { registerMultiChatIPC } from './multi-chat-ipc.js';
 import { registerLicenseIPC } from './license/license-ipc.js';
 import { initializeAgentSkillsInMainProcess } from '../agent-skills/main-process-integration.js';
 import { trySkillRoute, loadCatalogAndTemplates } from '../skills/skill-integration.js';
@@ -54,6 +56,13 @@ import { registerDeerFlowIPC, setDeerFlowMainWindow } from './deerflow-ipc.js';
 import { LazyModuleLoader } from './performance/lazy-module-loader';
 import { PERF_FLAGS } from './performance/feature-flags';
 import { AsyncSystemMonitor } from './performance/async-system-monitor';
+import { AgentLoopController, type AgentLoopResult, type AgentLLMClient, type AgentMessage, type AgentLLMResponse, type FunctionDefinition } from '../pipeline/agent-loop';
+import { ToolSystem as AgentToolSystem } from '../tools/tool-system';
+import { PermissionSystem } from '../security/permission-system';
+import { builtInTools } from '../tools/built-in/index';
+import { autoCommit, type AutoVersioningLLMClient } from '../tools/auto-versioning';
+import { CallbackEngine } from '../pipeline/callback-engine';
+import { loadProjectConfig } from '../config/project-config';
 
 // Agent status simulation - in a real system this would come from agent manager
 function getAgentStatus(agentId: string): 'active' | 'busy' | 'offline' {
@@ -209,6 +218,117 @@ let agentMemoryClient: any = null; // Reference to AgentMemoryClient, set during
 let projectMemoryRef: any = null; // Reference to ProjectMemoryStore, used by memory panel
 let cronScheduler: CronScheduler | null = null; // Cron scheduler for automated tasks
 let skillLearner: SkillLearner | null = null; // Self-improving skill learner
+
+// ── Agent Loop Integration (Requirement 10.1, 10.2) ──
+// Singleton ToolSystem with real built-in tool implementations for the agent loop.
+// Lazily initialized on first use so we don't pay the cost at module load.
+let agentLoopToolSystem: InstanceType<typeof AgentToolSystem> | null = null;
+
+/** Get or create the ToolSystem singleton for the agent loop. */
+function getAgentLoopToolSystem(): InstanceType<typeof AgentToolSystem> {
+  if (!agentLoopToolSystem) {
+    agentLoopToolSystem = new AgentToolSystem(new PermissionSystem());
+    for (const tool of builtInTools) {
+      try {
+        agentLoopToolSystem.register(tool);
+      } catch (err: any) {
+        console.warn('[AgentLoop] Failed to register tool:', tool.id, err?.message);
+      }
+    }
+    console.log('[AgentLoop] ToolSystem initialized with', agentLoopToolSystem.list().length, 'tools');
+  }
+  return agentLoopToolSystem;
+}
+
+/**
+ * Per-session conversation history for the agent loop.
+ * Maintains message history across iterations so follow-up messages
+ * have context from prior tool-use rounds.
+ */
+const agentLoopConversationHistory = new Map<string, AgentMessage[]>();
+
+/** Max history messages to retain per session (prevents unbounded memory growth). */
+const AGENT_LOOP_MAX_HISTORY = 50;
+
+/**
+ * Adapter: wraps the existing createLLMClient-based client to conform
+ * to the AgentLLMClient interface expected by AgentLoopController.
+ *
+ * The existing LLMClient.chat() method doesn't natively support `tools` in its
+ * TypeScript signature, but the underlying OpenAI-compatible API does. We cast
+ * through `any` to pass tools and read tool_calls from the raw response.
+ */
+function wrapLLMClientForAgentLoop(llmClient: ReturnType<typeof createLLMClient>): AgentLLMClient {
+  return {
+    async chatWithTools(
+      messages: AgentMessage[],
+      tools: FunctionDefinition[],
+      options?: { temperature?: number; maxTokens?: number },
+    ): Promise<AgentLLMResponse> {
+      // The existing LLM client's chat() is typed narrowly but the underlying
+      // HTTP call supports the full OpenAI API including tools. We pass tools
+      // via the options object (cast to any) and the provider handles it.
+      const llmMessages = messages.map((msg) => ({
+        role: msg.role,
+        content: msg.content,
+        ...(msg.tool_calls ? { tool_calls: msg.tool_calls } : {}),
+        ...(msg.tool_call_id ? { tool_call_id: msg.tool_call_id } : {}),
+      }));
+
+      // Build the tools parameter in OpenAI format
+      const toolsParam = tools.map((t) => ({
+        type: 'function' as const,
+        function: t.function,
+      }));
+
+      // Call the existing LLM client — cast to any to pass tools through
+      const response: any = await (llmClient as any).chat(llmMessages as any, {
+        temperature: options?.temperature ?? 0.7,
+        maxTokens: options?.maxTokens,
+        tools: toolsParam,
+      });
+
+      // Normalize the response to AgentLLMResponse format
+      // The raw API response has tool_calls on the message choice; the LLMClient
+      // may or may not expose them depending on version. We read from the response
+      // object which has been extended in prior tasks.
+      const result: AgentLLMResponse = {
+        content: response?.content || '',
+      };
+      if (response?.tool_calls && response.tool_calls.length > 0) {
+        result.tool_calls = response.tool_calls;
+      }
+      if (response?.tokensUsed || response?.promptTokens) {
+        result.usage = {
+          promptTokens: response.promptTokens || 0,
+          completionTokens: response.completionTokens || 0,
+          totalTokens: response.tokensUsed || (response.promptTokens || 0) + (response.completionTokens || 0),
+        };
+      }
+      return result;
+    },
+  };
+}
+
+/**
+ * Adapter: wraps the existing createLLMClient-based client to conform
+ * to the AutoVersioningLLMClient interface expected by autoCommit().
+ *
+ * The AutoVersioningLLMClient needs a simple `chat(messages, options)` that
+ * returns `{ content?: string | null }`. The existing LLMClient's chat()
+ * already returns `{ content: string }`, so this is a thin passthrough.
+ */
+function wrapLLMForAutoCommit(llmClient: NonNullable<ReturnType<typeof createLLMClient>>): AutoVersioningLLMClient {
+  return {
+    async chat(
+      messages: Array<{ role: string; content: string }>,
+      options?: { temperature?: number; maxTokens?: number },
+    ): Promise<{ content?: string | null }> {
+      const response = await llmClient.chat(messages as any, options);
+      return { content: response?.content || null };
+    },
+  };
+}
 
 // ── Event_Bus_Bridge singleton (12-factor-agent-improvements task 8) ──
 // Single main-process EventLog instance. Renderer-side agents emit via the
@@ -1995,6 +2115,8 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
     'indexing:getStatus', 'indexing:fullReindex', 'indexing:stop', 'indexing:getConfig', 'indexing:updateConfig',
     // Performance: BoundedMessageStore
     'load-older-messages', 'persist-overflow-messages', 'get-overflow-count', 'clear-overflow-session',
+    // Multi-Chat IPC handlers
+    'create-chat-session', 'list-chat-sessions', 'switch-chat-session',
     // Note: License & Referral handlers are registered separately at the top of registerIPCHandlers
   ];
   for (const h of handlersToRemove) {
@@ -3003,16 +3125,25 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
     }
 
     // Route ambiguous messages to clarification prompt
+    // BUT: if the user's message looks like a confirmation/continuation of a previous
+    // task (e.g., "start building", "yes", "do it", "focus on everything"), skip
+    // clarification and route to the pipeline instead.
     if (routingDecision.route === 'clarification') {
-      sendAndStore(mainWindow, {
-        role: 'assistant',
-        content: 'Would you like me to explain what I can do, or should I start building?',
-        agent: 'NeuroNest',
-        isCommand: true,
-      });
-      mainWindow.webContents.send('chat-response', { role: 'assistant', content: '', agent: 'NeuroNest' });
-      console.log('[IPC] Ambiguous message routed to clarification prompt (confidence:', routingDecision.intent.confidence + ')');
-      return;
+      const confirmationPattern = /^(start\s*building|start|yes|yeah|yep|sure|ok|okay|do it|go ahead|proceed|just do it|focus on everything|focus on all|check everything|scan everything|begin|continue|let'?s go)[\s!.]*$/i;
+      if (confirmationPattern.test(trimmed)) {
+        console.log('[IPC] Ambiguous message matches confirmation pattern, routing to pipeline instead of clarification');
+        // Fall through to the pipeline below
+      } else {
+        sendAndStore(mainWindow, {
+          role: 'assistant',
+          content: 'Would you like me to explain what I can do, or should I start building?',
+          agent: 'NeuroNest',
+          isCommand: true,
+        });
+        mainWindow.webContents.send('chat-response', { role: 'assistant', content: '', agent: 'NeuroNest' });
+        console.log('[IPC] Ambiguous message routed to clarification prompt (confidence:', routingDecision.intent.confidence + ')');
+        return;
+      }
     }
 
 // ── Skill routing pre-step: try matching a skill before the full pipeline ──
@@ -3061,6 +3192,191 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
       // This case should have been handled above, but adding as safety net
       console.log('[IPC] Conversational message without skill match, already handled by simple responder');
       return;
+    }
+
+    // ── Agent Loop Route: for build_task intent, use the AgentLoopController ──
+    // This replaces the orchestrator pipeline with a proper agentic tool-use loop
+    // that iteratively calls tools until the task is complete (Requirements 10.1, 10.2).
+    if (
+      routingDecision.intent.type === 'build_task' &&
+      routingDecision.route === 'orchestrator_pipeline'
+    ) {
+      const agentLoopLLM = resolveActiveLLMClient();
+      if (agentLoopLLM) {
+        try {
+          const osAL = require('node:os');
+          const pathAL = require('node:path');
+          const projectDirAL = pathAL.join(osAL.homedir(), '.neuronest', 'projects', activeSessionId || 'default');
+
+          // Load project-specific configuration (Requirement 16.3)
+          const projectConfig = loadProjectConfig(projectDirAL);
+
+          // Resolve the ToolSystem with real implementations
+          const toolSystemAL = getAgentLoopToolSystem();
+
+          // Wrap the existing LLM client to the AgentLLMClient interface
+          const agentLLMClient = wrapLLMClientForAgentLoop(agentLoopLLM);
+
+          // Load or initialize per-session conversation history
+          const sessionKey = activeSessionId || 'default';
+          if (!agentLoopConversationHistory.has(sessionKey)) {
+            agentLoopConversationHistory.set(sessionKey, []);
+          }
+          const conversationHistory = agentLoopConversationHistory.get(sessionKey)!;
+
+          // Append the user message to history
+          conversationHistory.push({ role: 'user', content: effectiveMessage });
+
+          // Trim history if it exceeds max length (keep system prompt room)
+          while (conversationHistory.length > AGENT_LOOP_MAX_HISTORY) {
+            conversationHistory.shift();
+          }
+
+          // Create the AgentLoopController
+          const agentLoopCallbackEngine = new CallbackEngine();
+
+          // Register auto-versioning hook on task completion (Requirement 13.1)
+          // This provides a Callback Engine integration point for auto-versioning
+          // in addition to the direct call after the loop result.
+          agentLoopCallbackEngine.register('on-task-complete', async (ctx) => {
+            // The actual auto-commit is done after the loop result is available
+            // (below), because the on-task-complete hook fires before we have
+            // the final filesModified list from the result object. This hook
+            // serves as the extension point for additional on-task-complete behavior.
+            console.log('[CallbackEngine] on-task-complete fired for session:', ctx.sessionId, 'iteration:', ctx.iteration);
+          });
+
+          const agentLoopController = new AgentLoopController({
+            llmClient: agentLLMClient,
+            toolSystem: toolSystemAL,
+            projectDir: projectDirAL,
+            sessionId: sessionKey,
+            maxIterations: projectConfig.maxIterations,
+            planMode: projectConfig.planMode,
+            turboEditsEnabled: false,
+            smartContextEnabled: false,
+            callbackEngine: agentLoopCallbackEngine,
+            onProgress: (update) => {
+              // Wire progress events to the renderer
+              mainWindow.webContents.send('agent-progress', {
+                iteration: update.iteration,
+                maxIterations: update.maxIterations,
+                lastToolCall: update.lastToolCall,
+                status: update.status,
+              });
+            },
+          });
+
+          // Notify renderer that agent loop is starting
+          sendAndStore(mainWindow, {
+            role: 'assistant',
+            content: '🔄 **Agent Loop** — Working on your task...',
+            isCommand: true,
+            agent: 'Agent Loop',
+          });
+
+          // Execute the agent loop
+          const agentLoopResult: AgentLoopResult = await agentLoopController.run(effectiveMessage);
+
+          // Append the assistant response to conversation history for continuity
+          conversationHistory.push({ role: 'assistant', content: agentLoopResult.response });
+
+          // Send the final response to the renderer
+          sendAndStore(mainWindow, {
+            role: 'assistant',
+            content: agentLoopResult.response,
+            agent: 'Agent Loop',
+            streamAnimate: true,
+          });
+
+          // Send completion summary
+          const summaryParts: string[] = [];
+          summaryParts.push(`Iterations: ${agentLoopResult.iterations}`);
+          summaryParts.push(`Tool calls: ${agentLoopResult.toolCallsExecuted}`);
+          if (agentLoopResult.filesModified.length > 0) {
+            summaryParts.push(`Files modified: ${agentLoopResult.filesModified.join(', ')}`);
+          }
+          if (agentLoopResult.tokenUsage.totalTokens > 0) {
+            summaryParts.push(`Tokens: ${agentLoopResult.tokenUsage.totalTokens}`);
+          }
+
+          sendAndStore(mainWindow, {
+            role: 'assistant',
+            content: `✅ **Task complete** — ${summaryParts.join(' | ')}`,
+            isCommand: true,
+            agent: 'Agent Loop',
+          });
+
+          // Send final progress event indicating completion
+          mainWindow.webContents.send('agent-progress', {
+            iteration: agentLoopResult.iterations,
+            maxIterations: projectConfig.maxIterations,
+            status: 'complete',
+          });
+
+          // Update token count
+          tokenCount += agentLoopResult.tokenUsage.totalTokens || trimmed.length;
+          const projectCostAL = costStore ? costStore.getProjectCost(activeSessionId || '') : 0;
+          mainWindow.webContents.send('update-stats', { tokens: tokenCount, cost: projectCostAL });
+
+          // Record cost if cost tracking is available
+          try {
+            if (costStore && pricingTable && activeSessionId && agentLoopResult.tokenUsage.totalTokens > 0) {
+              const provJson = getCachedConfig('providers');
+              const defJson = getCachedConfig('default-provider');
+              let alProvider = '';
+              let alModel = '';
+              if (provJson) {
+                const providers = JSON.parse(provJson);
+                let defProv: any = null;
+                if (defJson) {
+                  try { const dp = JSON.parse(defJson); defProv = providers.find((p: any) => p.id === dp.id || p.name === dp.id || p.type === dp.id); if (defProv && dp.model) defProv = { ...defProv, model: dp.model }; } catch {}
+                }
+                const activeProv = defProv || providers[0];
+                if (activeProv) { alProvider = activeProv.type || ''; alModel = (activeProv.model || '').split(',')[0].trim(); }
+              }
+              if (alProvider) {
+                const alCostResult = calculateCost(alProvider, alModel, agentLoopResult.tokenUsage.promptTokens, agentLoopResult.tokenUsage.completionTokens, pricingTable);
+                costStore.record({
+                  projectId: activeSessionId,
+                  provider: alProvider,
+                  model: alModel,
+                  promptTokens: agentLoopResult.tokenUsage.promptTokens,
+                  completionTokens: agentLoopResult.tokenUsage.completionTokens,
+                  cost: alCostResult.cost,
+                });
+              }
+            }
+          } catch (costErr) { console.warn('[AgentLoop] Cost recording error:', costErr); }
+
+          // Notify files updated if any were modified
+          if (agentLoopResult.filesModified.length > 0 && activeSessionId) {
+            notifyProjectFilesUpdated(activeSessionId);
+          }
+
+          // ── Auto-Versioning: commit modified files with AI-generated message (Requirement 13.1) ──
+          // Triggered after the Agent Loop completes with file modifications.
+          // autoCommit handles all edge cases gracefully: non-git repos, empty file lists, LLM failures.
+          // Respects the project config's autoVersioning setting (Requirement 13.4, 16.3).
+          if (agentLoopResult.filesModified.length > 0 && projectConfig.autoVersioning) {
+            try {
+              const autoVersionLLM = wrapLLMForAutoCommit(agentLoopLLM);
+              await autoCommit(projectDirAL, agentLoopResult.filesModified, autoVersionLLM);
+            } catch (autoVersionErr: any) {
+              // Auto-versioning should never break the main flow
+              console.warn('[AgentLoop] Auto-versioning error (non-fatal):', autoVersionErr?.message);
+            }
+          }
+
+          // Send completion signal
+          mainWindow.webContents.send('chat-response', { role: 'assistant', content: '', agent: 'Agent Loop' });
+          console.log('[IPC] build_task handled by AgentLoopController — iterations:', agentLoopResult.iterations, 'tools:', agentLoopResult.toolCallsExecuted);
+          return;
+        } catch (agentLoopErr: any) {
+          console.error('[IPC] AgentLoop execution error, falling through to legacy pipeline:', agentLoopErr?.message);
+          // Fall through to the legacy orchestrator pipeline as a fallback
+        }
+      }
     }
 
 // Full NeuroNest pipeline: ZERA optimize → Orchestrate → Swarm execute
@@ -7294,6 +7610,22 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
     console.log('[IPC] Diagnostics & Security IPC handlers registered');
   } catch (error) {
     console.error('[IPC] Failed to register Diagnostics IPC handlers:', error);
+  }
+
+  // ── Tool Approval IPC handlers (BashTool user approval flow) ──
+  try {
+    registerToolApprovalIPC();
+    console.log('[IPC] Tool Approval IPC handlers registered');
+  } catch (error) {
+    console.error('[IPC] Failed to register Tool Approval IPC handlers:', error);
+  }
+
+  // ── Multi-Chat IPC handlers (multiple chat sessions per project) ──
+  try {
+    registerMultiChatIPC({ mainWindow, sessionManager });
+    console.log('[IPC] Multi-Chat IPC handlers registered');
+  } catch (error) {
+    console.error('[IPC] Failed to register Multi-Chat IPC handlers:', error);
   }
 
   // ── Action Security Analyzer ──
