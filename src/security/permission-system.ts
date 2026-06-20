@@ -44,7 +44,7 @@ export class PermissionSystem {
   // ── Permission check ────────────────────────────────────────
 
   async check(request: PermissionRequest): Promise<PermissionDecision> {
-    const mode = this.getEffectiveMode(request.agentId);
+    const mode = request.modeOverride ?? this.getEffectiveMode(request.agentId);
 
     // Allow-list override: if tool is in agent's allow list, auto-approve
     if (this.isAllowListed(request.agentId, request.toolId)) {

@@ -154,6 +154,7 @@ export class ToolSystem {
       agentId: context.agentId,
       input,
       riskLevel: tool.definition.riskLevel,
+      modeOverride: context.permissionMode,
     });
 
     if (!decision.allowed) {

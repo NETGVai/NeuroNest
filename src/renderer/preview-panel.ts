@@ -5,11 +5,12 @@
  * - Automatic refresh on file changes (HTML/CSS/JS)
  * - Dev server detection (ports 3000, 5173, 8080)
  * - Static file serving fallback when no dev server is running
+ * - WebContainer sandbox preview URL connection (sandbox:preview-url IPC)
  *
  * Communicates with the main process via window.electronAPI IPC bridge
- * for file watching and static server management.
+ * for file watching, static server management, and sandbox lifecycle.
  *
- * Requirements: 17.1, 17.2, 17.3, 17.4
+ * Requirements: 9.3, 10.3, 17.1, 17.2, 17.3, 17.4
  */
 
 // ─── Electron API accessor ──────────────────────────────────────
@@ -33,6 +34,10 @@ export interface PreviewState {
   devServerDetected: boolean;
   /** The project directory being previewed. */
   projectDir: string | null;
+  /** The active WebContainer sandbox instance ID, if connected. */
+  sandboxInstanceId: string | null;
+  /** Whether the preview is connected to a WebContainer sandbox. */
+  isSandboxPreview: boolean;
 }
 
 // ─── Panel Class ────────────────────────────────────────────────
@@ -47,6 +52,8 @@ export class LivePreviewPanel {
     currentUrl: null,
     devServerDetected: false,
     projectDir: null,
+    sandboxInstanceId: null,
+    isSandboxPreview: false,
   };
   private fileChangeHandler: ((...args: unknown[]) => void) | null = null;
   private refreshInterval: ReturnType<typeof setInterval> | null = null;
@@ -76,6 +83,13 @@ export class LivePreviewPanel {
     this.state.projectDir = null;
     this.state.devServerDetected = false;
 
+    // Terminate sandbox instance if connected
+    if (this.state.sandboxInstanceId) {
+      eapi().invoke('sandbox:terminate', { instanceId: this.state.sandboxInstanceId }).catch(() => {});
+      this.state.sandboxInstanceId = null;
+      this.state.isSandboxPreview = false;
+    }
+
     this.cleanupFileWatcher();
     this.stopRefreshInterval();
 
@@ -103,6 +117,159 @@ export class LivePreviewPanel {
   /** Get the current panel state. */
   getState(): PreviewState {
     return { ...this.state };
+  }
+
+  // ─── WebContainer Sandbox Connection ──────────────────────────
+
+  /**
+   * Connect to a WebContainer sandbox preview URL.
+   * Requirement 9.3: Expose running application via local URL for preview
+   * Requirement 10.3: Launch app in WebContainer and display live preview
+   *
+   * Boots a sandbox instance (if no instanceId provided), installs dependencies,
+   * starts the dev server, and navigates the iframe to the preview URL.
+   *
+   * @param instanceId - Optional existing sandbox instance ID. If omitted, boots a new instance.
+   */
+  async connectToSandbox(instanceId?: string): Promise<void> {
+    this.state.isOpen = true;
+    this.state.isSandboxPreview = true;
+
+    this.render();
+    this.updateStatus('Booting sandbox…');
+
+    try {
+      // Boot a new instance if none provided
+      let activeInstanceId = instanceId;
+
+      if (!activeInstanceId) {
+        const bootResult = await eapi().invoke('sandbox:boot') as
+          | { id: string; status: string }
+          | { error: true; code: string; message: string };
+
+        if ('error' in bootResult) {
+          this.updateStatus(`Error: ${bootResult.message}`);
+          return;
+        }
+
+        activeInstanceId = bootResult.id;
+      }
+
+      this.state.sandboxInstanceId = activeInstanceId;
+      this.updateStatus('Installing dependencies & starting dev server…');
+
+      // Get the preview URL (handles install + dev server start)
+      const previewResult = await eapi().invoke('sandbox:preview-url', {
+        instanceId: activeInstanceId,
+      }) as { previewUrl: string } | { error: true; code: string; message: string };
+
+      if ('error' in previewResult) {
+        this.updateStatus(`Error: ${previewResult.message}`);
+        return;
+      }
+
+      this.state.currentUrl = previewResult.previewUrl;
+      this.state.devServerDetected = true;
+
+      if (this.iframe) {
+        this.iframe.src = previewResult.previewUrl;
+      }
+
+      this.updateStatus(`Connected to sandbox preview: ${previewResult.previewUrl}`);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.updateStatus(`Sandbox error: ${message}`);
+    }
+  }
+
+  /**
+   * Write files to the connected sandbox and trigger a refresh.
+   * Requirement 10.4: Modify files in sandbox and preview updates automatically.
+   *
+   * @param files - Map of file path to content
+   */
+  async writeToSandbox(files: Record<string, string>): Promise<void> {
+    if (!this.state.sandboxInstanceId) {
+      this.updateStatus('No sandbox connected');
+      return;
+    }
+
+    try {
+      const result = await eapi().invoke('sandbox:write', {
+        instanceId: this.state.sandboxInstanceId,
+        files,
+      }) as { success: true; written: number } | { error: true; code: string; message: string };
+
+      if ('error' in result) {
+        this.updateStatus(`Write error: ${result.message}`);
+        return;
+      }
+
+      this.updateStatus(`Wrote ${result.written} file(s) — hot-reloading…`);
+
+      // Give the dev server a moment to pick up changes, then refresh
+      setTimeout(() => this.refresh(), 500);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.updateStatus(`Write error: ${message}`);
+    }
+  }
+
+  /**
+   * Execute a command in the connected sandbox.
+   *
+   * @param command - Shell command to run (e.g. "npm test")
+   * @returns Command result with stdout, stderr, exitCode
+   */
+  async runInSandbox(command: string): Promise<{ stdout: string; stderr: string; exitCode: number } | null> {
+    if (!this.state.sandboxInstanceId) {
+      this.updateStatus('No sandbox connected');
+      return null;
+    }
+
+    try {
+      const result = await eapi().invoke('sandbox:run', {
+        instanceId: this.state.sandboxInstanceId,
+        command,
+      }) as { stdout: string; stderr: string; exitCode: number } | { error: true; code: string; message: string };
+
+      if ('error' in result) {
+        this.updateStatus(`Run error: ${result.message}`);
+        return null;
+      }
+
+      return result;
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.updateStatus(`Run error: ${message}`);
+      return null;
+    }
+  }
+
+  /**
+   * Terminate the connected sandbox and reset to non-sandbox state.
+   */
+  async terminateSandbox(): Promise<void> {
+    if (!this.state.sandboxInstanceId) return;
+
+    try {
+      await eapi().invoke('sandbox:terminate', {
+        instanceId: this.state.sandboxInstanceId,
+      });
+    } catch {
+      // Best-effort termination
+    }
+
+    this.state.sandboxInstanceId = null;
+    this.state.isSandboxPreview = false;
+    this.state.currentUrl = null;
+    this.state.devServerDetected = false;
+
+    if (this.iframe) {
+      this.iframe.src = 'about:blank';
+    }
+
+    this.updateStatus('Sandbox terminated');
   }
 
   // ─── Rendering ────────────────────────────────────────────────

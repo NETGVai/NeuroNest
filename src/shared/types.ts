@@ -102,6 +102,8 @@ export interface PermissionRequest {
   agentId: string;
   input: unknown;
   riskLevel: RiskLevel;
+  /** Optional mode override from the calling context. When provided, takes precedence over agent/global modes. */
+  modeOverride?: PermissionMode;
 }
 
 export interface PermissionDecision {

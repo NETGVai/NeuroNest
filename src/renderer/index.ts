@@ -14187,9 +14187,8 @@ function renderSettings() {
 
   // Function to speak text using Supertonic ONNX TTS (with Web Speech API fallback)
   window._speakText = function(text) {
-    // Check both local and window-level flag (inspector toggle sets window._voiceEnabled)
-    var isEnabled = _voiceEnabled || window._voiceEnabled;
-    if (!isEnabled || !text || text.length < 5) return;
+    // Only speak when voice is explicitly enabled via the settings toggle
+    if (!window._voiceEnabled || !text || text.length < 5) return;
 
     // Queue mechanism: don't overlap audio
     _voiceQueue.push(text);

@@ -3,13 +3,15 @@
  *
  * Supports registering hooks at key lifecycle points in the agent pipeline:
  * before-tool-call, after-tool-call, before-llm-call, after-llm-call,
- * on-error, on-task-complete.
+ * on-error, on-task-complete, on-drift-signal.
  *
  * Hooks execute in registration order. A throwing hook is caught and logged
  * without interrupting subsequent hooks or the pipeline itself.
  *
- * Requirements: 12.1, 12.2, 12.3, 12.4
+ * Requirements: 12.1, 12.2, 12.3, 12.4, 6.4
  */
+
+import type { DriftSignal } from '../drift/drift-signal.js';
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -20,7 +22,8 @@ export type LifecycleEvent =
   | 'before-llm-call'
   | 'after-llm-call'
   | 'on-error'
-  | 'on-task-complete';
+  | 'on-task-complete'
+  | 'on-drift-signal';
 
 /** Context passed to each hook callback when a lifecycle event fires. */
 export interface HookContext {
@@ -34,6 +37,8 @@ export interface HookContext {
   output?: unknown;
   /** Error object (relevant for on-error events). */
   error?: Error;
+  /** Drift signal data (only for on-drift-signal events). */
+  driftSignal?: DriftSignal;
   /** Session identifier for the current agent session. */
   sessionId: string;
   /** Current iteration number within the agent loop. */
@@ -45,13 +50,14 @@ export type HookCallback = (context: HookContext) => void | Promise<void>;
 
 // ─── All supported lifecycle events (for validation) ────────────
 
-const LIFECYCLE_EVENTS: ReadonlySet<LifecycleEvent> = new Set([
+const LIFECYCLE_EVENTS: ReadonlySet<LifecycleEvent> = new Set<LifecycleEvent>([
   'before-tool-call',
   'after-tool-call',
   'before-llm-call',
   'after-llm-call',
   'on-error',
   'on-task-complete',
+  'on-drift-signal',
 ]);
 
 // ─── CallbackEngine ─────────────────────────────────────────────

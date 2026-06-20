@@ -37,6 +37,8 @@ import * as specMessageMode from './migrations/032-spec-message-mode.js';
 import * as secretsV2 from './migrations/033-secrets-v2.js';
 import * as multiChatSessions from './migrations/034-multi-chat-sessions.js';
 import * as agentLoopMetrics from './migrations/035-agent-loop-metrics.js';
+import * as featureIntegration from './migrations/036-feature-integration.js';
+import * as traceProvenanceColumns from './migrations/037-trace-provenance-columns.js';
 
 export interface Migration {
   version: number;
@@ -44,7 +46,7 @@ export interface Migration {
   up: (db: Database.Database) => void;
 }
 
-const migrations: Migration[] = [initialSchema, skillsSchema, multicaIntegration, agentSkillsIntegration, costRecords, securityScans, longTermMemory, sandboxSessions, mcpServers, memoryFts, diffReview, multiSession, extensions, newFeatures, plandexFeatures, advancedFeatures, remainingFeatures, gooseFeatures, sentruxFeatures, sreFeatures, helmorFeatures, factoryFeatures, coderFeatures, groundingAudit, incrementalIndexing, chatMessagesOverflow, runtimeSandboxGuardrails, errorSizeSamples, pipelineEvents, metricSamples, errorSizeSamplesBackfill, specMessageMode, secretsV2, multiChatSessions, agentLoopMetrics];
+const migrations: Migration[] = [initialSchema, skillsSchema, multicaIntegration, agentSkillsIntegration, costRecords, securityScans, longTermMemory, sandboxSessions, mcpServers, memoryFts, diffReview, multiSession, extensions, newFeatures, plandexFeatures, advancedFeatures, remainingFeatures, gooseFeatures, sentruxFeatures, sreFeatures, helmorFeatures, factoryFeatures, coderFeatures, groundingAudit, incrementalIndexing, chatMessagesOverflow, runtimeSandboxGuardrails, errorSizeSamples, pipelineEvents, metricSamples, errorSizeSamplesBackfill, specMessageMode, secretsV2, multiChatSessions, agentLoopMetrics, featureIntegration, traceProvenanceColumns];
 
 /**
  * Returns the default database path: ~/.ai-superagent/data.db

@@ -10219,6 +10219,13 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
   ipcMain.handle('voice:synthesize', async (_ev: unknown, args: unknown): Promise<VoiceSynthesizeResult> => {
     if (!isVoiceSynthesizeArgs(args)) return { success: false, error: 'Invalid arguments' };
     const v = args as VoiceSynthesizeArgs;
+
+    // Gate: refuse synthesis if voice is disabled in settings (Requirement: audio only plays when enabled)
+    const voiceEnabledSetting = getCachedConfig('voice-enabled');
+    if (voiceEnabledSetting !== 'true') {
+      return { success: false, error: 'Voice is disabled' };
+    }
+
     try {
       const { stripMarkdownForTTS, getVoiceModelsDir, areModelsReady } = require('../voice/tts-engine');
       const { SupertonicTTS } = require('../voice/supertonic-tts');
@@ -10264,7 +10271,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
       const speed = v.speed || parseFloat(getCachedConfig('voice-speed') || '1.05');
       const lang = v.lang || 'en';
 
-      const wavBuffer = await (global as any)._supertonicTTS.synthesize(cleanText, lang, voiceStyle, speed, 6);
+      const wavBuffer = await (global as any)._supertonicTTS.synthesize(cleanText, lang, voiceStyle, speed, 8);
 
       return { success: true, audio: wavBuffer.toString('base64'), sampleRate: (global as any)._supertonicTTS.sampleRate, useWebSpeech: false };
     } catch (err: any) {

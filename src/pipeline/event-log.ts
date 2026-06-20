@@ -69,7 +69,10 @@ export type EventKind =
   | 'error.captured'
   | 'checkpoint.created'
   | 'checkpoint.restored'
-  | 'tool.batch';
+  | 'tool.batch'
+  | 'trace.started'
+  | 'trace.entry'
+  | 'trace.completed';
 
 /**
  * The shape returned by `getEventsSince`. Mirrors the `pipeline_events`
