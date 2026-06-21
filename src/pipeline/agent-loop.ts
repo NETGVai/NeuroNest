@@ -25,6 +25,40 @@ import type { VisionAnalyzerService } from '../vision/vision-analyzer-service.js
 import { FeatureError } from '../shared/feature-integration-errors.js';
 import { DriftMonitor } from '../drift/drift-monitor.js';
 import type { DriftConfig } from '../drift/drift-config.js';
+import { FeatureGateSystem } from '../feature-gate/feature-gate-system.js';
+import type { FeatureGateFlags } from '../feature-gate/feature-gate-config.js';
+import type { SuperagentConfig } from '../feature-gate/superagent-config.js';
+import { CostTrackingService } from '../observability/cost-tracking-service.js';
+import { CheckpointService } from '../durability/checkpoint-service.js';
+import type { CheckpointData } from '../durability/checkpoint-service.js';
+import { SpecialistRoleLoader } from '../orchestration/specialist-role-loader.js';
+import { VulnerabilityBlocker } from '../security/vulnerability-blocker.js';
+import { SupplyChainDetector } from '../security/supply-chain-detector.js';
+import { DependencyGroundingService } from '../intelligence/dependency-grounding.js';
+import { MemoryStore } from '../intelligence/memory-store.js';
+import { LSPBridge } from '../intelligence/lsp-bridge.js';
+import { CredentialVault } from '../security/credential-vault.js';
+import { ModelRouter } from '../routing/model-router.js';
+import { BehavioralRulesEngine } from '../intelligence/behavioral-rules-engine.js';
+import { WorktreeIsolation } from '../orchestration/worktree-isolation.js';
+import { ASTLockManager } from '../orchestration/ast-lock-manager.js';
+import { ProviderFailover } from '../routing/provider-failover.js';
+import { ParallelAgentExecutor } from '../orchestration/parallel-agent-executor.js';
+import { CompletionCouncil } from '../orchestration/completion-council.js';
+import { ContainerSandbox } from '../security/container-sandbox.js';
+import { TraceVisualizationService } from '../observability/trace-visualization-service.js';
+import { HeadlessMode } from '../durability/headless-mode.js';
+import { SchedulerService } from '../durability/scheduler-service.js';
+import { KanbanStateManager } from '../devex/kanban-state-manager.js';
+import { ProvenanceTracker } from '../devex/provenance-tracker.js';
+import { SkillExtractor } from '../devex/skill-extractor.js';
+import { RemoteAccessBridge } from '../devex/remote-access-bridge.js';
+import { VoiceIOService } from '../devex/voice-io-service.js';
+import { RepoReadinessScanner } from '../intelligence/repo-readiness-scanner.js';
+import { ComplianceGateRunner } from '../devex/compliance-gate-runner.js';
+import { WasmSandbox } from '../security/wasm-sandbox.js';
+import { BrowserAutomation } from '../devex/browser-automation.js';
+import { BackpropagationEngine } from '../intelligence/backpropagation-engine.js';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 
@@ -108,8 +142,12 @@ export interface AgentLoopConfig {
   ipcSend?: (channel: string, data: unknown) => void;
   /** Optional drift management configuration (all drift features are opt-in) */
   driftConfig?: DriftConfig;
+  /** Optional Superagent configuration — enables feature gate system and subsystems (Req 0.1-0.6) */
+  superagentConfig?: SuperagentConfig;
   onProgress?: (update: LoopProgress) => void;
   onPlanReady?: (plan: ExecutionPlan) => Promise<PlanApprovalResult>;
+  /** Optional callback invoked when budget is exceeded — returns true to continue, false to stop (Req 1.4) */
+  onBudgetExceeded?: (info: { sessionCostUsd: number; dailyCostUsd: number; limitUsd: number; message: string }) => Promise<boolean>;
 }
 
 /** Progress update emitted on each iteration */
@@ -388,12 +426,653 @@ export async function runSmartContextSelection(
 
 export class AgentLoopController {
   private config: AgentLoopConfig;
+  /** Feature gate system — null when no superagentConfig is provided (zero-overhead path, Req 0.2, 0.6) */
+  private featureGate: FeatureGateSystem | null = null;
+  /** Cost tracking service — null when cost_tracking feature gate is disabled (Req 1.1, 1.6) */
+  private costTrackingService: CostTrackingService | null = null;
+  /** Checkpoint service — null when checkpoint feature gate is disabled (Req 2.1, 2.5, 2.6, 2.7) */
+  private checkpointService: CheckpointService | null = null;
+  /** Specialist role loader — null when specialist_roles feature gate is disabled (Req 15.1, 15.6) */
+  private specialistRoleLoader: SpecialistRoleLoader | null = null;
+  /** Vulnerability blocker — null when vulnerability_blocking feature gate is disabled (Req 3.1, 3.7) */
+  private vulnerabilityBlocker: VulnerabilityBlocker | null = null;
+  /** Supply chain detector — null when supply_chain_detection feature gate is disabled (Req 14.1, 14.6) */
+  private supplyChainDetector: SupplyChainDetector | null = null;
+  /** Dependency grounding service — null when dependency_grounding feature gate is disabled (Req 4.1, 4.6) */
+  private dependencyGroundingService: DependencyGroundingService | null = null;
+  /** Memory store — null when memory_persistence feature gate is disabled (Req 5.1, 5.7) */
+  private memoryStore: MemoryStore | null = null;
+  /** LSP bridge — null when lsp_intelligence feature gate is disabled (Req 6.1, 6.6) */
+  private lspBridge: LSPBridge | null = null;
+  /** Credential vault — null when credential_vault feature gate is disabled (Req 9.1, 9.7) */
+  private credentialVault: CredentialVault | null = null;
+  /** Model router — null when model_routing feature gate is disabled (Req 10.1, 10.6) */
+  private modelRouter: ModelRouter | null = null;
+  /** Behavioral rules engine — null when self_improvement feature gate is disabled (Req 11.1, 11.6) */
+  private behavioralRulesEngine: BehavioralRulesEngine | null = null;
+  /** Worktree isolation — null when worktree_isolation feature gate is disabled (Req 7.1, 7.6) */
+  private worktreeIsolation: WorktreeIsolation | null = null;
+  /** AST lock manager — null when ast_locking feature gate is disabled (Req 8.1, 8.7, 8.8) */
+  private astLockManager: ASTLockManager | null = null;
+  /** Provider failover — null when provider_failover feature gate is disabled (Req 17.1, 17.6) */
+  private providerFailover: ProviderFailover | null = null;
+  /** Parallel agent executor — null when parallel_agents feature gate is disabled (Req 13.1, 13.7) */
+  private parallelAgentExecutor: ParallelAgentExecutor | null = null;
+  /** Completion council — null when completion_council feature gate is disabled (Req 16.1, 16.6) */
+  private completionCouncil: CompletionCouncil | null = null;
+  /** Container sandbox — null when sandbox feature gate is disabled (Req 18.1, 18.7) */
+  private containerSandbox: ContainerSandbox | null = null;
+  /** Trace visualization service — null when trace_visualization feature gate is disabled (Req 12.1, 12.7) */
+  private traceVisualizationService: TraceVisualizationService | null = null;
+  /** Headless mode — null when headless_mode feature gate is disabled (Req 19.1, 19.6) */
+  private headlessMode: typeof HeadlessMode | null = null;
+  /** Scheduler service — null when scheduled_tasks feature gate is disabled (Req 22.1, 22.6) */
+  private schedulerService: SchedulerService | null = null;
+  /** Kanban state manager — null when kanban_board feature gate is disabled (Req 25.1, 25.6) */
+  private kanbanStateManager: KanbanStateManager | null = null;
+  /** Provenance tracker — null when provenance_tracking feature gate is disabled (Req 20.1, 20.6) */
+  private provenanceTracker: ProvenanceTracker | null = null;
+  /** Skill extractor — null when skill_creation feature gate is disabled (Req 21.1, 21.6) */
+  private skillExtractor: SkillExtractor | null = null;
+  /** Remote access bridge — null when remote_access feature gate is disabled (Req 23.1, 23.6) */
+  private remoteAccessBridge: RemoteAccessBridge | null = null;
+  /** Voice IO service — null when voice_io feature gate is disabled (Req 24.1, 24.6) */
+  private voiceIOService: VoiceIOService | null = null;
+  /** Repo readiness scanner — null when repo_readiness feature gate is disabled (Req 26.1, 26.6) */
+  private repoReadinessScanner: RepoReadinessScanner | null = null;
+  /** Compliance gate runner — null when compliance_gates feature gate is disabled (Req 27.1, 27.6) */
+  private complianceGateRunner: ComplianceGateRunner | null = null;
+  /** WASM sandbox — null when wasm_sandbox feature gate is disabled (Req 28.1, 28.6) */
+  private wasmSandbox: WasmSandbox | null = null;
+  /** Browser automation — null when browser_automation feature gate is disabled (Req 29.1, 29.6) */
+  private browserAutomation: BrowserAutomation | null = null;
+  /** Backpropagation engine — null when backpropagation feature gate is disabled (Req 30.1, 30.6) */
+  private backpropagationEngine: BackpropagationEngine | null = null;
 
   constructor(config: AgentLoopConfig) {
     this.config = {
       ...config,
       maxIterations: config.maxIterations ?? 25,
     };
+
+    // ─── Feature Gate: instantiate only when superagentConfig is present (Req 0.2, 0.6) ───
+    // When superagentConfig is absent, featureGate remains null and all gate checks
+    // short-circuit via null-check with zero overhead.
+    if (config.superagentConfig) {
+      try {
+        this.featureGate = new FeatureGateSystem(config.superagentConfig.flags ?? {});
+        this.featureGate.resolve();
+      } catch (err) {
+        // If configuration resolution fails (invalid combos), log and leave gate null
+        // This preserves backward compatibility — the loop operates without gates
+        console.error('[FeatureGate] Configuration resolution failed:', err);
+        this.featureGate = null;
+      }
+    }
+
+    // ─── Cost Tracking: instantiate when cost_tracking feature gate is enabled (Req 1.1, 1.6) ───
+    if (this.isFeatureEnabled('cost_tracking')) {
+      const costConfig = config.superagentConfig?.costTracking;
+      this.costTrackingService = new CostTrackingService(
+        costConfig?.pricingTablePath ?? null,
+        {
+          sessionLimitUsd: costConfig?.sessionLimitUsd ?? 10.0,
+          dailyLimitUsd: costConfig?.dailyLimitUsd ?? 50.0,
+          warningThreshold: costConfig?.warningThreshold ?? 0.8,
+        },
+        (config.callbackEngine as import('../pipeline/callback-engine.js').CallbackEngine) ?? null,
+        config.executionTraceService ?? null,
+      );
+    }
+
+    // ─── Checkpoint: instantiate when checkpoint feature gate is enabled (Req 2.1, 2.5, 2.6, 2.7) ───
+    if (this.isFeatureEnabled('checkpoint')) {
+      const ckptConfig = config.superagentConfig?.checkpoint;
+      this.checkpointService = new CheckpointService({
+        directory: ckptConfig?.directory ?? '.neuronest/checkpoints',
+        maxDiskUsageMb: ckptConfig?.maxDiskUsageMb ?? 500,
+        currentSchemaVersion: 3,
+      });
+    }
+
+    // ─── Specialist Roles: instantiate when specialist_roles feature gate is enabled (Req 15.1, 15.4, 15.6) ───
+    if (this.isFeatureEnabled('specialist_roles')) {
+      const rolesConfig = config.superagentConfig?.specialistRoles;
+      const customRoles = rolesConfig?.customRoles ?? [];
+      this.specialistRoleLoader = new SpecialistRoleLoader(customRoles);
+    }
+
+    // ─── Vulnerability Blocker: instantiate when vulnerability_blocking feature gate is enabled (Req 3.1, 3.7) ───
+    if (this.isFeatureEnabled('vulnerability_blocking')) {
+      const vulnConfig = config.superagentConfig?.vulnerabilityBlocking;
+      const vulnBlockerOptions: import('../security/vulnerability-blocker.js').VulnBlockerConfig = {
+        primaryApiUrl: 'https://api.osv.dev/v1/query',
+        cacheTtlHours: vulnConfig?.cacheTtlHours ?? 24,
+        cacheDir: path.join(config.projectDir, '.neuronest', 'vuln-cache'),
+      };
+      if (vulnConfig?.fallbackDatabaseUrl) {
+        vulnBlockerOptions.fallbackApiUrl = vulnConfig.fallbackDatabaseUrl;
+      }
+      this.vulnerabilityBlocker = new VulnerabilityBlocker(vulnBlockerOptions);
+    }
+
+    // ─── Supply Chain Detector: instantiate when supply_chain_detection feature gate is enabled (Req 14.1, 14.6) ───
+    if (this.isFeatureEnabled('supply_chain_detection')) {
+      this.supplyChainDetector = new SupplyChainDetector({
+        allowlistPath: path.join(config.projectDir, '.neuronest', 'package-allowlist.json'),
+        popularPackagesPath: path.join(config.projectDir, '.neuronest', 'popular-packages.json'),
+        editDistanceThreshold: 2,
+      });
+    }
+
+    // ─── Dependency Grounding: instantiate when dependency_grounding feature gate is enabled (Req 4.1, 4.6) ───
+    if (this.isFeatureEnabled('dependency_grounding')) {
+      const groundingConfig = config.superagentConfig?.dependencyGrounding;
+      this.dependencyGroundingService = new DependencyGroundingService({
+        cacheDir: path.join(config.projectDir, '.neuronest', 'doc-cache'),
+        cacheTtlDays: groundingConfig?.cacheTtlDays ?? 7,
+        maxCacheSizeMb: groundingConfig?.maxCacheSizeMb ?? 200,
+      });
+    }
+
+    // ─── Memory Store: instantiate when memory_persistence feature gate is enabled (Req 5.1, 5.7) ───
+    if (this.isFeatureEnabled('memory_persistence')) {
+      const memConfig = config.superagentConfig?.memoryPersistence;
+      this.memoryStore = new MemoryStore({
+        directory: memConfig?.directory ?? path.join(config.projectDir, '.neuronest', 'memory'),
+        maxFileSizeKb: memConfig?.maxFileSizeKb ?? 50,
+        totalBudgetMb: memConfig?.totalDiskBudgetMb ?? 10,
+      });
+    }
+
+    // ─── LSP Bridge: instantiate when lsp_intelligence feature gate is enabled (Req 6.1, 6.6) ───
+    if (this.isFeatureEnabled('lsp_intelligence')) {
+      this.lspBridge = new LSPBridge(config.projectDir);
+    }
+
+    // ─── Credential Vault: instantiate when credential_vault feature gate is enabled (Req 9.1, 9.7) ───
+    if (this.isFeatureEnabled('credential_vault')) {
+      const vaultConfig = config.superagentConfig?.credentialVault;
+      this.credentialVault = new CredentialVault({
+        storePath: path.join(config.projectDir, '.neuronest', 'vault'),
+        keyDerivation: vaultConfig?.keySource ?? 'os-keychain',
+        encryption: 'aes-256-gcm',
+      });
+    }
+
+    // ─── Model Router: instantiate when model_routing feature gate is enabled (Req 10.1, 10.6) ───
+    if (this.isFeatureEnabled('model_routing')) {
+      const routingConfig = config.superagentConfig?.modelRouting;
+      type RT = import('../routing/model-router.js').RoutingTable;
+      type RTE = import('../routing/model-router.js').RoutingTableEntry;
+      const entries: RTE[] = [];
+      // Build routing table from user config if available
+      if (routingConfig?.routingTable) {
+        for (const [taskType, providers] of Object.entries(routingConfig.routingTable)) {
+          entries.push({
+            taskType: taskType as import('../routing/model-router.js').TaskType,
+            providers: providers.map((p, idx) => ({
+              providerId: p.provider,
+              model: p.model,
+              priority: idx,
+            })),
+          });
+        }
+      }
+      const defaultTable: RT = {
+        entries,
+        defaultProvider: { providerId: 'default', model: 'default' },
+      };
+      this.modelRouter = new ModelRouter(defaultTable);
+    }
+
+    // ─── Behavioral Rules Engine: instantiate when self_improvement feature gate is enabled (Req 11.1, 11.6) ───
+    if (this.isFeatureEnabled('self_improvement')) {
+      const rulesConfig = config.superagentConfig?.selfImprovement;
+      this.behavioralRulesEngine = new BehavioralRulesEngine(
+        rulesConfig?.rulesFilePath ?? path.join(config.projectDir, '.neuronest', 'behavioral-rules.md'),
+        config.executionTraceService ?? null,
+      );
+    }
+
+    // ─── Worktree Isolation: instantiate when worktree_isolation feature gate is enabled (Req 7.1, 7.6) ───
+    if (this.isFeatureEnabled('worktree_isolation')) {
+      this.worktreeIsolation = new WorktreeIsolation(config.projectDir);
+    }
+
+    // ─── AST Lock Manager: instantiate when ast_locking feature gate is enabled (Req 8.1, 8.7, 8.8) ───
+    if (this.isFeatureEnabled('ast_locking')) {
+      const lockConfig = config.superagentConfig?.astLocking;
+      const parallelEnabled = this.isFeatureEnabled('parallel_agents') || this.isFeatureEnabled('worktree_isolation');
+      this.astLockManager = new ASTLockManager(
+        (lockConfig?.lockTimeoutSeconds ?? 300) * 1000,
+        parallelEnabled,
+      );
+    }
+
+    // ─── Provider Failover: instantiate when provider_failover feature gate is enabled (Req 17.1, 17.6) ───
+    if (this.isFeatureEnabled('provider_failover')) {
+      const failoverConfig = config.superagentConfig?.providerFailover;
+      this.providerFailover = new ProviderFailover(
+        {
+          initialBackoffMs: failoverConfig?.initialBackoffMs ?? 1000,
+          maxBackoffMs: failoverConfig?.maxBackoffMs ?? 30000,
+          backoffFactor: failoverConfig?.backoffFactor ?? 2,
+        },
+        (config.callbackEngine as import('../pipeline/callback-engine.js').CallbackEngine) ?? null,
+        this.modelRouter,
+      );
+    }
+
+    // ─── Parallel Agent Executor: instantiate when parallel_agents feature gate is enabled (Req 13.1, 13.7) ───
+    if (this.isFeatureEnabled('parallel_agents') && this.worktreeIsolation) {
+      const parallelConfig = config.superagentConfig?.parallelAgents;
+      this.parallelAgentExecutor = new ParallelAgentExecutor(
+        this.worktreeIsolation,
+        this.astLockManager,
+        parallelConfig?.maxConcurrent ?? 4,
+      );
+    }
+
+    // ─── Completion Council: instantiate when completion_council feature gate is enabled (Req 16.1, 16.6) ───
+    if (this.isFeatureEnabled('completion_council')) {
+      this.completionCouncil = new CompletionCouncil(
+        this.specialistRoleLoader,
+      );
+    }
+
+    // ─── Container Sandbox: instantiate when sandbox feature gate is enabled (Req 18.1, 18.7) ───
+    if (this.isFeatureEnabled('sandbox')) {
+      const sandboxConfig = config.superagentConfig?.sandbox;
+      this.containerSandbox = new ContainerSandbox({
+        cpuTimeMs: sandboxConfig?.cpuLimitMs ?? 30000,
+        memoryMb: sandboxConfig?.memoryLimitMb ?? 512,
+        diskMb: sandboxConfig?.diskLimitMb ?? 100,
+        networkPolicy: sandboxConfig?.networkPolicy === 'allowlist'
+          ? { allowlist: sandboxConfig?.allowedDomains ?? [] }
+          : 'deny-all',
+      });
+    }
+
+    // ─── Trace Visualization: instantiate when trace_visualization feature gate is enabled (Req 12.1, 12.7) ───
+    // Note: TraceVisualizationService requires a database instance — deferred to runtime
+    // when the ExecutionTraceService's DB is accessible. The field remains null until
+    // initialized via initTraceVisualization().
+
+    // ─── Headless Mode: reference available when headless_mode feature gate is enabled (Req 19.1, 19.6) ───
+    if (this.isFeatureEnabled('headless_mode')) {
+      this.headlessMode = HeadlessMode;
+    }
+
+    // ─── Kanban State Manager: instantiate when kanban_board feature gate is enabled (Req 25.1, 25.6) ───
+    if (this.isFeatureEnabled('kanban_board')) {
+      this.kanbanStateManager = new KanbanStateManager(
+        { completionCouncilEnabled: this.isFeatureEnabled('completion_council') },
+        config.ipcSend ?? undefined,
+      );
+    }
+  }
+
+  /**
+   * Check if a feature is enabled. Returns false when featureGate is null (zero-overhead path).
+   * This is the single guard method used by all subsystem integrations.
+   */
+  isFeatureEnabled(feature: keyof FeatureGateFlags): boolean {
+    return this.featureGate !== null && this.featureGate.isEnabled(feature);
+  }
+
+  /**
+   * Execute a feature-gated subsystem action with graceful degradation.
+   * If the action throws, the feature is disabled at runtime and the error is logged.
+   * The loop continues normal operation (Req 0.4).
+   *
+   * @param feature - The feature flag to check and potentially disable on error
+   * @param action - The async action to execute if the feature is enabled
+   * @param context - Optional context string for logging
+   * @returns The result of the action, or undefined if the feature is disabled or errored
+   */
+  async executeFeatureGuarded<T>(
+    feature: keyof FeatureGateFlags,
+    action: () => T | Promise<T>,
+    context?: string,
+  ): Promise<T | undefined> {
+    // Null-check short-circuit: zero overhead when gate is null or feature disabled
+    if (!this.featureGate || !this.featureGate.isEnabled(feature)) {
+      return undefined;
+    }
+
+    try {
+      return await action();
+    } catch (err) {
+      // Graceful degradation: disable feature, log, continue (Req 0.4)
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      this.featureGate.disableAtRuntime(feature, errorMessage);
+      console.error(
+        `[FeatureGate] Subsystem '${feature}' disabled due to unhandled error${context ? ` (${context})` : ''}: ${errorMessage}`,
+      );
+      return undefined;
+    }
+  }
+
+  /**
+   * Get the underlying FeatureGateSystem instance (for subsystem initialization).
+   * Returns null when no superagentConfig was provided.
+   */
+  getFeatureGate(): FeatureGateSystem | null {
+    return this.featureGate;
+  }
+
+  /**
+   * Get the CostTrackingService instance (for external integration/testing).
+   * Returns null when cost_tracking feature gate is disabled (Req 1.6).
+   */
+  getCostTrackingService(): CostTrackingService | null {
+    return this.costTrackingService;
+  }
+
+  /**
+   * Get the CheckpointService instance (for external integration/testing).
+   * Returns null when checkpoint feature gate is disabled (Req 2.7).
+   */
+  getCheckpointService(): CheckpointService | null {
+    return this.checkpointService;
+  }
+
+  /**
+   * Get the SpecialistRoleLoader instance (for external integration/testing).
+   * Returns null when specialist_roles feature gate is disabled (Req 15.6).
+   */
+  getSpecialistRoleLoader(): SpecialistRoleLoader | null {
+    return this.specialistRoleLoader;
+  }
+
+  /**
+   * Get the VulnerabilityBlocker instance (for ToolSystem interceptor integration).
+   * Returns null when vulnerability_blocking feature gate is disabled (Req 3.7).
+   */
+  getVulnerabilityBlocker(): VulnerabilityBlocker | null {
+    return this.vulnerabilityBlocker;
+  }
+
+  /**
+   * Get the SupplyChainDetector instance (for ToolSystem interceptor integration).
+   * Returns null when supply_chain_detection feature gate is disabled (Req 14.6).
+   */
+  getSupplyChainDetector(): SupplyChainDetector | null {
+    return this.supplyChainDetector;
+  }
+
+  /**
+   * Get the DependencyGroundingService instance.
+   * Returns null when dependency_grounding feature gate is disabled (Req 4.6).
+   */
+  getDependencyGroundingService(): DependencyGroundingService | null {
+    return this.dependencyGroundingService;
+  }
+
+  /**
+   * Get the MemoryStore instance.
+   * Returns null when memory_persistence feature gate is disabled (Req 5.7).
+   */
+  getMemoryStore(): MemoryStore | null {
+    return this.memoryStore;
+  }
+
+  /**
+   * Get the LSPBridge instance.
+   * Returns null when lsp_intelligence feature gate is disabled (Req 6.6).
+   */
+  getLSPBridge(): LSPBridge | null {
+    return this.lspBridge;
+  }
+
+  /**
+   * Get the CredentialVault instance.
+   * Returns null when credential_vault feature gate is disabled (Req 9.7).
+   */
+  getCredentialVault(): CredentialVault | null {
+    return this.credentialVault;
+  }
+
+  /**
+   * Get the ModelRouter instance.
+   * Returns null when model_routing feature gate is disabled (Req 10.6).
+   */
+  getModelRouter(): ModelRouter | null {
+    return this.modelRouter;
+  }
+
+  /**
+   * Get the BehavioralRulesEngine instance.
+   * Returns null when self_improvement feature gate is disabled (Req 11.6).
+   */
+  getBehavioralRulesEngine(): BehavioralRulesEngine | null {
+    return this.behavioralRulesEngine;
+  }
+
+  /**
+   * Get the WorktreeIsolation instance.
+   * Returns null when worktree_isolation feature gate is disabled (Req 7.6).
+   */
+  getWorktreeIsolation(): WorktreeIsolation | null {
+    return this.worktreeIsolation;
+  }
+
+  /**
+   * Get the ASTLockManager instance.
+   * Returns null when ast_locking feature gate is disabled (Req 8.7).
+   */
+  getASTLockManager(): ASTLockManager | null {
+    return this.astLockManager;
+  }
+
+  /**
+   * Get the ProviderFailover instance.
+   * Returns null when provider_failover feature gate is disabled (Req 17.6).
+   */
+  getProviderFailover(): ProviderFailover | null {
+    return this.providerFailover;
+  }
+
+  /**
+   * Get the ParallelAgentExecutor instance.
+   * Returns null when parallel_agents feature gate is disabled (Req 13.7).
+   */
+  getParallelAgentExecutor(): ParallelAgentExecutor | null {
+    return this.parallelAgentExecutor;
+  }
+
+  /**
+   * Get the CompletionCouncil instance.
+   * Returns null when completion_council feature gate is disabled (Req 16.6).
+   */
+  getCompletionCouncil(): CompletionCouncil | null {
+    return this.completionCouncil;
+  }
+
+  /**
+   * Get the ContainerSandbox instance.
+   * Returns null when sandbox feature gate is disabled (Req 18.7).
+   */
+  getContainerSandbox(): ContainerSandbox | null {
+    return this.containerSandbox;
+  }
+
+  /**
+   * Get the TraceVisualizationService instance.
+   * Returns null when trace_visualization feature gate is disabled (Req 12.7).
+   */
+  getTraceVisualizationService(): TraceVisualizationService | null {
+    return this.traceVisualizationService;
+  }
+
+  /**
+   * Get the HeadlessMode class reference.
+   * Returns null when headless_mode feature gate is disabled (Req 19.6).
+   */
+  getHeadlessMode(): typeof HeadlessMode | null {
+    return this.headlessMode;
+  }
+
+  /**
+   * Get the SchedulerService instance.
+   * Returns null when scheduled_tasks feature gate is disabled (Req 22.6).
+   */
+  getSchedulerService(): SchedulerService | null {
+    return this.schedulerService;
+  }
+
+  /**
+   * Get the KanbanStateManager instance.
+   * Returns null when kanban_board feature gate is disabled (Req 25.6).
+   */
+  getKanbanStateManager(): KanbanStateManager | null {
+    return this.kanbanStateManager;
+  }
+
+  /**
+   * Get the ProvenanceTracker instance.
+   * Returns null when provenance_tracking feature gate is disabled (Req 20.6).
+   */
+  getProvenanceTracker(): ProvenanceTracker | null {
+    return this.provenanceTracker;
+  }
+
+  /**
+   * Get the SkillExtractor instance.
+   * Returns null when skill_creation feature gate is disabled (Req 21.6).
+   */
+  getSkillExtractor(): SkillExtractor | null {
+    return this.skillExtractor;
+  }
+
+  /**
+   * Get the RemoteAccessBridge instance.
+   * Returns null when remote_access feature gate is disabled (Req 23.6).
+   */
+  getRemoteAccessBridge(): RemoteAccessBridge | null {
+    return this.remoteAccessBridge;
+  }
+
+  /**
+   * Get the VoiceIOService instance.
+   * Returns null when voice_io feature gate is disabled (Req 24.6).
+   */
+  getVoiceIOService(): VoiceIOService | null {
+    return this.voiceIOService;
+  }
+
+  /**
+   * Get the RepoReadinessScanner instance.
+   * Returns null when repo_readiness feature gate is disabled (Req 26.6).
+   */
+  getRepoReadinessScanner(): RepoReadinessScanner | null {
+    return this.repoReadinessScanner;
+  }
+
+  /**
+   * Get the ComplianceGateRunner instance.
+   * Returns null when compliance_gates feature gate is disabled (Req 27.6).
+   */
+  getComplianceGateRunner(): ComplianceGateRunner | null {
+    return this.complianceGateRunner;
+  }
+
+  /**
+   * Get the WasmSandbox instance.
+   * Returns null when wasm_sandbox feature gate is disabled (Req 28.6).
+   */
+  getWasmSandbox(): WasmSandbox | null {
+    return this.wasmSandbox;
+  }
+
+  /**
+   * Get the BrowserAutomation instance.
+   * Returns null when browser_automation feature gate is disabled (Req 29.6).
+   */
+  getBrowserAutomation(): BrowserAutomation | null {
+    return this.browserAutomation;
+  }
+
+  /**
+   * Get the BackpropagationEngine instance.
+   * Returns null when backpropagation feature gate is disabled (Req 30.6).
+   */
+  getBackpropagationEngine(): BackpropagationEngine | null {
+    return this.backpropagationEngine;
+  }
+
+  /**
+   * Gracefully suspend (sleep) the agent session by writing a final checkpoint.
+   * Persists the full agent state including conversation history, plan progress,
+   * file changes, and iteration count so the session can be resumed later.
+   *
+   * Returns the checkpoint file path if successful, null if checkpoint is disabled or fails.
+   *
+   * Requirements: 2.5, 2.6
+   */
+  async suspend(state: {
+    conversationHistory: AgentMessage[];
+    planProgress: { completedSteps: number[]; pendingSteps: number[] };
+    filesModified: string[];
+    iterationCount: number;
+  }): Promise<string | null> {
+    if (!this.checkpointService || !this.isFeatureEnabled('checkpoint')) {
+      return null;
+    }
+
+    const result = await this.executeFeatureGuarded('checkpoint', async () => {
+      const data: CheckpointData = {
+        schemaVersion: 3,
+        sessionId: this.config.sessionId,
+        timestamp: new Date().toISOString(),
+        conversationHistory: state.conversationHistory,
+        planProgress: state.planProgress,
+        fileChangeManifest: state.filesModified,
+        iterationCount: state.iterationCount,
+        customState: { suspended: true },
+      };
+      const filePath = await this.checkpointService!.save(data);
+      await this.checkpointService!.enforceQuota();
+      return filePath;
+    }, 'checkpoint-suspend');
+
+    return result ?? null;
+  }
+
+  /**
+   * Resume (wake) a previously suspended session by loading the latest checkpoint.
+   * Restores conversation history, plan progress, file changes, and iteration count
+   * so execution can continue from the next pending step.
+   *
+   * Returns the restored checkpoint data if successful, null if not found or disabled.
+   *
+   * Requirements: 2.2, 2.6
+   */
+  async resume(sessionId: string): Promise<{
+    conversationHistory: unknown[];
+    planProgress: { completedSteps: number[]; pendingSteps: number[] };
+    filesModified: string[];
+    iterationCount: number;
+  } | null> {
+    if (!this.checkpointService || !this.isFeatureEnabled('checkpoint')) {
+      return null;
+    }
+
+    const result = await this.executeFeatureGuarded('checkpoint', async () => {
+      const data = await this.checkpointService!.restore(sessionId);
+      if (!data) {
+        return null;
+      }
+      return {
+        conversationHistory: data.conversationHistory,
+        planProgress: data.planProgress,
+        filesModified: data.fileChangeManifest,
+        iterationCount: data.iterationCount,
+      };
+    }, 'checkpoint-resume');
+
+    return result ?? null;
   }
 
   /**
@@ -965,6 +1644,63 @@ export class AgentLoopController {
         tokenUsage.totalTokens += response.usage.totalTokens;
       }
 
+      // ─── Cost Tracking: record usage after each LLM call (Req 1.1, 1.6) ───
+      if (response.usage && this.costTrackingService) {
+        const costResult = await this.executeFeatureGuarded('cost_tracking', () => {
+          const result = this.costTrackingService!.recordUsage(
+            { promptTokens: response.usage!.promptTokens, completionTokens: response.usage!.completionTokens, totalTokens: response.usage!.totalTokens, estimatedCost: 0 },
+            'unknown', // model is not directly available here; consumers should pass it
+            'unknown', // provider is not directly available here
+          );
+          // Update estimated cost on the token usage
+          tokenUsage.estimatedCost = this.costTrackingService!.getSessionCost();
+          return result;
+        }, 'cost-tracking-after-llm-call');
+
+        // ─── Budget Exceeded: pause execution and request user confirmation (Req 1.4) ───
+        if (costResult?.budgetExceeded && this.config.onBudgetExceeded) {
+          const sessionCost = this.costTrackingService.getSessionCost();
+          const dailyCost = this.costTrackingService.getDailyCost();
+          const limitUsd = costResult.dailyBudgetExceeded
+            ? this.config.superagentConfig?.costTracking?.dailyLimitUsd ?? 50.0
+            : this.config.superagentConfig?.costTracking?.sessionLimitUsd ?? 10.0;
+          const message = costResult.dailyBudgetExceeded
+            ? `Daily budget limit ($${limitUsd.toFixed(2)}) reached. Current daily cost: $${dailyCost.toFixed(4)}.`
+            : `Session budget limit ($${limitUsd.toFixed(2)}) reached. Current session cost: $${sessionCost.toFixed(4)}.`;
+
+          const shouldContinue = await this.config.onBudgetExceeded({
+            sessionCostUsd: sessionCost,
+            dailyCostUsd: dailyCost,
+            limitUsd,
+            message,
+          });
+
+          if (!shouldContinue) {
+            // User declined to continue — return current results
+            onProgress?.({ iteration, maxIterations, status: 'complete' });
+            if (executionTraceService && traceId) {
+              executionTraceService.addEntry(traceId, {
+                timestamp: new Date().toISOString(),
+                type: 'result',
+                result: { budgetExceeded: true, userDeclinedContinuation: true },
+              });
+              await executionTraceService.completeTrace(traceId);
+            }
+            return {
+              response: `⚠️ Budget limit reached ($${limitUsd.toFixed(2)}). Execution paused by user.\n\n${response.content || ''}`,
+              toolCallsExecuted,
+              iterations: iteration,
+              tokenUsage,
+              filesModified,
+              autoTuning: autoTuningResult ?? undefined,
+              traceId,
+              artifactIds: artifactIds.length > 0 ? artifactIds : undefined,
+              ...(driftMonitor ? { driftConfidence: driftMonitor.getState().confidence, driftSignalCount: driftMonitor.getState().signals.length } : {}),
+            };
+          }
+        }
+      }
+
       // Check if response contains tool calls
       if (!response.tool_calls || response.tool_calls.length === 0) {
         // No tool calls — LLM produced a final answer
@@ -1164,6 +1900,20 @@ export class AgentLoopController {
 
         toolCallsExecuted++;
       }
+
+      // ─── Checkpoint: save state after each tool execution cycle (Req 2.1, 2.5, 2.7) ───
+      await this.executeFeatureGuarded('checkpoint', () => {
+        return this.checkpointService!.save({
+          schemaVersion: 3,
+          sessionId,
+          timestamp: new Date().toISOString(),
+          conversationHistory: messages,
+          planProgress: { completedSteps: Array.from({ length: toolCallsExecuted }, (_, i) => i), pendingSteps: [] },
+          fileChangeManifest: filesModified,
+          iterationCount: iteration,
+          customState: {},
+        });
+      }, 'checkpoint-after-tool-cycle');
     }
 
     // Max iterations reached — return partial results
