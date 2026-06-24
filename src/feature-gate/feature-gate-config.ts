@@ -41,6 +41,12 @@ export interface FeatureGateFlags {
   wasm_sandbox: boolean;
   browser_automation: boolean;
   backpropagation: boolean;
+  runtimesecurity_hackability_scoring: boolean;
+  runtimesecurity_threat_modeling: boolean;
+  runtimesecurity_realtime_analysis: boolean;
+  runtimesecurity_attack_path_mapping: boolean;
+  runtimesecurity_evidence_store: boolean;
+  runtimesecurity_ai_security_rules: boolean;
 }
 
 /** Default flags — all disabled */
@@ -75,6 +81,12 @@ export const DEFAULT_FEATURE_FLAGS: FeatureGateFlags = {
   wasm_sandbox: false,
   browser_automation: false,
   backpropagation: false,
+  runtimesecurity_hackability_scoring: false,
+  runtimesecurity_threat_modeling: false,
+  runtimesecurity_realtime_analysis: false,
+  runtimesecurity_attack_path_mapping: false,
+  runtimesecurity_evidence_store: false,
+  runtimesecurity_ai_security_rules: false,
 };
 
 // ─── Dependency Declarations ────────────────────────────────────
@@ -115,6 +127,21 @@ export const FEATURE_DEPENDENCIES: FeatureDependency[] = [
   {
     feature: 'sandbox',
     incompatible: ['wasm_sandbox'],
+  },
+];
+
+/**
+ * Runtime security feature dependency declarations.
+ *
+ * attack_path_mapping requires hackability_scoring because attack paths
+ * are correlated from hackability scoring findings.
+ *
+ * Requirements: 1.10
+ */
+export const RUNTIME_SECURITY_DEPENDENCIES: FeatureDependency[] = [
+  {
+    feature: 'runtimesecurity_attack_path_mapping',
+    requires: ['runtimesecurity_hackability_scoring'],
   },
 ];
 

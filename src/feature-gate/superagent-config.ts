@@ -12,6 +12,7 @@
  */
 
 import type { FeatureGateFlags } from './feature-gate-config.js';
+import type { ThreatModelProfile } from '../runtime-security/threat-modeler.js';
 
 // ─── Subsystem-specific config blocks ───────────────────────────
 
@@ -119,6 +120,41 @@ export interface SpecialistRolesConfig {
   }[];
 }
 
+// ─── Runtime Security subsystem config blocks (Req 8.1, 8.2) ───
+
+/** Configuration for hackability scoring runtime security subsystem */
+export interface RuntimeSecurityHackabilityConfig {
+  configPath?: string;           // default: '.neuronest-hackability.json'
+  criticalThreshold?: number;    // default: 75
+  warningThreshold?: number;     // default: 40
+}
+
+/** Configuration for AI-aware threat modeling runtime security subsystem */
+export interface RuntimeSecurityThreatModelingConfig {
+  profile?: ThreatModelProfile;
+}
+
+/** Configuration for real-time code analysis runtime security subsystem */
+export interface RuntimeSecurityRealtimeConfig {
+  maxLatencyMs?: number;         // default: 200
+  blockOnCriticalOnly?: boolean; // default: false
+}
+
+/** Configuration for attack path mapping runtime security subsystem */
+export interface RuntimeSecurityAttackPathConfig {
+  criticalThreshold?: number;    // default: 80
+}
+
+/** Configuration for security evidence store runtime security subsystem */
+export interface RuntimeSecurityEvidenceConfig {
+  retentionDays?: number;        // default: 90
+}
+
+/** Configuration for AI security rule engine runtime security subsystem */
+export interface RuntimeSecurityAIRulesConfig {
+  rulesPath?: string;            // default: '.neuronest-ai-security-rules.json'
+}
+
 // ─── SuperagentConfig (top-level) ───────────────────────────────
 
 /**
@@ -151,4 +187,12 @@ export interface SuperagentConfig {
   headlessMode?: HeadlessModeConfig;
   providerFailover?: ProviderFailoverConfig;
   specialistRoles?: SpecialistRolesConfig;
+
+  /** Runtime security subsystem configuration blocks */
+  runtimeSecurityHackability?: RuntimeSecurityHackabilityConfig;
+  runtimeSecurityThreatModeling?: RuntimeSecurityThreatModelingConfig;
+  runtimeSecurityRealtime?: RuntimeSecurityRealtimeConfig;
+  runtimeSecurityAttackPath?: RuntimeSecurityAttackPathConfig;
+  runtimeSecurityEvidence?: RuntimeSecurityEvidenceConfig;
+  runtimeSecurityAIRules?: RuntimeSecurityAIRulesConfig;
 }

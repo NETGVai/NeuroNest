@@ -12,6 +12,7 @@
 import {
   DEFAULT_FEATURE_FLAGS,
   FEATURE_DEPENDENCIES,
+  RUNTIME_SECURITY_DEPENDENCIES,
   type FeatureDependency,
   type FeatureGateFlags,
   type ResolvedFeatureConfig,
@@ -35,11 +36,17 @@ export class FeatureGateSystem {
     const autoEnabled: (keyof FeatureGateFlags)[] = [];
     const warnings: string[] = [];
 
+    // Merge all dependency declarations for unified checking
+    const allDependencies: FeatureDependency[] = [
+      ...FEATURE_DEPENDENCIES,
+      ...RUNTIME_SECURITY_DEPENDENCIES,
+    ];
+
     // Auto-enable hard prerequisites transitively
     let changed = true;
     while (changed) {
       changed = false;
-      for (const dep of FEATURE_DEPENDENCIES) {
+      for (const dep of allDependencies) {
         if (!this.flags[dep.feature]) continue;
 
         if (dep.requires) {
@@ -58,7 +65,7 @@ export class FeatureGateSystem {
     }
 
     // Validate requiresAny — at least one must be enabled (after auto-enabling)
-    for (const dep of FEATURE_DEPENDENCIES) {
+    for (const dep of allDependencies) {
       if (!this.flags[dep.feature]) continue;
 
       if (dep.requiresAny && dep.requiresAny.length > 0) {
@@ -74,7 +81,7 @@ export class FeatureGateSystem {
     }
 
     // Validate incompatible pairs — reject with descriptive error
-    for (const dep of FEATURE_DEPENDENCIES) {
+    for (const dep of allDependencies) {
       if (!this.flags[dep.feature]) continue;
 
       if (dep.incompatible) {
@@ -116,24 +123,40 @@ export class FeatureGateSystem {
 
   /**
    * Hot-enable a feature without restart.
-   * Re-validates dependencies before enabling.
-   * Throws if enabling would create an invalid configuration.
+   * Supports two scenarios:
+   * 1. Re-enabling a feature that was disabled at runtime (was in disabledAtRuntime set)
+   * 2. Enabling a feature that was initially disabled in config (hot-enable without restart)
+   *
+   * Validates dependencies (FEATURE_DEPENDENCIES + RUNTIME_SECURITY_DEPENDENCIES)
+   * before enabling. Throws if enabling would create an invalid configuration.
+   *
+   * Requirements: 1.9
    */
   enableAtRuntime(feature: keyof FeatureGateFlags): void {
-    if (!this.disabledAtRuntime.has(feature)) {
-      return; // already enabled or was never disabled at runtime
+    const wasDisabledAtRuntime = this.disabledAtRuntime.has(feature);
+
+    if (wasDisabledAtRuntime) {
+      // Re-enable a runtime-disabled feature
+      this.disabledAtRuntime.delete(feature);
+      this.runtimeDisableReasons.delete(feature);
+    } else if (this.flags[feature]) {
+      // Already enabled and not runtime-disabled — nothing to do
+      return;
+    } else {
+      // Hot-enable: set the flag to true in the internal flags object
+      this.flags[feature] = true;
     }
 
-    // Temporarily re-enable to check if dependencies are satisfied
-    this.disabledAtRuntime.delete(feature);
-    this.runtimeDisableReasons.delete(feature);
-
-    // Validate that re-enabling doesn't violate any constraints
+    // Validate that enabling doesn't violate any constraints
     try {
       this.validateFeatureDependencies(feature);
     } catch (err) {
       // Roll back the enable
-      this.disabledAtRuntime.add(feature);
+      if (wasDisabledAtRuntime) {
+        this.disabledAtRuntime.add(feature);
+      } else {
+        this.flags[feature] = false;
+      }
       throw err;
     }
   }
@@ -154,9 +177,15 @@ export class FeatureGateSystem {
 
   /**
    * Validate that a single feature's dependencies are met.
+   * Checks both FEATURE_DEPENDENCIES and RUNTIME_SECURITY_DEPENDENCIES.
    */
   private validateFeatureDependencies(feature: keyof FeatureGateFlags): void {
-    for (const dep of FEATURE_DEPENDENCIES) {
+    const allDependencies: FeatureDependency[] = [
+      ...FEATURE_DEPENDENCIES,
+      ...RUNTIME_SECURITY_DEPENDENCIES,
+    ];
+
+    for (const dep of allDependencies) {
       if (dep.feature !== feature) continue;
 
       if (dep.requires) {
