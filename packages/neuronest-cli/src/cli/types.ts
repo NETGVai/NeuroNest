@@ -7,9 +7,9 @@
 // the three-value set { 0 success, 1 error, 2 unknown subcommand }
 // per Req 5.12 / 5.13.
 
-/** Top-level subcommand identifier — one of the five subcommands the
- *  `neuronest` binary exposes (Req 5.3, 5.4, 5.5, 5.6, 5.7). */
-export type Subcommand = 'sync' | 'run' | 'skills' | 'agent' | 'mcp';
+/** Top-level subcommand identifier — all subcommands the
+ *  `neuronest` binary exposes (Req 5.3, 5.4, 5.5, 5.6, 5.7, 4.1–4.6). */
+export type Subcommand = 'sync' | 'run' | 'skills' | 'agent' | 'mcp' | 'race' | 'fork' | 'snapshot';
 
 /** `neuronest sync` — typed-skill-client emission (Req 5.3). Operates
  *  entirely against the local filesystem; never opens the
@@ -44,9 +44,39 @@ export interface TaskArgv      {
   args?: string;
 }
 
+/** `neuronest race <prompt>` — initiates an Agent Racing Engine execution
+ *  with the provided prompt and configured providers (Req 4.1, 4.2). */
+export interface RaceArgv      {
+  _: ['race', string /* prompt */];
+  providers?: string;
+}
+
+/** `neuronest fork <sessionId>` — creates a forked session from the
+ *  specified source session (Req 4.3). */
+export interface ForkArgv      {
+  _: ['fork', string /* sessionId */];
+}
+
+/** `neuronest snapshot <action>` — manages worktree snapshots (Req 4.4, 4.5, 4.6).
+ *  Sub-actions: create [--label], restore <id>, list */
+export interface SnapshotCreateArgv {
+  _: ['snapshot', 'create'];
+  label?: string;
+}
+
+export interface SnapshotRestoreArgv {
+  _: ['snapshot', 'restore', string /* snapshot id */];
+}
+
+export interface SnapshotListArgv {
+  _: ['snapshot', 'list'];
+}
+
+export type SnapshotArgv = SnapshotCreateArgv | SnapshotRestoreArgv | SnapshotListArgv;
+
 /** Discriminated union over all CLI subcommand argv shapes. Drives
  *  the strict-mode yargs configuration in `main.ts`. */
-export type CliArgv = SyncArgv | RunArgv | SkillsArgv | AgentArgv | McpArgv | TaskArgv;
+export type CliArgv = SyncArgv | RunArgv | SkillsArgv | AgentArgv | McpArgv | TaskArgv | RaceArgv | ForkArgv | SnapshotArgv;
 
 /** Process exit code returned by `NeuronestCli.main`. The three-value
  *  set is locked: 0 success, 1 error, 2 unknown subcommand

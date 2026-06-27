@@ -37,6 +37,14 @@ import {
 } from '../transport/headless-transport.js';
 import { CliSubcommands } from './subcommands.js';
 import { runAgentTask, type AgentRunnerMode } from './agent-runner.js';
+import {
+  handleRaceCommand,
+  handleForkCommand,
+  handleSnapshotCreateCommand,
+  handleSnapshotRestoreCommand,
+  handleSnapshotListCommand,
+  type OrchestrationCommandDeps,
+} from './orchestration-commands.js';
 import type {
   AgentArgv,
   CliExitCode,
@@ -49,7 +57,7 @@ import type {
 
 // ─── Usage / help text ──────────────────────────────────────────
 
-/** One-line description per subcommand (Req 5.12). */
+/** One-line description per subcommand (Req 5.12, 4.1–4.6). */
 const SUBCOMMAND_DESCRIPTIONS = Object.freeze({
   sync: 'Emit typed-skill bindings for installed skills',
   run: 'Run the named spec via the headless agent',
@@ -57,6 +65,9 @@ const SUBCOMMAND_DESCRIPTIONS = Object.freeze({
   agent: 'One-shot agent invocation against the headless instance',
   mcp: 'Start the outbound MCP server',
   task: 'Run a task through the agent loop (standalone, no headless)',
+  race: 'Race multiple providers on a prompt and select the best result',
+  fork: 'Fork an existing session into an independent branch',
+  snapshot: 'Manage worktree snapshots (create, restore, list)',
 } as const);
 
 const USAGE_HEADER = 'Usage: neuronest <subcommand> [args...]';
@@ -83,6 +94,8 @@ export interface MainDeps {
   readonly headlessTransportFactory?: () => HeadlessTransport;
   readonly stdout?: NodeJS.WritableStream;
   readonly stderr?: NodeJS.WritableStream;
+  /** Dependencies for orchestration commands (race, fork, snapshot). */
+  readonly orchestrationDeps?: OrchestrationCommandDeps;
 }
 
 /** Format a `HeadlessTransportFailure` for stderr (Req 5.11). */
@@ -125,6 +138,28 @@ async function withTransport(
       // Close errors are non-fatal — the dispatch already completed.
     }
   }
+}
+
+// ─── Default orchestration deps factory ─────────────────────────
+
+/**
+ * Creates a default OrchestrationCommandDeps that reports features
+ * as disabled. In production, the caller provides fully wired deps
+ * with real subsystem instances. This fallback ensures the CLI
+ * gracefully displays feature-disabled messages when launched without
+ * subsystem initialization.
+ */
+function createDefaultOrchestrationDeps(
+  stdout: NodeJS.WritableStream,
+  stderr: NodeJS.WritableStream,
+): OrchestrationCommandDeps {
+  return {
+    featureGate: {
+      isEnabled: () => false,
+    },
+    stdout,
+    stderr,
+  };
 }
 
 // ─── Public entrypoint ──────────────────────────────────────────
@@ -328,6 +363,128 @@ export function createMain(deps: MainDeps = {}): NeuronestCli {
               projectDir: String(projectDir),
               args: parsed.args ? String(parsed.args) : undefined,
             });
+          },
+        )
+        // ─ race <prompt..> ──────────────────────────────────
+        //
+        // Initiates an Agent Racing Engine execution with the provided
+        // prompt and configured providers (Req 4.1, 4.2).
+        // Standalone — does NOT use headless transport.
+        .command(
+          'race <prompt..>',
+          SUBCOMMAND_DESCRIPTIONS.race,
+          (y) =>
+            y
+              .positional('prompt', {
+                describe: 'Prompt to send to all race participants',
+                type: 'string',
+                array: true,
+                demandOption: true,
+              })
+              .option('providers', {
+                describe: 'Comma-separated list of provider IDs',
+                type: 'string',
+              }),
+          async (parsed) => {
+            dispatched = true;
+            const promptParts = parsed.prompt;
+            const prompt = Array.isArray(promptParts)
+              ? promptParts.map(String).join(' ')
+              : String(promptParts ?? '');
+
+            const orchDeps = deps.orchestrationDeps ?? createDefaultOrchestrationDeps(stdout, stderr);
+            exitCode = await handleRaceCommand(
+              { prompt, providers: parsed.providers },
+              { ...orchDeps, stdout, stderr },
+            );
+          },
+        )
+        // ─ fork <sessionId> ─────────────────────────────────
+        //
+        // Creates a forked session from the specified source session
+        // and displays the new session ID (Req 4.3).
+        // Standalone — does NOT use headless transport.
+        .command(
+          'fork <sessionId>',
+          SUBCOMMAND_DESCRIPTIONS.fork,
+          (y) =>
+            y.positional('sessionId', {
+              describe: 'Session ID to fork from',
+              type: 'string',
+              demandOption: true,
+            }),
+          async (parsed) => {
+            dispatched = true;
+            const sessionId = String(parsed.sessionId);
+
+            const orchDeps = deps.orchestrationDeps ?? createDefaultOrchestrationDeps(stdout, stderr);
+            exitCode = await handleForkCommand(
+              { sessionId },
+              { ...orchDeps, stdout, stderr },
+            );
+          },
+        )
+        // ─ snapshot <action> ────────────────────────────────
+        //
+        // Manages worktree snapshots: create, restore, list (Req 4.4–4.6).
+        // Uses nested subcommands via yargs .command() + .demandCommand().
+        .command(
+          'snapshot',
+          SUBCOMMAND_DESCRIPTIONS.snapshot,
+          (y) =>
+            y
+              .command(
+                'create',
+                'Create a worktree snapshot',
+                (yy) =>
+                  yy.option('label', {
+                    describe: 'Optional label for the snapshot',
+                    type: 'string',
+                  }),
+                async (parsed) => {
+                  dispatched = true;
+                  const orchDeps = deps.orchestrationDeps ?? createDefaultOrchestrationDeps(stdout, stderr);
+                  exitCode = await handleSnapshotCreateCommand(
+                    { label: parsed.label },
+                    { ...orchDeps, stdout, stderr },
+                  );
+                },
+              )
+              .command(
+                'restore <id>',
+                'Restore a worktree snapshot',
+                (yy) =>
+                  yy.positional('id', {
+                    describe: 'Snapshot ID to restore',
+                    type: 'string',
+                    demandOption: true,
+                  }),
+                async (parsed) => {
+                  dispatched = true;
+                  const snapshotId = String(parsed.id);
+                  const orchDeps = deps.orchestrationDeps ?? createDefaultOrchestrationDeps(stdout, stderr);
+                  exitCode = await handleSnapshotRestoreCommand(
+                    { id: snapshotId },
+                    { ...orchDeps, stdout, stderr },
+                  );
+                },
+              )
+              .command(
+                'list',
+                'List all worktree snapshots',
+                (yy) => yy,
+                async () => {
+                  dispatched = true;
+                  const orchDeps = deps.orchestrationDeps ?? createDefaultOrchestrationDeps(stdout, stderr);
+                  exitCode = await handleSnapshotListCommand(
+                    { ...orchDeps, stdout, stderr },
+                  );
+                },
+              )
+              .demandCommand(1, 'snapshot: action is required (use `create`, `restore`, or `list`)')
+              .strict(),
+          () => {
+            // Top-level handler unreachable when sub-command matches.
           },
         );
 

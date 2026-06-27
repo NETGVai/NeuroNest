@@ -13,6 +13,7 @@ import {
   DEFAULT_FEATURE_FLAGS,
   FEATURE_DEPENDENCIES,
   RUNTIME_SECURITY_DEPENDENCIES,
+  ENHANCED_FEATURE_DEPENDENCIES,
   type FeatureDependency,
   type FeatureGateFlags,
   type ResolvedFeatureConfig,
@@ -40,6 +41,7 @@ export class FeatureGateSystem {
     const allDependencies: FeatureDependency[] = [
       ...FEATURE_DEPENDENCIES,
       ...RUNTIME_SECURITY_DEPENDENCIES,
+      ...ENHANCED_FEATURE_DEPENDENCIES,
     ];
 
     // Auto-enable hard prerequisites transitively
@@ -183,6 +185,7 @@ export class FeatureGateSystem {
     const allDependencies: FeatureDependency[] = [
       ...FEATURE_DEPENDENCIES,
       ...RUNTIME_SECURITY_DEPENDENCIES,
+      ...ENHANCED_FEATURE_DEPENDENCIES,
     ];
 
     for (const dep of allDependencies) {

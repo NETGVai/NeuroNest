@@ -47,6 +47,19 @@ export interface FeatureGateFlags {
   runtimesecurity_attack_path_mapping: boolean;
   runtimesecurity_evidence_store: boolean;
   runtimesecurity_ai_security_rules: boolean;
+  agent_racing: boolean;
+  session_forking: boolean;
+  worktree_checkpoints: boolean;
+  agent_status_feed: boolean;
+  diff_review: boolean;
+  provider_registry: boolean;
+  test_planning: boolean;
+  test_generation: boolean;
+  test_drift_detection: boolean;
+  test_health_analytics: boolean;
+  verification_agent: boolean;
+  enhanced_drift_classification: boolean;
+  drift_aware_orchestration: boolean;
 }
 
 /** Default flags — all disabled */
@@ -87,6 +100,19 @@ export const DEFAULT_FEATURE_FLAGS: FeatureGateFlags = {
   runtimesecurity_attack_path_mapping: false,
   runtimesecurity_evidence_store: false,
   runtimesecurity_ai_security_rules: false,
+  agent_racing: false,
+  session_forking: false,
+  worktree_checkpoints: false,
+  agent_status_feed: false,
+  diff_review: false,
+  provider_registry: false,
+  test_planning: false,
+  test_generation: false,
+  test_drift_detection: false,
+  test_health_analytics: false,
+  verification_agent: false,
+  enhanced_drift_classification: false,
+  drift_aware_orchestration: false,
 };
 
 // ─── Dependency Declarations ────────────────────────────────────
@@ -142,6 +168,40 @@ export const RUNTIME_SECURITY_DEPENDENCIES: FeatureDependency[] = [
   {
     feature: 'runtimesecurity_attack_path_mapping',
     requires: ['runtimesecurity_hackability_scoring'],
+  },
+];
+
+/**
+ * Enhanced feature dependency declarations.
+ *
+ * - agent_racing requires worktree_isolation and parallel_agents
+ * - session_forking requires parallel_agents
+ * - worktree_checkpoints requires checkpoint and worktree_isolation
+ * - drift_aware_orchestration requires enhanced_drift_classification, session_forking, and worktree_checkpoints
+ * - test_drift_detection requires test_health_analytics
+ *
+ * Requirements: 1.9, 2.9, 3.9, 5.8, 6.6, 7.7, 8.7, 9.7, 10.8, 11.7, 12.8, 13.7, 14.10
+ */
+export const ENHANCED_FEATURE_DEPENDENCIES: FeatureDependency[] = [
+  {
+    feature: 'agent_racing',
+    requires: ['worktree_isolation', 'parallel_agents'],
+  },
+  {
+    feature: 'session_forking',
+    requires: ['parallel_agents'],
+  },
+  {
+    feature: 'worktree_checkpoints',
+    requires: ['checkpoint', 'worktree_isolation'],
+  },
+  {
+    feature: 'drift_aware_orchestration',
+    requires: ['enhanced_drift_classification', 'session_forking', 'worktree_checkpoints'],
+  },
+  {
+    feature: 'test_drift_detection',
+    requires: ['test_health_analytics'],
   },
 ];
 
