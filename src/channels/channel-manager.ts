@@ -1,6 +1,7 @@
 // NeuroNest Channel Manager
 // Unified connection manager for all messaging platform integrations.
 // Each SDK is dynamically required so the app won't crash if a package is missing.
+/* eslint-disable @typescript-eslint/no-require-imports, no-empty, @typescript-eslint/ban-ts-comment */
 
 import * as path from 'path';
 import * as os from 'os';
@@ -305,7 +306,7 @@ export class ChannelManager {
     this.upsertHandle(channelId, {
       connection: { id: channelId, status: 'connected' },
       stop: () => {
-        if (webhookServer) { try { webhookServer.close(); } catch {} }
+        if (webhookServer) { try { webhookServer.close(); } catch { /* best-effort */ } }
       },
       send: async (to: string, message: string) => {
         const payload = JSON.stringify({ messaging_product: 'whatsapp', to: to.replace(/[^0-9]/g, ''), type: 'text', text: { body: message } });
@@ -662,7 +663,7 @@ export class ChannelManager {
     let nodemailer: any;
 
     try {
-      // @ts-ignore — nodemailer has no types
+      // @ts-expect-error — nodemailer has no types
       const importMod = new Function('s', 'return import(s)');
       nodemailer = await importMod('nodemailer').catch(() => null);
       if (!nodemailer) throw new Error('not installed');

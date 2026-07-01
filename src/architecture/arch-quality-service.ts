@@ -220,7 +220,7 @@ export class ArchQualityService {
           if (entry.isDirectory() && !skipDirs.has(entry.name)) walk(path.join(dir, entry.name));
           else if (entry.isFile() && codeExts.has(path.extname(entry.name).toLowerCase())) files.push(path.join(dir, entry.name));
         }
-      } catch {}
+      } catch { /* skip unreadable directories */ }
     };
     walk(projectPath);
     return files;
@@ -245,7 +245,7 @@ export class ArchQualityService {
             }
           }
         }
-      } catch {}
+      } catch { /* skip unreadable files */ }
     }
     return deps;
   }
