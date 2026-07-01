@@ -663,7 +663,6 @@ export class ChannelManager {
     let nodemailer: any;
 
     try {
-      // @ts-expect-error — nodemailer has no types
       const importMod = new Function('s', 'return import(s)');
       nodemailer = await importMod('nodemailer').catch(() => null);
       if (!nodemailer) throw new Error('not installed');
