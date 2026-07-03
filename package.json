@@ -1,6 +1,6 @@
 {
   "name": "neuronest",
-  "version": "0.1.546",
+  "version": "0.1.547",
   "description": "NeuroNest - The AI Coding SuperAgent",
   "author": "NeuroNest <admin@neuronest.cc>",
   "private": true,
@@ -55,6 +55,7 @@
     "@slack/bolt": "^4.6.0",
     "@types/ws": "^8.18.1",
     "@whiskeysockets/baileys": "github:WhiskeySockets/Baileys#8e5093c198de5c5c0230a76e8a7224f6006ebb2e",
+    "archiver": "^7.0.1",
     "better-sqlite3": "^12.8.0",
     "discord.js": "^14.26.1",
     "electron-updater": "^6.8.3",
@@ -271,6 +272,6 @@
     "node": ">=20.0.0"
   },
   "overrides": {
-    "esbuild": "0.25.12"
+    "esbuild": "0.28.1"
   }
 }
