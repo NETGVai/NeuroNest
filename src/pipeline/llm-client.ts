@@ -14,6 +14,14 @@
 import OpenAI from 'openai';
 import { getProviderCatalogEntry } from './provider-catalog.js';
 import { maybeCompressMessages } from './headroom-compressor';
+import {
+  applyPromptCacheDiscipline,
+  extractCacheMetrics,
+  extractOpenAICacheMetrics,
+  isAnthropicProvider,
+  type CacheMetrics,
+  type CacheMetricsStore,
+} from './prompt-cache-discipline.js';
 
 /**
  * Routing configuration for Professional Mode. When `enabled` is true, the
@@ -33,6 +41,12 @@ interface LLMConfig {
   provider: string;
   /** Optional Professional Mode proxy routing config. */
   professionalMode?: ProxyConfig;
+  /** When true, apply prompt cache discipline (canonical ordering + Anthropic cache_control). */
+  promptCacheDiscipline?: boolean;
+  /** Optional cache metrics store for logging provider cache hits. */
+  cacheMetricsStore?: CacheMetricsStore;
+  /** Optional session ID for cache metrics attribution. */
+  sessionId?: string;
 }
 
 /**
@@ -285,6 +299,14 @@ export class LLMClient {
       );
     }
 
+    // ─── Prompt Cache Discipline (Requirement 18) ───────────────────────
+    // When enabled, reorders messages to enforce stable prefix ordering
+    // (system messages with sorted keys, no timestamps), and adds Anthropic
+    // cache_control breakpoints. Volatile content stays in suffix only.
+    if (this.config.promptCacheDiscipline) {
+      messages = applyPromptCacheDiscipline(messages, this.config.provider) as LLMMessage[];
+    }
+
     const baseUrl = proxyMode
       ? this.config.professionalMode!.endpoint
       : (this.config.baseUrl || PROVIDER_URLS[this.config.provider] || PROVIDER_URLS.openai);
@@ -446,6 +468,12 @@ export class LLMClient {
                 if (toolCalls && toolCalls.length > 0) {
                   llmResult.tool_calls = toolCalls;
                 }
+
+                // ─── Cache metrics logging (Requirement 18.4) ─────────────
+                if (this.config.promptCacheDiscipline && parsed.usage) {
+                  this._logCacheMetrics(parsed);
+                }
+
                 resolve(llmResult);
               } catch (e) {
                 console.error('[LLMClient] Parse error:', e, 'Response:', data.slice(0, 200));
@@ -560,6 +588,12 @@ export class LLMClient {
         'tokens (saved', headroomResult.tokensBefore - headroomResult.tokensAfter,
         'in', headroomResult.durationMs, 'ms)',
       );
+    }
+
+    // ─── Prompt Cache Discipline (Requirement 18) ───────────────────────
+    // Same as chat(): enforce stable prefix ordering and add Anthropic cache breakpoints.
+    if (this.config.promptCacheDiscipline) {
+      messages = applyPromptCacheDiscipline(messages, this.config.provider) as LLMMessage[];
     }
 
     const baseUrl = proxyMode
@@ -684,6 +718,11 @@ export class LLMClient {
         promptTokens: lastUsage?.prompt_tokens,
         completionTokens: lastUsage?.completion_tokens,
       });
+
+      // ─── Cache metrics logging for streaming (Requirement 18.4) ─────
+      if (this.config.promptCacheDiscipline && lastUsage) {
+        this._logCacheMetrics({ usage: lastUsage });
+      }
     } catch (err: any) {
       callbacks.onError({ message: err?.message || String(err), partialContent });
     } finally {
@@ -855,6 +894,11 @@ export class LLMClient {
         promptTokens: lastUsage?.prompt_tokens,
         completionTokens: lastUsage?.completion_tokens,
       });
+
+      // ─── Cache metrics logging for proxy streaming (Requirement 18.4) ─
+      if (this.config.promptCacheDiscipline && lastUsage) {
+        this._logCacheMetrics({ usage: lastUsage });
+      }
     } catch (err: any) {
       // Preserve typed errors (InsufficientCreditsError) for caller pattern matching.
       if (err instanceof InsufficientCreditsError) {
@@ -879,6 +923,63 @@ export class LLMClient {
   reset(): void {
     this._aborted = false;
     this._activeRequest = null;
+  }
+
+  /**
+   * Log cache metrics from a provider response.
+   * Extracts cache-hit information from Anthropic or OpenAI usage fields
+   * and records them in the configured cache metrics store.
+   *
+   * Requirements: 18.4
+   */
+  private _logCacheMetrics(parsed: Record<string, any>): void {
+    if (!this.config.cacheMetricsStore) {
+      // No store configured — just log to console for observability
+      const usage = parsed?.usage;
+      if (!usage) return;
+
+      const cacheRead = usage.cache_read_input_tokens ?? usage.prompt_tokens_details?.cached_tokens ?? 0;
+      const cacheCreate = usage.cache_creation_input_tokens ?? 0;
+      if (cacheRead > 0 || cacheCreate > 0) {
+        const total = usage.prompt_tokens ?? usage.input_tokens ?? 0;
+        const ratio = total > 0 ? (cacheRead / total * 100).toFixed(1) : '0.0';
+        console.log(
+          `[PromptCacheDiscipline] Cache hit: read=${cacheRead} create=${cacheCreate} total=${total} ratio=${ratio}%`,
+        );
+      }
+      return;
+    }
+
+    // Use the full metrics extraction and logging pipeline
+    if (isAnthropicProvider(this.config.provider)) {
+      const metrics = extractCacheMetrics(parsed);
+      if (metrics) {
+        this.config.cacheMetricsStore.recordCacheMetrics({
+          provider: this.config.provider,
+          model: this.config.model,
+          cacheCreationTokens: metrics.cacheCreationInputTokens,
+          cacheReadTokens: metrics.cacheReadInputTokens,
+          totalInputTokens: metrics.totalInputTokens,
+          cacheSavingsTokens: metrics.cacheSavingsTokens,
+          cacheHitRatio: metrics.cacheHitRatio,
+          sessionId: this.config.sessionId,
+        });
+      }
+    } else {
+      const metrics = extractOpenAICacheMetrics(parsed);
+      if (metrics) {
+        this.config.cacheMetricsStore.recordCacheMetrics({
+          provider: this.config.provider,
+          model: this.config.model,
+          cacheCreationTokens: metrics.cacheCreationInputTokens,
+          cacheReadTokens: metrics.cacheReadInputTokens,
+          totalInputTokens: metrics.totalInputTokens,
+          cacheSavingsTokens: metrics.cacheSavingsTokens,
+          cacheHitRatio: metrics.cacheHitRatio,
+          sessionId: this.config.sessionId,
+        });
+      }
+    }
   }
 
   /** Test connection to the provider without making a full chat request */
@@ -974,10 +1075,18 @@ export class LLMClient {
  * `llamacpp`, `openmythos`) are always given `{ ...proxyConfig, enabled: false }`
  * so they bypass the proxy regardless of the global toggle (Requirement 2.7).
  *
+ * The optional `cacheConfig` parameter enables Prompt Cache Discipline
+ * (Requirement 18). When provided and `enabled` is true, the client enforces
+ * canonical prompt ordering and adds Anthropic cache_control breakpoints.
+ *
  * Callers that don't yet wire Professional Mode (or that wish to keep direct
  * mode) simply omit `proxyConfig` — existing behavior is preserved.
  */
-export function createLLMClient(providerConfig: any, proxyConfig?: ProxyConfig): LLMClient | null {
+export function createLLMClient(
+  providerConfig: any,
+  proxyConfig?: ProxyConfig,
+  cacheConfig?: { enabled: boolean; store?: CacheMetricsStore; sessionId?: string },
+): LLMClient | null {
   if (!providerConfig) return null;
 
   // Determine the provider type — prefer .type, then extract from .id or .name
@@ -1039,6 +1148,16 @@ export function createLLMClient(providerConfig: any, proxyConfig?: ProxyConfig):
   };
   if (professionalMode !== undefined) {
     clientConfig.professionalMode = professionalMode;
+  }
+  // ─── Prompt Cache Discipline wiring (Requirement 18) ─────────────
+  if (cacheConfig?.enabled) {
+    clientConfig.promptCacheDiscipline = true;
+    if (cacheConfig.store) {
+      clientConfig.cacheMetricsStore = cacheConfig.store;
+    }
+    if (cacheConfig.sessionId) {
+      clientConfig.sessionId = cacheConfig.sessionId;
+    }
   }
   return new LLMClient(clientConfig);
 }

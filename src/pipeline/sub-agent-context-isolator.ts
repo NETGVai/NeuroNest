@@ -13,8 +13,11 @@ import { randomUUID } from 'node:crypto';
 import type { IsolatedContext, IsolationLevel, LLMMessage } from './types/deerflow-types.js';
 import type { ContextSummarizer } from './context-summarizer.js';
 import type { MemoryStore } from '../storage/memory-store.js';
+import type { FeatureGateSystem } from '../feature-gate/feature-gate-system.js';
 import { computeInputTokenBudget } from './token-budget.js';
 import { getActiveContextLength } from './active-model.js';
+import { isGcfExpandedActive } from './gcf-gate.js';
+import { encodeGeneric, GCF_PRIMER } from '../serializers/gcf-encoder.js';
 
 /** Rough token estimate: ~4 chars per token. */
 function estimateTokenCost(content: string): number {
@@ -30,13 +33,16 @@ export class SubAgentContextIsolator {
   private readonly scopes: Map<string, IsolatedContext> = new Map();
   private readonly contextSummarizer: ContextSummarizer | null;
   private readonly memoryStore: MemoryStore | null;
+  private readonly featureGate: FeatureGateSystem | null;
 
   constructor(
     contextSummarizer: ContextSummarizer | null,
     memoryStore: MemoryStore | null,
+    featureGate?: FeatureGateSystem | null,
   ) {
     this.contextSummarizer = contextSummarizer;
     this.memoryStore = memoryStore;
+    this.featureGate = featureGate ?? null;
   }
 
   /**
@@ -88,9 +94,19 @@ export class SubAgentContextIsolator {
     if (isolationLevel === 'permissive' && this.memoryStore) {
       const facts = this.memoryStore.loadContext('default', contextWindowSize);
       if (facts.length > 0) {
-        const factsContent = facts
+        let factsContent = facts
           .map((f) => `[${f.category}] ${f.key}: ${f.value}`)
           .join('\n');
+
+        if (isGcfExpandedActive(this.featureGate)) {
+          const encoded = encodeGeneric(factsContent);
+          if (encoded !== null) {
+            factsContent = GCF_PRIMER + '\n' + encoded;
+          } else {
+            console.warn('[SubAgentContextIsolator] GCF encoding failed, using plain text');
+          }
+        }
+
         messages.push({ role: 'system', content: factsContent });
       }
     }

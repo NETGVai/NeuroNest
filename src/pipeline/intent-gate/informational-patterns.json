@@ -1,0 +1,154 @@
+{
+  "version": "1.0.0",
+  "description": "Hot-reloadable intent classification patterns for the PatternClassifier (Stage A)",
+  "builtin": [
+    {
+      "id": "conv-question-what",
+      "intent": "conversation",
+      "pattern": "^(what|how|why|when|where|who)\\b",
+      "flags": "i",
+      "weight": 0.7
+    },
+    {
+      "id": "conv-question-can-you",
+      "intent": "conversation",
+      "pattern": "^can you\\b",
+      "flags": "i",
+      "weight": 0.7
+    },
+    {
+      "id": "conv-question-is-it",
+      "intent": "conversation",
+      "pattern": "^is (it|this|that|there)\\b",
+      "flags": "i",
+      "weight": 0.7
+    },
+    {
+      "id": "conv-question-do-you",
+      "intent": "conversation",
+      "pattern": "^do you\\b",
+      "flags": "i",
+      "weight": 0.7
+    },
+    {
+      "id": "conv-greeting-hello",
+      "intent": "conversation",
+      "pattern": "^(hi|hello|hey|good morning|good afternoon|good evening|howdy|greetings)\\b",
+      "flags": "i",
+      "weight": 0.9
+    },
+    {
+      "id": "conv-greeting-thanks",
+      "intent": "conversation",
+      "pattern": "^(thanks|thank you|thx|ty|cheers)\\b",
+      "flags": "i",
+      "weight": 0.9
+    },
+    {
+      "id": "conv-opinion-think",
+      "intent": "conversation",
+      "pattern": "^(what do you think|in your opinion|should i|would you recommend)\\b",
+      "flags": "i",
+      "weight": 0.8
+    },
+    {
+      "id": "conv-explain",
+      "intent": "conversation",
+      "pattern": "^(explain|tell me about|describe|define)\\b",
+      "flags": "i",
+      "weight": 0.8
+    },
+    {
+      "id": "conv-question-mark",
+      "intent": "conversation",
+      "pattern": "\\?\\s*$",
+      "flags": "",
+      "weight": 0.4
+    },
+    {
+      "id": "qa-file-op",
+      "intent": "quick_action",
+      "pattern": "^(delete|remove|rename|move|copy|open|close|save|read|show|list|find|search|grep)\\b",
+      "flags": "i",
+      "weight": 0.85
+    },
+    {
+      "id": "qa-run-command",
+      "intent": "quick_action",
+      "pattern": "^(run|execute|start|stop|restart|kill|install|uninstall)\\b",
+      "flags": "i",
+      "weight": 0.85
+    },
+    {
+      "id": "qa-fix-simple",
+      "intent": "quick_action",
+      "pattern": "^fix (the|this|that)\\b",
+      "flags": "i",
+      "weight": 0.75
+    },
+    {
+      "id": "qa-add-simple",
+      "intent": "quick_action",
+      "pattern": "^add (a |an |the )?\\w+ (to|in|into)\\b",
+      "flags": "i",
+      "weight": 0.7
+    },
+    {
+      "id": "qa-format-lint",
+      "intent": "quick_action",
+      "pattern": "^(format|lint|prettify|sort)\\b",
+      "flags": "i",
+      "weight": 0.85
+    },
+    {
+      "id": "qa-git-ops",
+      "intent": "quick_action",
+      "pattern": "^(commit|push|pull|merge|rebase|checkout|branch|stash|diff|log|status)\\b",
+      "flags": "i",
+      "weight": 0.85
+    },
+    {
+      "id": "build-create",
+      "intent": "build",
+      "pattern": "^(create|implement|build|develop|design|architect|scaffold|generate|write|code)\\b",
+      "flags": "i",
+      "weight": 0.8
+    },
+    {
+      "id": "build-refactor",
+      "intent": "build",
+      "pattern": "^(refactor|rewrite|restructure|redesign|rearchitect|overhaul|modernize|migrate|convert|upgrade)\\b",
+      "flags": "i",
+      "weight": 0.8
+    },
+    {
+      "id": "build-multi-step",
+      "intent": "build",
+      "pattern": "(and then|after that|followed by|step \\d|first.*then)",
+      "flags": "i",
+      "weight": 0.7
+    },
+    {
+      "id": "build-full-feature",
+      "intent": "build",
+      "pattern": "(full|complete|entire|whole) (app|application|feature|system|module|service|api|component)",
+      "flags": "i",
+      "weight": 0.85
+    },
+    {
+      "id": "build-with-tests",
+      "intent": "build",
+      "pattern": "\\bwith (tests|testing|unit tests|integration tests|e2e)\\b",
+      "flags": "i",
+      "weight": 0.7
+    },
+    {
+      "id": "build-setup-project",
+      "intent": "build",
+      "pattern": "^set up (a |an |the )?(new )?(project|repo|repository|workspace|environment)\\b",
+      "flags": "i",
+      "weight": 0.85
+    }
+  ],
+  "learned": []
+}

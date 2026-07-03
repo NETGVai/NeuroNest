@@ -40,6 +40,8 @@ import * as agentLoopMetrics from './migrations/035-agent-loop-metrics.js';
 import * as featureIntegration from './migrations/036-feature-integration.js';
 import * as traceProvenanceColumns from './migrations/037-trace-provenance-columns.js';
 import * as neuronestEnhanced from './migrations/038-neuronest-enhanced.js';
+import * as productionUxAudit from './migrations/039-production-ux-audit.js';
+import * as unifiedIntentGate from './migrations/040-unified-intent-gate.js';
 
 export interface Migration {
   version: number;
@@ -47,7 +49,7 @@ export interface Migration {
   up: (db: Database.Database) => void;
 }
 
-const migrations: Migration[] = [initialSchema, skillsSchema, multicaIntegration, agentSkillsIntegration, costRecords, securityScans, longTermMemory, sandboxSessions, mcpServers, memoryFts, diffReview, multiSession, extensions, newFeatures, plandexFeatures, advancedFeatures, remainingFeatures, gooseFeatures, sentruxFeatures, sreFeatures, helmorFeatures, factoryFeatures, coderFeatures, groundingAudit, incrementalIndexing, chatMessagesOverflow, runtimeSandboxGuardrails, errorSizeSamples, pipelineEvents, metricSamples, errorSizeSamplesBackfill, specMessageMode, secretsV2, multiChatSessions, agentLoopMetrics, featureIntegration, traceProvenanceColumns, neuronestEnhanced];
+const migrations: Migration[] = [initialSchema, skillsSchema, multicaIntegration, agentSkillsIntegration, costRecords, securityScans, longTermMemory, sandboxSessions, mcpServers, memoryFts, diffReview, multiSession, extensions, newFeatures, plandexFeatures, advancedFeatures, remainingFeatures, gooseFeatures, sentruxFeatures, sreFeatures, helmorFeatures, factoryFeatures, coderFeatures, groundingAudit, incrementalIndexing, chatMessagesOverflow, runtimeSandboxGuardrails, errorSizeSamples, pipelineEvents, metricSamples, errorSizeSamplesBackfill, specMessageMode, secretsV2, multiChatSessions, agentLoopMetrics, featureIntegration, traceProvenanceColumns, neuronestEnhanced, productionUxAudit, unifiedIntentGate];
 
 /**
  * Returns the default database path: ~/.ai-superagent/data.db

@@ -728,6 +728,280 @@ function _nnFinalizeStream(session) {
     session.renderTimer = null;
   }
   _nnRenderSession(session);
+
+  // ── Inline Action Buttons: detect confirmation prompts and render clickable buttons ──
+  if (session.buffer) {
+    _nnDetectAndRenderActionButtons(session.messageEl, session.buffer);
+  }
+}
+
+// ── Inline Action Buttons — Prompt Detection & Button Rendering ──
+// Patterns that trigger inline CTA buttons in agent responses
+
+var _nnActionButtonsActive = []; // Track active button group containers
+
+function _nnDetectAndRenderActionButtons(messageEl, text) {
+  try {
+    // Prevent duplicate button rendering if already present on this message
+    if (messageEl.querySelector('.nn-action-button-group')) return;
+
+    var detection = _nnDetectPrompt(text);
+    if (!detection) return;
+
+    // Disable any previously active button groups
+    for (var i = _nnActionButtonsActive.length - 1; i >= 0; i--) {
+      _nnDisableButtonGroup(_nnActionButtonsActive[i]);
+    }
+    _nnActionButtonsActive = [];
+
+    // Render the button group
+    var container = document.createElement('div');
+    container.className = 'nn-action-button-group';
+    container.setAttribute('role', 'group');
+    container.setAttribute('aria-live', 'polite');
+    container.setAttribute('aria-label', 'Action buttons');
+    container.style.cssText = 'display:flex;gap:10px;margin-top:14px;padding:8px 0;flex-wrap:wrap;align-items:center;';
+
+    var state = { resolved: false };
+
+    if (detection.type === 'multi-choice' && detection.options) {
+      // Render multi-choice buttons
+      for (var oi = 0; oi < detection.options.length; oi++) {
+        (function(optionText) {
+          var btn = _nnCreateActionButton(optionText, 'secondary');
+          btn.addEventListener('click', function(e) {
+            e.preventDefault();
+            if (state.resolved) return;
+            state.resolved = true;
+            _nnResolveButtonGroup(container, btn);
+            sendChat(optionText);
+          });
+          container.appendChild(btn);
+        })(detection.options[oi]);
+      }
+    } else {
+      // Render confirm/cancel binary buttons
+      var confirmLabel = detection.confirmLabel || 'Confirm';
+      var cancelLabel = detection.cancelLabel || 'Cancel';
+      var responseText = detection.responseText || confirmLabel.toLowerCase();
+
+      var confirmBtn = _nnCreateActionButton(confirmLabel, detection.isDestructive ? 'danger' : 'primary');
+      var cancelBtn = _nnCreateActionButton(cancelLabel, 'ghost');
+
+      confirmBtn.addEventListener('click', function(e) {
+        e.preventDefault();
+        if (state.resolved) return;
+        state.resolved = true;
+        _nnResolveButtonGroup(container, confirmBtn);
+        sendChat(responseText);
+      });
+
+      cancelBtn.addEventListener('click', function(e) {
+        e.preventDefault();
+        if (state.resolved) return;
+        state.resolved = true;
+        _nnResolveButtonGroup(container, cancelBtn);
+        sendChat('cancel');
+      });
+
+      container.appendChild(confirmBtn);
+      container.appendChild(cancelBtn);
+    }
+
+    // Insert into message body or after it
+    var body = messageEl.querySelector('.message-body') || messageEl.querySelector('.message-content') || messageEl;
+    body.appendChild(container);
+    _nnActionButtonsActive.push(container);
+  } catch (err) {
+    // Silent fail — action buttons are a UX enhancement, never block chat
+    console.warn('[ActionButtons] Detection/render failed:', err);
+  }
+}
+
+function _nnDetectPrompt(text) {
+  if (!text || !text.trim()) return null;
+
+  // 1. Explicit keyword patterns: type 'word', reply with word, enter 'word'
+  var explicitPatterns = [
+    /type\s+['"](\w+)['"]/gi,
+    /reply\s+with\s+(\w+)/gi,
+    /enter\s+['"](\w+)['"]/gi,
+    /respond(?:ing)?\s+with\s+['"](\w+)['"]/gi,
+    /respond(?:ing)?\s+with\s+(\w+)/gi
+  ];
+
+  var lastExplicitMatch = null;
+  for (var pi = 0; pi < explicitPatterns.length; pi++) {
+    var pat = explicitPatterns[pi];
+    pat.lastIndex = 0;
+    var m;
+    while ((m = pat.exec(text)) !== null) {
+      lastExplicitMatch = { word: m[1], offset: m.index };
+    }
+  }
+
+  // 2. Binary approval: question ending with ? containing approval keywords
+  var approvalKeywords = /\b(proceed|continue|confirm|approve)\b/i;
+  var sentencePattern = /[^.!?\n]*\?/g;
+  var lastApproval = null;
+  var sm;
+  while ((sm = sentencePattern.exec(text)) !== null) {
+    if (approvalKeywords.test(sm[0])) {
+      lastApproval = { offset: sm.index };
+    }
+  }
+
+  // 3. Destructive signals
+  var destructiveSignals = /\b(irreversible|cannot be undone|destructive|permanently delete|cannot undo)\b/i;
+  var isDestructive = destructiveSignals.test(text);
+
+  // Determine which detection to use (last match wins)
+  if (lastExplicitMatch) {
+    var word = lastExplicitMatch.word;
+    var label = word.charAt(0).toUpperCase() + word.slice(1);
+    if (label.length > 20) label = label.slice(0, 20);
+    return {
+      type: isDestructive ? 'destructive-confirmation' : 'explicit-keyword',
+      responseText: word,
+      confirmLabel: label,
+      cancelLabel: 'Cancel',
+      isDestructive: isDestructive,
+      options: null
+    };
+  }
+
+  if (lastApproval) {
+    return {
+      type: isDestructive ? 'destructive-confirmation' : 'binary-approval',
+      responseText: null,
+      confirmLabel: 'Confirm',
+      cancelLabel: 'Cancel',
+      isDestructive: isDestructive,
+      options: null
+    };
+  }
+
+  // 4. Multi-choice: numbered or bullet list preceded by a question
+  var lines = text.split('\n');
+  var lastMultiChoice = null;
+  for (var li = 0; li < lines.length; li++) {
+    var line = lines[li].trim();
+    if (line.length > 0 && (/\?$/.test(line) || /:\s*$/.test(line))) {
+      // Found a question/prompt line — look for list items following it
+      var options = [];
+      var lj = li + 1;
+      // Skip blanks
+      while (lj < lines.length && !lines[lj].trim()) lj++;
+      // Collect list items
+      while (lj < lines.length) {
+        var item = lines[lj];
+        var numberedMatch = item.match(/^\s*\d+[.)]\s+(.+)$/);
+        var bulletMatch = item.match(/^\s*[-*•]\s+(.+)$/);
+        if (numberedMatch) {
+          options.push(numberedMatch[1].trim());
+          lj++;
+        } else if (bulletMatch) {
+          options.push(bulletMatch[1].trim());
+          lj++;
+        } else if (!item.trim()) {
+          lj++;
+        } else {
+          break;
+        }
+      }
+      if (options.length >= 2) {
+        lastMultiChoice = options;
+      }
+    }
+  }
+
+  if (lastMultiChoice) {
+    return {
+      type: 'multi-choice',
+      responseText: null,
+      confirmLabel: 'Select',
+      cancelLabel: 'Cancel',
+      isDestructive: false,
+      options: lastMultiChoice
+    };
+  }
+
+  return null;
+}
+
+function _nnCreateActionButton(label, variant) {
+  var btn = document.createElement('button');
+  btn.type = 'button';
+  btn.setAttribute('aria-label', label);
+
+  // Theme-aware styles using CSS variables with polished defaults
+  var baseStyle = 'border-radius:6px;padding:7px 16px;font-size:13px;font-weight:500;' +
+    'font-family:inherit;cursor:pointer;display:inline-flex;align-items:center;gap:6px;' +
+    'line-height:1.4;transition:all 0.2s ease;outline:none;position:relative;' +
+    'box-shadow:0 1px 3px rgba(0,0,0,0.15);';
+
+  var variantStyles = {
+    primary: 'background:var(--accent, #0078d4);color:#fff;border:none;',
+    secondary: 'background:var(--bg-input, #2d2d2d);color:var(--text-primary, #e0e0e0);border:1px solid var(--border-color, #555);',
+    danger: 'background:var(--red, #d32f2f);color:#fff;border:none;',
+    ghost: 'background:transparent;color:var(--text-secondary, #aaa);border:1px solid var(--border-color, #444);box-shadow:none;'
+  };
+
+  btn.style.cssText = baseStyle + (variantStyles[variant] || variantStyles.secondary);
+
+  // Hover effect
+  btn.addEventListener('mouseenter', function() {
+    if (!btn.disabled) {
+      btn.style.opacity = '0.85';
+      btn.style.transform = 'translateY(-1px)';
+      btn.style.boxShadow = '0 3px 8px rgba(0,0,0,0.25)';
+    }
+  });
+  btn.addEventListener('mouseleave', function() {
+    if (!btn.disabled) {
+      btn.style.opacity = '1';
+      btn.style.transform = 'translateY(0)';
+      btn.style.boxShadow = '0 1px 3px rgba(0,0,0,0.15)';
+    }
+  });
+
+  btn.textContent = label;
+  return btn;
+}
+
+function _nnDisableButtonGroup(container) {
+  var buttons = container.querySelectorAll('button');
+  for (var i = 0; i < buttons.length; i++) {
+    buttons[i].disabled = true;
+    buttons[i].style.opacity = '0.45';
+    buttons[i].style.cursor = 'not-allowed';
+    buttons[i].style.transform = 'none';
+    buttons[i].style.boxShadow = 'none';
+    buttons[i].setAttribute('aria-disabled', 'true');
+  }
+  // Remove from active list
+  var idx = _nnActionButtonsActive.indexOf(container);
+  if (idx !== -1) _nnActionButtonsActive.splice(idx, 1);
+}
+
+function _nnResolveButtonGroup(container, selectedBtn) {
+  var buttons = container.querySelectorAll('button');
+  for (var i = 0; i < buttons.length; i++) {
+    buttons[i].disabled = true;
+    buttons[i].style.cursor = 'not-allowed';
+    buttons[i].style.transform = 'none';
+    buttons[i].setAttribute('aria-disabled', 'true');
+    if (buttons[i] === selectedBtn) {
+      buttons[i].style.opacity = '1';
+      buttons[i].style.boxShadow = '0 0 0 2px var(--accent, #0078d4)';
+    } else {
+      buttons[i].style.opacity = '0.3';
+      buttons[i].style.boxShadow = 'none';
+    }
+  }
+  // Remove from active list
+  var idx = _nnActionButtonsActive.indexOf(container);
+  if (idx !== -1) _nnActionButtonsActive.splice(idx, 1);
 }
 
 function _nnRenderSession(session) {
@@ -1467,6 +1741,13 @@ function hideTyping() {
 
 function sendChat(text) {
   if (!text || !text.trim()) return false;
+
+  // Disable any active inline action button groups when user types manually
+  for (var abi = 0; abi < _nnActionButtonsActive.length; abi++) {
+    _nnDisableButtonGroup(_nnActionButtonsActive[abi]);
+  }
+  _nnActionButtonsActive = [];
+
   if (!activeProjectId) {
     addMsg('assistant', 'Please select or create a project first.', { label: 'System' });
     return false;
@@ -2391,6 +2672,13 @@ function setBrainActive(active) {
 function setupIPC() {
   var api = eapi();
 
+  // Agent Loop progress — turn off brain on completion
+  api.on('agent-progress', function(data) {
+    if (data && data.status === 'complete') {
+      setBrainActive(false);
+    }
+  });
+
   api.on('chat-response', function(data) {
     removeThinkingIndicator();
     hideTyping();
@@ -2440,7 +2728,7 @@ function setupIPC() {
       if (data.model) meta.model = data.model;
     }
     // Detect completion — turn off brain animation
-    if (data.agent === 'NeuroNest' || data.agent === 'NeuroNest Architect' || (text && text.indexOf('Swarm Complete') !== -1) || (data.noProvider)) {
+    if (data.agent === 'NeuroNest' || data.agent === 'NeuroNest Architect' || data.agent === 'Agent Loop' || (text && text.indexOf('Swarm Complete') !== -1) || (data.noProvider)) {
       setBrainActive(false);
       // Move all remaining active agents to completed (don't clear the list)
       syncAgentArrays();

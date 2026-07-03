@@ -53,6 +53,7 @@ import { trySkillRoute, loadCatalogAndTemplates } from '../skills/skill-integrat
 import { RuntimeManager } from '../runtime';
 import type { RuntimeError } from '../runtime';
 import { registerDeerFlowIPC, setDeerFlowMainWindow } from './deerflow-ipc.js';
+import { registerUnifiedIntentGateIPC } from './unified-intent-gate-ipc.js';
 import { LazyModuleLoader } from './performance/lazy-module-loader';
 import { PERF_FLAGS } from './performance/feature-flags';
 import { AsyncSystemMonitor } from './performance/async-system-monitor';
@@ -2403,6 +2404,9 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
       const lowerMsg = trimmed.toLowerCase();
 
       // Self-knowledge lookup from neuronest-knowledge.json (same source as the active-project intercept)
+      // Note: self_knowledge detection is NOT replaced by IntentGate — it operates on
+      // a different taxonomy. The IntentGate handles routing (conversation/quick_action/build/ambiguous)
+      // while self-knowledge is a pre-routing intercept for "what is NeuroNest?" queries.
       const { classifyIntent: classifyIntentNoProject } = require('../pipeline/intent-classifier');
       const noProjectIntent = classifyIntentNoProject(trimmed);
 
@@ -2614,6 +2618,9 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
     }
 
     // ── Self-Knowledge Intercept — works regardless of activeSessionId ──
+    // Note: self_knowledge detection is NOT replaced by IntentGate — it operates on
+    // a different taxonomy. The IntentGate handles routing (conversation/quick_action/build/ambiguous)
+    // while self-knowledge is a pre-routing intercept for "what is NeuroNest?" queries.
     const { classifyIntent } = require('../pipeline/intent-classifier');
     const selfKnowledgeResult = classifyIntent(trimmed);
     if (selfKnowledgeResult.intent === 'self_knowledge') {
@@ -2837,14 +2844,39 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
     const effectiveMessage = grilledSpec ?? trimmed;
 
     // ── Intent Classification and Message Routing ──
-    const { routeMessageWithLLM, routeMessage } = require('../pipeline/message-router');
+    const { routeMessageWithLLM, routeMessage, routeMessageUnified } = require('../pipeline/message-router');
     const { SimpleResponder } = require('../pipeline/simple-responder');
     
     // Use LLM-based classification when a provider is available (more accurate),
-    // fall back to pattern-based when no LLM is configured
+    // fall back to pattern-based when no LLM is configured.
+    // When the `unified_intent_gate` feature flag is enabled, the IntentGate
+    // cascade replaces both legacy classifiers (Requirements: 1.3, 1.4, 1.5, 1.6).
     const classifierLLM = resolveActiveLLMClient();
     let routingDecision;
-    if (classifierLLM) {
+
+    // Attempt unified IntentGate routing (feature-gated)
+    let intentGateInstance: any = null;
+    let featureGateInstance: any = null;
+    try {
+      const { getIntentGateInstance, getFeatureGateInstance } = require('../pipeline/intent-gate-registry');
+      intentGateInstance = getIntentGateInstance();
+      featureGateInstance = getFeatureGateInstance();
+    } catch {
+      // Intent gate registry not available — fall through to legacy
+    }
+
+    if (intentGateInstance && featureGateInstance) {
+      routingDecision = await routeMessageUnified(effectiveMessage, classifierLLM, {
+        intentGate: intentGateInstance,
+        featureGate: featureGateInstance,
+        sessionContext: {
+          recentTurns: [],
+          activeInterview: false,
+          activeOrchestration: false,
+          lastAssistantSubject: null,
+        },
+      });
+    } else if (classifierLLM) {
       console.log('[IPC] Using LLM-based intent classification...');
       routingDecision = await routeMessageWithLLM(effectiveMessage, classifierLLM);
     } else {
@@ -3194,190 +3226,9 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
       return;
     }
 
-    // ── Agent Loop Route: for build_task intent, use the AgentLoopController ──
-    // This replaces the orchestrator pipeline with a proper agentic tool-use loop
-    // that iteratively calls tools until the task is complete (Requirements 10.1, 10.2).
-    if (
-      routingDecision.intent.type === 'build_task' &&
-      routingDecision.route === 'orchestrator_pipeline'
-    ) {
-      const agentLoopLLM = resolveActiveLLMClient();
-      if (agentLoopLLM) {
-        try {
-          const osAL = require('node:os');
-          const pathAL = require('node:path');
-          const projectDirAL = pathAL.join(osAL.homedir(), '.neuronest', 'projects', activeSessionId || 'default');
-
-          // Load project-specific configuration (Requirement 16.3)
-          const projectConfig = loadProjectConfig(projectDirAL);
-
-          // Resolve the ToolSystem with real implementations
-          const toolSystemAL = getAgentLoopToolSystem();
-
-          // Wrap the existing LLM client to the AgentLLMClient interface
-          const agentLLMClient = wrapLLMClientForAgentLoop(agentLoopLLM);
-
-          // Load or initialize per-session conversation history
-          const sessionKey = activeSessionId || 'default';
-          if (!agentLoopConversationHistory.has(sessionKey)) {
-            agentLoopConversationHistory.set(sessionKey, []);
-          }
-          const conversationHistory = agentLoopConversationHistory.get(sessionKey)!;
-
-          // Append the user message to history
-          conversationHistory.push({ role: 'user', content: effectiveMessage });
-
-          // Trim history if it exceeds max length (keep system prompt room)
-          while (conversationHistory.length > AGENT_LOOP_MAX_HISTORY) {
-            conversationHistory.shift();
-          }
-
-          // Create the AgentLoopController
-          const agentLoopCallbackEngine = new CallbackEngine();
-
-          // Register auto-versioning hook on task completion (Requirement 13.1)
-          // This provides a Callback Engine integration point for auto-versioning
-          // in addition to the direct call after the loop result.
-          agentLoopCallbackEngine.register('on-task-complete', async (ctx) => {
-            // The actual auto-commit is done after the loop result is available
-            // (below), because the on-task-complete hook fires before we have
-            // the final filesModified list from the result object. This hook
-            // serves as the extension point for additional on-task-complete behavior.
-            console.log('[CallbackEngine] on-task-complete fired for session:', ctx.sessionId, 'iteration:', ctx.iteration);
-          });
-
-          const agentLoopController = new AgentLoopController({
-            llmClient: agentLLMClient,
-            toolSystem: toolSystemAL,
-            projectDir: projectDirAL,
-            sessionId: sessionKey,
-            maxIterations: projectConfig.maxIterations,
-            planMode: projectConfig.planMode,
-            turboEditsEnabled: false,
-            smartContextEnabled: false,
-            callbackEngine: agentLoopCallbackEngine,
-            onProgress: (update) => {
-              // Wire progress events to the renderer
-              mainWindow.webContents.send('agent-progress', {
-                iteration: update.iteration,
-                maxIterations: update.maxIterations,
-                lastToolCall: update.lastToolCall,
-                status: update.status,
-              });
-            },
-          });
-
-          // Notify renderer that agent loop is starting
-          sendAndStore(mainWindow, {
-            role: 'assistant',
-            content: '🔄 **Agent Loop** — Working on your task...',
-            isCommand: true,
-            agent: 'Agent Loop',
-          });
-
-          // Execute the agent loop
-          const agentLoopResult: AgentLoopResult = await agentLoopController.run(effectiveMessage);
-
-          // Append the assistant response to conversation history for continuity
-          conversationHistory.push({ role: 'assistant', content: agentLoopResult.response });
-
-          // Send the final response to the renderer
-          sendAndStore(mainWindow, {
-            role: 'assistant',
-            content: agentLoopResult.response,
-            agent: 'Agent Loop',
-            streamAnimate: true,
-          });
-
-          // Send completion summary
-          const summaryParts: string[] = [];
-          summaryParts.push(`Iterations: ${agentLoopResult.iterations}`);
-          summaryParts.push(`Tool calls: ${agentLoopResult.toolCallsExecuted}`);
-          if (agentLoopResult.filesModified.length > 0) {
-            summaryParts.push(`Files modified: ${agentLoopResult.filesModified.join(', ')}`);
-          }
-          if (agentLoopResult.tokenUsage.totalTokens > 0) {
-            summaryParts.push(`Tokens: ${agentLoopResult.tokenUsage.totalTokens}`);
-          }
-
-          sendAndStore(mainWindow, {
-            role: 'assistant',
-            content: `✅ **Task complete** — ${summaryParts.join(' | ')}`,
-            isCommand: true,
-            agent: 'Agent Loop',
-          });
-
-          // Send final progress event indicating completion
-          mainWindow.webContents.send('agent-progress', {
-            iteration: agentLoopResult.iterations,
-            maxIterations: projectConfig.maxIterations,
-            status: 'complete',
-          });
-
-          // Update token count
-          tokenCount += agentLoopResult.tokenUsage.totalTokens || trimmed.length;
-          const projectCostAL = costStore ? costStore.getProjectCost(activeSessionId || '') : 0;
-          mainWindow.webContents.send('update-stats', { tokens: tokenCount, cost: projectCostAL });
-
-          // Record cost if cost tracking is available
-          try {
-            if (costStore && pricingTable && activeSessionId && agentLoopResult.tokenUsage.totalTokens > 0) {
-              const provJson = getCachedConfig('providers');
-              const defJson = getCachedConfig('default-provider');
-              let alProvider = '';
-              let alModel = '';
-              if (provJson) {
-                const providers = JSON.parse(provJson);
-                let defProv: any = null;
-                if (defJson) {
-                  try { const dp = JSON.parse(defJson); defProv = providers.find((p: any) => p.id === dp.id || p.name === dp.id || p.type === dp.id); if (defProv && dp.model) defProv = { ...defProv, model: dp.model }; } catch {}
-                }
-                const activeProv = defProv || providers[0];
-                if (activeProv) { alProvider = activeProv.type || ''; alModel = (activeProv.model || '').split(',')[0].trim(); }
-              }
-              if (alProvider) {
-                const alCostResult = calculateCost(alProvider, alModel, agentLoopResult.tokenUsage.promptTokens, agentLoopResult.tokenUsage.completionTokens, pricingTable);
-                costStore.record({
-                  projectId: activeSessionId,
-                  provider: alProvider,
-                  model: alModel,
-                  promptTokens: agentLoopResult.tokenUsage.promptTokens,
-                  completionTokens: agentLoopResult.tokenUsage.completionTokens,
-                  cost: alCostResult.cost,
-                });
-              }
-            }
-          } catch (costErr) { console.warn('[AgentLoop] Cost recording error:', costErr); }
-
-          // Notify files updated if any were modified
-          if (agentLoopResult.filesModified.length > 0 && activeSessionId) {
-            notifyProjectFilesUpdated(activeSessionId);
-          }
-
-          // ── Auto-Versioning: commit modified files with AI-generated message (Requirement 13.1) ──
-          // Triggered after the Agent Loop completes with file modifications.
-          // autoCommit handles all edge cases gracefully: non-git repos, empty file lists, LLM failures.
-          // Respects the project config's autoVersioning setting (Requirement 13.4, 16.3).
-          if (agentLoopResult.filesModified.length > 0 && projectConfig.autoVersioning) {
-            try {
-              const autoVersionLLM = wrapLLMForAutoCommit(agentLoopLLM);
-              await autoCommit(projectDirAL, agentLoopResult.filesModified, autoVersionLLM);
-            } catch (autoVersionErr: any) {
-              // Auto-versioning should never break the main flow
-              console.warn('[AgentLoop] Auto-versioning error (non-fatal):', autoVersionErr?.message);
-            }
-          }
-
-          // Send completion signal
-          mainWindow.webContents.send('chat-response', { role: 'assistant', content: '', agent: 'Agent Loop' });
-          console.log('[IPC] build_task handled by AgentLoopController — iterations:', agentLoopResult.iterations, 'tools:', agentLoopResult.toolCallsExecuted);
-          return;
-        } catch (agentLoopErr: any) {
-          console.error('[IPC] AgentLoop execution error, falling through to legacy pipeline:', agentLoopErr?.message);
-          // Fall through to the legacy orchestrator pipeline as a fallback
-        }
-      }
-    }
+    // ── Orchestrator Pipeline: for build_task intent, use the full ZERA → Orchestrator → Swarm flow ──
+    // The legacy orchestrator pipeline below handles this route with proper task decomposition
+    // and multi-agent swarm execution.
 
 // Full NeuroNest pipeline: ZERA optimize → Orchestrate → Swarm execute
     tokenCount += trimmed.length;
@@ -4165,6 +4016,50 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
       // Defensive: the selection layer never throws, but a wiring error must
       // never break the chat handler — fall through with Full_Registry.
       console.warn('[IPC] RAG tool selection skipped (non-fatal):', ragErr?.message ?? ragErr);
+    }
+
+    // ── Plan Validation: validate plan before swarm dispatch (Req 2.1, 2.5, 2.6, 2.7, 2.8) ──
+    // The AgentLoopController.validatePlan() performs lightweight synchronous checks
+    // (agent ID validation, cycle detection, feasibility) with no LLM calls.
+    // Must complete within 500ms for plans up to 20 agent tasks.
+    try {
+      const planValidationConfig = {
+        llmClient: wrapLLMClientForAgentLoop(llmClient || resolveActiveLLMClient()!),
+        toolSystem: getAgentLoopToolSystem(),
+        projectDir: '',
+        sessionId: activeSessionId || '',
+        maxIterations: 1,
+        planMode: false,
+        turboEditsEnabled: false,
+        smartContextEnabled: false,
+      };
+      const agentLoop = new AgentLoopController(planValidationConfig);
+      const validation = agentLoop.validatePlan(plan);
+
+      if (validation.status === 'rejected') {
+        // Report rejection to user, do not dispatch
+        sendAndStore(mainWindow, {
+          role: 'assistant',
+          content: `⚠️ **Plan Rejected:** ${validation.reason}\n\nAffected steps: ${validation.affectedSteps.join(', ')}`,
+          isCommand: true,
+          agent: 'Plan Validator',
+        });
+        console.warn('[IPC] Plan validation rejected:', validation.reason, 'affected:', validation.affectedSteps);
+        return;
+      }
+
+      if (validation.status === 'refined') {
+        // Use the corrected plan; emit plan_refined event
+        mainWindow.webContents.send('plan_refined', { original: plan, refined: validation.plan });
+        console.log('[IPC] Plan refined by validator, refinements:', validation.refinements);
+        // Replace plan with the refined version for dispatch
+        Object.assign(plan, validation.plan);
+      }
+
+      // 'approved' status: pass plan unchanged to SwarmCoordinator
+    } catch (validationErr: any) {
+      // Plan validation is non-blocking — if it fails, continue with the original plan
+      console.warn('[IPC] Plan validation error (non-fatal, continuing with original plan):', validationErr?.message);
     }
 
     // Use enhanced coordinator if available and session is active
@@ -9066,6 +8961,25 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
   // ── DeerFlow IPC channels ──────────────────────────────────────
   registerDeerFlowIPC(mainWindow);
   setDeerFlowMainWindow(mainWindow);
+
+  // ── Unified Intent Gate IPC channels ────────────────────────────
+  try {
+    const { getIntentGateInstance, getFeatureGateInstance } = require('../pipeline/intent-gate-registry');
+    registerUnifiedIntentGateIPC({
+      mainWindow,
+      getIntentGate: () => getIntentGateInstance(),
+      getSpecInterviewEngine: () => {
+        try {
+          const { getSpecInterviewEngineInstance } = require('../pipeline/spec-interview-engine-registry');
+          return getSpecInterviewEngineInstance();
+        } catch { return null; }
+      },
+      getFeatureGate: () => getFeatureGateInstance(),
+    });
+    console.log('[IPC] Unified Intent Gate IPC handlers registered');
+  } catch (err: any) {
+    console.warn('[IPC] Unified Intent Gate IPC registration failed (non-fatal):', err?.message);
+  }
 
   // ── Shell: open external URL in default browser ──
   ipcMain.handle('shell:open-external', async (_event: any, url: string) => {

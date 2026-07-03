@@ -6,12 +6,22 @@ const { contextBridge, ipcRenderer } = require('electron');
 const SEND_CHANNELS = [
   'chat-message', 'project-create', 'project-open', 'project-delete', 'project-rename',
   'agent-select', 'navigate', 'command-execute', 'update-agent-prompt', 'save-agent-model', 'toggle-devtools', 'save-project-file', 'save-channel-config', 'toggle-devtools', 'abort-pipeline',
+  // Intent Gate — renderer → main
+  'intent:override-request', 'intent:disambiguation-response',
+  // Spec Interview Engine — renderer → main
+  'interview:answer', 'interview:action',
+  // Spec Review Card — renderer → main
+  'spec:action',
   // Graph management
   'graph-clear-cache',
   // Event_Bus_Bridge — fire-and-forget Pipeline_Event emits from renderer-side
   // agents. Single main-process EventLog is the one writer of `pipeline_events`
   // rows (Requirement 1.3 / 6.1). MUST stay in SEND_CHANNELS, never INVOKE.
   'event-log.emit',
+  // Production UX — fire-and-forget agent control channels
+  'agent:cancel-task', 'agent:switch-mode', 'approval:respond',
+  // Intent Gate — override request (Renderer → Main)
+  'intent:override-request',
 ];
 
 const INVOKE_CHANNELS = [
@@ -240,6 +250,16 @@ const INVOKE_CHANNELS = [
   'gcf:rollout-gate-status',
   // Skill Packs (Feature 11) — install/list/sync/remove + drift & eval
   'skill-packs:install', 'skill-packs:list', 'skill-packs:sync', 'skill-packs:remove', 'skill-packs:check-drift', 'skill-packs:run-eval',
+  // Production UX — agent state & change queries
+  'agent:get-change-summary', 'agent:get-diff', 'agent:get-progress-steps',
+  // Production UX — steering file management
+  'steering:list', 'steering:create',
+  // Production UX — hooks management
+  'hooks:list', 'hooks:get-history',
+  // Production UX — powers management
+  'powers:list', 'powers:activate', 'powers:deactivate',
+  // Production UX — focus mode
+  'focus-mode:toggle',
 ];
 
 const RECEIVE_CHANNELS = [
@@ -247,6 +267,8 @@ const RECEIVE_CHANNELS = [
   'chat-response', 'project-updated', 'projects-list', 'project-opened',
   'typing-start', 'typing-stop', 'project-files-updated', 'clear-chat', 'update-stats', 'active-project', 'channel-status-update', 'firewall-event', 'model-pull-progress',
   'provider-health-update', 'autonomy-action', 'agentmemory-status',
+  // Agent Loop progress
+  'agent-progress',
   // Agent Skills real-time updates
   'agent-skills:real-time-update',
   // Runtime environment
@@ -271,6 +293,19 @@ const RECEIVE_CHANNELS = [
   'ci:check-completed',
   // Dashboard_Metrics_Panel — broadcast on `metrics-panel.json` edits
   'metrics:config-updated',
+  // Production UX — real-time agent event streaming
+  'agent:progress', 'agent:tool-event', 'agent:file-change', 'agent:stream-token',
+  'agent:task-complete', 'agent:error', 'agent:parallel-status', 'agent:approval-request',
+  // Intent Gate — main → renderer
+  'intent:decision', 'intent:disambiguation',
+  // Spec Interview Engine — main → renderer
+  'interview:batched-card', 'interview:turn', 'interview:resume',
+  // Spec Review Card — main → renderer
+  'spec:review',
+  // Production UX — hooks execution status
+  'hooks:execution-status',
+  // Intent Gate — decision broadcast (Main → Renderer)
+  'intent:decision',
 ];
 
 contextBridge.exposeInMainWorld('electronAPI', {
@@ -302,6 +337,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
       }
     }
   },
+});
+
+// ─── Window Unload Cleanup ──────────────────────────────────────
+// Remove all IPC listeners when the window is unloading to prevent
+// memory leaks and stale event handlers during navigation or reload.
+window.addEventListener('beforeunload', () => {
+  for (const channel of RECEIVE_CHANNELS) {
+    ipcRenderer.removeAllListeners(channel);
+  }
 });
 
 // ─── Event_Bus_Bridge helper (`window.eventBusBridge`) ──────────

@@ -1,7 +1,7 @@
 /**
  * Built-in slash commands — wired to NeuroNest subsystems.
  */
-/* eslint-disable @typescript-eslint/no-require-imports */
+/* eslint-disable @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires */
 import type { CommandDefinition, CommandContext, CommandResult } from '../command-system';
 
 function ok(output: string): CommandResult { return { success: true, output }; }

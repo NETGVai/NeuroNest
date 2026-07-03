@@ -1,6 +1,6 @@
 {
   "name": "neuronest",
-  "version": "0.1.528",
+  "version": "0.1.544",
   "description": "NeuroNest - The AI Coding SuperAgent",
   "author": "NeuroNest <admin@neuronest.cc>",
   "private": true,
@@ -8,7 +8,7 @@
   "scripts": {
     "build": "node scripts/bump-version.mjs && tsc -p tsconfig.main.json && node scripts/copy-renderer.mjs",
     "build:nobump": "tsc -p tsconfig.main.json && node scripts/copy-renderer.mjs",
-    "start": "npx electron-rebuild -f -w better-sqlite3,onnxruntime-node && npm run build && electron .",
+    "start": "npx @electron/rebuild -f -w better-sqlite3,onnxruntime-node && npm run build && electron .",
     "cli": "npm rebuild better-sqlite3 && npm run build && node dist/cli/index.js --cli",
     "test": "npm rebuild better-sqlite3 2>/dev/null; vitest --run",
     "test:ci": "vitest --run --reporter=verbose",
@@ -16,7 +16,7 @@
     "check:proxy-separation": "node scripts/check-proxy-separation.mjs",
     "check:deps": "node scripts/check-dependency-pins.mjs",
     "check:ratchets": "node scripts/check-ratchets.mjs",
-    "lint": "eslint --ext .ts,.tsx src/ packages/",
+    "lint": "eslint src/ packages/",
     "format:check": "prettier --check \"src/**/*.{ts,tsx}\" \"packages/**/*.{ts,tsx}\"",
     "security-lint": "bash scripts/security-lint.sh",
     "check:renderer-size": "node scripts/check-renderer-file-size.mjs",
@@ -48,9 +48,9 @@
   ],
   "dependencies": {
     "@blackwell-systems/gcf": "2.1.2",
-    "@peculiar/x509": "^1.14.3",
+    "@peculiar/x509": "^2.0.0",
     "@popperjs/core": "^2.11.8",
-    "@sentry/electron": "^5.7.0",
+    "@sentry/electron": "^7.0.0",
     "@simplewebauthn/server": "^13.3.0",
     "@slack/bolt": "^4.6.0",
     "@types/ws": "^8.18.1",
@@ -66,10 +66,11 @@
     "markdown-it": "^14.1.1",
     "monaco-editor": "^0.55.1",
     "node-addon-api": "^8.7.0",
-    "nodemailer": "^8.0.4",
+    "nodemailer": "^9.0.0",
     "onnxruntime-node": "^1.26.0",
     "openai": "^6.33.0",
     "qrcode": "^1.5.4",
+    "reflect-metadata": "^0.2.2",
     "tar": "^7.5.13",
     "tippy.js": "^6.3.7",
     "twemoji-parser": "^14.0.0",
@@ -80,22 +81,24 @@
   },
   "devDependencies": {
     "@changesets/cli": "^2.31.0",
-    "@electron/rebuild": "^3.6.1",
+    "@electron/rebuild": "^4.0.0",
+    "@eslint/js": "^10.0.1",
     "@types/better-sqlite3": "^7.6.13",
     "@types/markdown-it": "^14.1.2",
     "@types/node": "^22.0.0",
     "@types/tar": "^6.1.13",
-    "@typescript-eslint/eslint-plugin": "^7.0.0",
-    "@typescript-eslint/parser": "^7.0.0",
-    "electron": "^33.0.0",
-    "electron-builder": "^25.1.8",
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "electron": "^43.0.0",
+    "electron-builder": "^26.0.0",
     "electron-vite": "^5.0.0",
-    "eslint": "^8.57.0",
-    "fast-check": "^3.22.0",
+    "eslint": "^10.0.0",
+    "fast-check": "^4.0.0",
+    "globals": "^17.7.0",
     "jsdom": "^29.0.2",
     "prettier": "^3.3.0",
-    "typescript": "^5.6.0",
-    "vitest": "^2.1.0"
+    "typescript": "^6.0.0",
+    "vitest": "^4.0.0"
   },
   "build": {
     "appId": "com.neuronest.app",
@@ -162,11 +165,13 @@
     },
     "win": {
       "icon": "build/icon.png",
-      "sign": "./scripts/sign-windows.cjs",
-      "signingHashAlgorithms": [
-        "sha256"
-      ],
-      "publisherName": "NeuroNest",
+      "signtoolOptions": {
+        "sign": "./scripts/sign-windows.cjs",
+        "signingHashAlgorithms": [
+          "sha256"
+        ],
+        "publisherName": "NeuroNest"
+      },
       "target": [
         {
           "target": "nsis",
@@ -196,10 +201,12 @@
       "category": "Development",
       "description": "NeuroNest - The AI Coding SuperAgent",
       "desktop": {
-        "StartupNotify": "true",
-        "Terminal": "false",
-        "Type": "Application",
-        "Categories": "Development;IDE;"
+        "entry": {
+          "StartupNotify": "true",
+          "Terminal": "false",
+          "Type": "Application",
+          "Categories": "Development;IDE;"
+        }
       },
       "target": [
         {

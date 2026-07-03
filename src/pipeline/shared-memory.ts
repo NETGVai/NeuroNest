@@ -4,6 +4,10 @@
  * Persisted to SQLite so it survives restarts and works across all providers/models.
  */
 
+import { isGcfExpandedActive } from './gcf-gate.js';
+import { encodeGeneric, GCF_PRIMER } from '../serializers/gcf-encoder.js';
+import type { FeatureGateSystem } from '../feature-gate/feature-gate-system.js';
+
 export interface MemoryEntry {
   id: string;
   projectId: string;
@@ -88,7 +92,10 @@ export class SharedMemory {
   }
 
   /** Get recent conversation context as a formatted string for LLM injection */
-  getContextString(maxEntries: number = 20): string {
+  getContextString(
+    maxEntries: number = 20,
+    featureGate?: FeatureGateSystem | null,
+  ): string {
     const entries = this.getAll({ limit: maxEntries });
     if (entries.length === 0) return '';
     const lines = entries.reverse().map(e => {
@@ -96,7 +103,19 @@ export class SharedMemory {
       const prefix = e.type === 'code' ? '[CODE]' : e.type === 'decision' ? '[DECISION]' : e.type === 'context' ? '[CONTEXT]' : '';
       return `[${agent}] ${prefix} ${e.content.slice(0, 500)}`;
     });
-    return '--- Shared Memory (recent) ---\n' + lines.join('\n') + '\n--- End Shared Memory ---';
+    const plainText = '--- Shared Memory (recent) ---\n' + lines.join('\n') + '\n--- End Shared Memory ---';
+
+    if (!isGcfExpandedActive(featureGate ?? null)) {
+      return plainText;
+    }
+
+    const encoded = encodeGeneric(plainText);
+    if (encoded === null) {
+      console.warn('[SharedMemory] GCF encoding failed, using plain text');
+      return plainText;
+    }
+
+    return GCF_PRIMER + '\n' + encoded;
   }
 
   /** Store an agent's output for other agents to reference */

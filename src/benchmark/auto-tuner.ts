@@ -20,6 +20,9 @@ import type {
   BenchmarkRun,
 } from '../shared/feature-integration-types.js';
 import { classifyIntent } from '../pipeline/intent-classifier.js';
+import type { IIntentGate, SessionContext } from '../pipeline/intent-gate.js';
+import type { FeatureGateSystem } from '../feature-gate/feature-gate-system.js';
+import { intentToLegacyClassification } from '../pipeline/intent-gate-router.js';
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -37,6 +40,10 @@ export interface TuningConfig {
 export interface AutoTunerOptions {
   /** Root project directory for resolving `.neuronest/tuning.json`. */
   projectDir: string;
+  /** Optional IntentGate instance for unified classification (Requirements: 1.6). */
+  intentGate?: IIntentGate;
+  /** Optional FeatureGateSystem to check if unified_intent_gate is enabled. */
+  featureGate?: FeatureGateSystem;
 }
 
 // ─── Task Classification Patterns ───────────────────────────────
@@ -133,10 +140,14 @@ const VALID_TASK_TYPES: TaskType[] = [
 
 export class AutoTuner {
   private readonly projectDir: string;
+  private readonly intentGate: IIntentGate | undefined;
+  private readonly featureGate: FeatureGateSystem | undefined;
   private tuningConfig: TuningConfig | null = null;
 
   constructor(options: AutoTunerOptions) {
     this.projectDir = options.projectDir;
+    this.intentGate = options.intentGate;
+    this.featureGate = options.featureGate;
     this.loadTuningConfig();
   }
 
@@ -148,6 +159,10 @@ export class AutoTuner {
    * from the existing IntentClassifier for additional context.
    *
    * Returns a TaskClassification with type and confidence in [0.0, 1.0].
+   *
+   * When the IntentGate is available and the `unified_intent_gate` flag is enabled,
+   * use `classifyTaskAsync()` for enhanced classification. This synchronous method
+   * always uses the legacy pattern-based approach for backward compatibility.
    *
    * Validates: Requirement 16.1
    */
@@ -167,7 +182,9 @@ export class AutoTuner {
       'debugging': this.scorePatterns(trimmed, DEBUGGING_PATTERNS),
     };
 
-    // Use the existing intent classifier for additional signal
+    // Use the existing intent classifier for additional signal.
+    // The synchronous classifyTask() always uses the legacy classifier.
+    // For IntentGate-based classification, use classifyTaskAsync().
     const intentResult = classifyIntent(trimmed);
 
     // Boost analysis if classified as informational
@@ -195,6 +212,72 @@ export class AutoTuner {
     }
 
     return { type: bestType, confidence };
+  }
+
+  /**
+   * Async version of classifyTask that uses the IntentGate when available
+   * and the `unified_intent_gate` flag is enabled. Falls back to the
+   * synchronous classifyTask() when the IntentGate is unavailable or disabled.
+   *
+   * This is used by the agent-loop integration where async is acceptable.
+   *
+   * Requirements: 1.6 (sole classification call site)
+   * Validates: Requirement 16.1
+   */
+  async classifyTaskAsync(message: string): Promise<TaskClassification> {
+    if (!message || message.trim().length === 0) {
+      return { type: 'analysis', confidence: 0.0 };
+    }
+
+    const trimmed = message.trim();
+
+    // When the IntentGate is available and enabled, use it for additional signal
+    if (this.intentGate && this.featureGate?.isEnabled('unified_intent_gate')) {
+      try {
+        const sessionContext: SessionContext = {
+          recentTurns: [],
+          activeInterview: false,
+          activeOrchestration: false,
+          lastAssistantSubject: null,
+        };
+        const decision = await this.intentGate.classify(trimmed, sessionContext);
+        const legacyResult = intentToLegacyClassification(decision);
+
+        // Score patterns as usual
+        const scores: Record<TaskType, number> = {
+          'code-generation': this.scorePatterns(trimmed, CODE_GENERATION_PATTERNS),
+          'refactoring': this.scorePatterns(trimmed, REFACTORING_PATTERNS),
+          'analysis': this.scorePatterns(trimmed, ANALYSIS_PATTERNS),
+          'creative': this.scorePatterns(trimmed, CREATIVE_PATTERNS),
+          'debugging': this.scorePatterns(trimmed, DEBUGGING_PATTERNS),
+        };
+
+        // Boost analysis if IntentGate classified as informational (conversation)
+        if (legacyResult.intent === 'informational') {
+          scores['analysis'] += 0.3;
+        }
+
+        let bestType: TaskType = 'analysis';
+        let bestScore = -1;
+        for (const taskType of VALID_TASK_TYPES) {
+          if (scores[taskType] > bestScore) {
+            bestScore = scores[taskType];
+            bestType = taskType;
+          }
+        }
+
+        const confidence = Math.min(1.0, Math.max(0.0, bestScore));
+        if (bestScore < 0.1) {
+          return { type: 'analysis', confidence: 0.1 };
+        }
+        return { type: bestType, confidence };
+      } catch {
+        // IntentGate failed — fall through to synchronous classifyTask
+      }
+    }
+
+    // Fallback to synchronous classification
+    return this.classifyTask(trimmed);
   }
 
   /**

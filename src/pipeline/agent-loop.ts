@@ -13,6 +13,8 @@
 import type { ToolSystem } from '../tools/tool-system.js';
 import type { ToolContext, ToolResult, TokenUsage, ToolDefinition } from '../shared/types.js';
 import type { TaskClassification, ParameterProfile, BenchmarkRun, ArtifactType } from '../shared/feature-integration-types.js';
+import { AGENT_REGISTRY } from '../agents/agent-registry.js';
+import type { AgentTask } from './orchestrator-planner.js';
 import { loadAIRules } from './simple-responder.js';
 import { SmartContextSelector } from './smart-context.js';
 import type { SmartContextResult } from './smart-context.js';
@@ -59,6 +61,9 @@ import { ComplianceGateRunner } from '../devex/compliance-gate-runner.js';
 import { WasmSandbox } from '../security/wasm-sandbox.js';
 import { BrowserAutomation } from '../devex/browser-automation.js';
 import { BackpropagationEngine } from '../intelligence/backpropagation-engine.js';
+import { ActionFirstDetector, DEFAULT_MAX_RE_PROMPT_ATTEMPTS } from './action-first-detector.js';
+import { buildEnhancedSystemPrompt, DEFAULT_CODE_QUALITY_DIRECTIVES, DEFAULT_ACTION_FIRST_DIRECTIVES } from './system-prompt-builder.js';
+import type { CodeQualityDirectives, ActionFirstDirectives, SystemPromptConfig } from './system-prompt-builder.js';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 
@@ -83,6 +88,21 @@ export interface ExecutionPlan {
 
 /** Result of plan approval callback */
 export type PlanApprovalResult = 'approved' | 'rejected' | { feedback: string };
+
+// ─── Orchestrator Plan Validation Types ─────────────────────────
+
+/** Shape of the plan produced by OrchestratorPlanner for validation */
+export interface OrchestratorPlan {
+  agents: AgentTask[];
+  topology: string;
+  reasoning?: string;
+}
+
+/** Validation outcome from AgentLoopController.validatePlan() */
+export type PlanValidationResult =
+  | { status: 'approved'; plan: OrchestratorPlan }
+  | { status: 'rejected'; reason: string; affectedSteps: string[] }
+  | { status: 'refined'; plan: OrchestratorPlan; refinements: string[] };
 
 /** Configuration for the Smart Context subsystem within the Agent Loop */
 export interface SmartContextLoopConfig {
@@ -148,6 +168,20 @@ export interface AgentLoopConfig {
   onPlanReady?: (plan: ExecutionPlan) => Promise<PlanApprovalResult>;
   /** Optional callback invoked when budget is exceeded — returns true to continue, false to stop (Req 1.4) */
   onBudgetExceeded?: (info: { sessionCostUsd: number; dailyCostUsd: number; limitUsd: number; message: string }) => Promise<boolean>;
+  /** Minimum iterations before the loop can self-terminate. Default: 25 (Req 1.4) */
+  minMaxIterations?: number;
+  /** Enable action-first re-prompting when LLM produces text-only responses (Req 2.3, 2.5) */
+  actionFirstEnabled?: boolean;
+  /** Maximum re-prompt attempts for text-only responses before accepting. Default: 3 (Req 2.3) */
+  maxRePromptAttempts?: number;
+  /** Steering file content to prepend before instructions (Req 16.4) */
+  steeringContent?: string;
+  /** Power context appended to system prompt when a power is activated (Req 19.2, 19.4) */
+  powerContext?: string;
+  /** Code quality enforcement directives (Req 3.1–3.5). Uses defaults when omitted. */
+  codeQualityDirectives?: CodeQualityDirectives;
+  /** Action-first behavior directives (Req 2.1, 2.2, 2.4). Uses defaults when omitted. */
+  actionFirstDirectives?: ActionFirstDirectives;
 }
 
 /** Progress update emitted on each iteration */
@@ -179,6 +213,10 @@ export interface AgentLoopResult {
   driftConfidence?: number;
   /** Count of drift signals emitted during execution */
   driftSignalCount?: number;
+  /** Indicates the task was not fully completed (max iterations reached). (Req 1.3) */
+  incomplete?: boolean;
+  /** Summary of work performed when task is incomplete. (Req 1.3) */
+  workSummary?: string;
 }
 
 /** OpenAI-compatible tool call structure in LLM responses */
@@ -247,6 +285,10 @@ export interface MultimodalLLMClient {
 // Re-export for backward compatibility with tests that import it from here
 export type { CallbackEngine } from './callback-engine.js';
 
+// Re-export SystemPromptBuilder types for consumers
+export { buildEnhancedSystemPrompt, DEFAULT_CODE_QUALITY_DIRECTIVES, DEFAULT_ACTION_FIRST_DIRECTIVES } from './system-prompt-builder.js';
+export type { SystemPromptConfig, CodeQualityDirectives, ActionFirstDirectives } from './system-prompt-builder.js';
+
 /**
  * Minimal interface for what the agent loop needs from a callback engine.
  * This allows passing the full CallbackEngine instance or a simple mock with just emit().
@@ -293,11 +335,14 @@ ${projectDir}
 ${toolDescriptions}
 
 ## Instructions
-- Use tools to accomplish the user's request
+- ALWAYS use tools to accomplish the user's request. Do NOT just describe what you would do — actually do it by calling the available tools.
+- Start by reading existing files to understand the project structure, then create/modify files as needed.
+- When asked to build something, immediately begin creating files and running commands. Do not ask for permission or present a plan first.
 - Read files before making edits to understand current state
 - When a tool call fails, analyze the error and try an alternative approach
-- Provide clear explanations of what you're doing and why
-- When you're done, provide a final summary of all changes made`;
+- Provide brief explanations of what you're doing between tool calls
+- When you're done, provide a final summary of all changes made
+- NEVER respond with only text when the user asked you to build, create, or implement something. Use your tools.`;
 }
 
 // ─── Helper: Build Plan Mode system prompt ──────────────────────
@@ -422,6 +467,145 @@ export async function runSmartContextSelection(
   }
 }
 
+// ─── Plan Validation Helpers ────────────────────────────────────
+
+/**
+ * Detect cycles in a directed graph of agent dependencies using DFS back-edge detection.
+ * Returns an array of agent IDs that participate in cycles (deduplicated).
+ *
+ * Requirements: 2.3
+ */
+export function detectCycles(agents: AgentTask[]): string[] {
+  const WHITE = 0, GRAY = 1, BLACK = 2;
+  const color = new Map<string, number>();
+  const agentMap = new Map(agents.map(a => [a.id, a]));
+  const cycleNodes: string[] = [];
+
+  for (const agent of agents) color.set(agent.id, WHITE);
+
+  function dfs(nodeId: string, path: string[]): boolean {
+    color.set(nodeId, GRAY);
+    path.push(nodeId);
+    const node = agentMap.get(nodeId);
+    if (node) {
+      for (const dep of node.dependsOn) {
+        if (color.get(dep) === GRAY) {
+          // Back edge — cycle found
+          const cycleStart = path.indexOf(dep);
+          cycleNodes.push(...path.slice(cycleStart));
+          return true;
+        }
+        if (color.get(dep) === WHITE) {
+          if (dfs(dep, path)) return true;
+        }
+      }
+    }
+    path.pop();
+    color.set(nodeId, BLACK);
+    return false;
+  }
+
+  for (const agent of agents) {
+    if (color.get(agent.id) === WHITE) {
+      dfs(agent.id, []);
+    }
+  }
+  return [...new Set(cycleNodes)];
+}
+
+/**
+ * Check topology feasibility for an execution plan.
+ * Returns null if feasible, or an object describing the issue.
+ *
+ * Topology constraints:
+ * - 'star': requires exactly one root node (no dependencies), all others depend on the root
+ * - 'sequential': requires a linear chain (each node has at most one dependency, and at most one dependent)
+ * - Other topologies ('hierarchical', 'mesh', 'swarm'): always feasible
+ *
+ * Requirements: 2.4
+ */
+export function checkFeasibility(
+  agents: AgentTask[],
+  topology: string,
+): { reason: string; affectedSteps: string[] } | null {
+  if (agents.length === 0) {
+    return { reason: 'Plan contains no agent tasks', affectedSteps: [] };
+  }
+
+  const roots = agents.filter(a => a.dependsOn.length === 0);
+
+  if (topology === 'star') {
+    // Star topology requires exactly one root node
+    if (roots.length !== 1) {
+      return {
+        reason: `Star topology requires exactly one root node, but found ${roots.length}`,
+        affectedSteps: roots.map(r => r.id),
+      };
+    }
+    // All non-root nodes must depend on the root
+    const rootId = roots[0].id;
+    const nonRootAgents = agents.filter(a => a.id !== rootId);
+    const invalidDeps = nonRootAgents.filter(
+      a => a.dependsOn.length !== 1 || !a.dependsOn.includes(rootId),
+    );
+    if (invalidDeps.length > 0) {
+      return {
+        reason: `Star topology requires all non-root nodes to depend only on the root (${rootId})`,
+        affectedSteps: invalidDeps.map(a => a.id),
+      };
+    }
+  }
+
+  if (topology === 'sequential') {
+    // Sequential topology requires a linear chain
+    if (roots.length !== 1) {
+      return {
+        reason: `Sequential topology requires exactly one root node, but found ${roots.length}`,
+        affectedSteps: roots.map(r => r.id),
+      };
+    }
+
+    // Each node can have at most one dependency
+    const multiDep = agents.filter(a => a.dependsOn.length > 1);
+    if (multiDep.length > 0) {
+      return {
+        reason: 'Sequential topology requires each node to have at most one dependency',
+        affectedSteps: multiDep.map(a => a.id),
+      };
+    }
+
+    // Each node can have at most one dependent (linear chain check)
+    const dependentCount = new Map<string, number>();
+    for (const agent of agents) {
+      for (const dep of agent.dependsOn) {
+        dependentCount.set(dep, (dependentCount.get(dep) || 0) + 1);
+      }
+    }
+    const fanOut = [...dependentCount.entries()].filter(([, count]) => count > 1);
+    if (fanOut.length > 0) {
+      return {
+        reason: 'Sequential topology requires a linear chain with no fan-out',
+        affectedSteps: fanOut.map(([id]) => id),
+      };
+    }
+  }
+
+  // Capability matching: verify each agent's task references a valid capability
+  // from the registry. We check that the agent exists (already validated upstream)
+  // and that it belongs to a department that can execute work.
+  for (const agent of agents) {
+    const registryEntry = AGENT_REGISTRY.find(r => r.id === agent.id);
+    if (registryEntry && !registryEntry.specialty) {
+      return {
+        reason: `Agent ${agent.id} has no declared specialty and cannot execute tasks`,
+        affectedSteps: [agent.id],
+      };
+    }
+  }
+
+  return null;
+}
+
 // ─── Agent Loop Controller ──────────────────────────────────────
 
 export class AgentLoopController {
@@ -492,7 +676,8 @@ export class AgentLoopController {
   constructor(config: AgentLoopConfig) {
     this.config = {
       ...config,
-      maxIterations: config.maxIterations ?? 25,
+      maxIterations: config.maxIterations ?? config.minMaxIterations ?? 25,
+      minMaxIterations: config.minMaxIterations ?? 25,
     };
 
     // ─── Feature Gate: instantiate only when superagentConfig is present (Req 0.2, 0.6) ───
@@ -1000,6 +1185,56 @@ export class AgentLoopController {
    */
   getBackpropagationEngine(): BackpropagationEngine | null {
     return this.backpropagationEngine;
+  }
+
+  // ─── Plan Validation ──────────────────────────────────────────
+
+  /**
+   * Validate an execution plan before swarm dispatch.
+   * Lightweight synchronous check — no LLM calls, no I/O.
+   * Must complete within 500ms for plans up to 20 tasks.
+   *
+   * Performs three checks:
+   * 1. Agent ID validation against AGENT_REGISTRY
+   * 2. Cycle detection via DFS back-edge detection on dependsOn edges
+   * 3. Topology feasibility check
+   *
+   * Requirements: 2.2, 2.3, 2.4, 2.5, 2.6, 2.7
+   */
+  validatePlan(plan: OrchestratorPlan): PlanValidationResult {
+    // 1. Validate agent IDs — every AgentTask.id must exist in AGENT_REGISTRY
+    const invalidAgents = plan.agents
+      .filter(a => !AGENT_REGISTRY.find(r => r.id === a.id))
+      .map(a => a.id);
+    if (invalidAgents.length > 0) {
+      return {
+        status: 'rejected',
+        reason: `Invalid agent IDs: ${invalidAgents.join(', ')}`,
+        affectedSteps: invalidAgents,
+      };
+    }
+
+    // 2. Detect cycles in dependency graph
+    const cycleNodes = detectCycles(plan.agents);
+    if (cycleNodes.length > 0) {
+      return {
+        status: 'rejected',
+        reason: `Dependency cycle detected among: ${cycleNodes.join(' → ')}`,
+        affectedSteps: cycleNodes,
+      };
+    }
+
+    // 3. Feasibility check — topology constraints and capability matching
+    const feasibilityIssue = checkFeasibility(plan.agents, plan.topology);
+    if (feasibilityIssue) {
+      return {
+        status: 'rejected',
+        reason: feasibilityIssue.reason,
+        affectedSteps: feasibilityIssue.affectedSteps,
+      };
+    }
+
+    return { status: 'approved', plan };
   }
 
   /**
@@ -1512,7 +1747,31 @@ export class AgentLoopController {
 
     // Build the system prompt (with injected context if available, including vision context)
     const combinedContext = [relevantContext, visionContext].filter(Boolean).join('\n\n') || undefined;
-    const systemPrompt = buildSystemPrompt(projectDir, toolDefs, rulesContent, combinedContext);
+
+    // Use enhanced system prompt when production UX directives are enabled (Req 2.1, 2.2, 2.4, 3.1–3.5)
+    const useCodeQuality = this.isFeatureEnabled('production_ux_code_quality');
+    const useActionFirst = this.isFeatureEnabled('production_ux_action_first');
+
+    let systemPrompt: string;
+    if (useCodeQuality || useActionFirst) {
+      const promptConfig: SystemPromptConfig = {
+        projectDir,
+        tools: toolDefs,
+        rulesContent,
+        relevantContext: combinedContext,
+        steeringContent: this.config.steeringContent,
+        powerContext: this.config.powerContext,
+        codeQualityDirectives: useCodeQuality
+          ? this.config.codeQualityDirectives ?? DEFAULT_CODE_QUALITY_DIRECTIVES
+          : { enforceErrorHandling: false, enforceTypeSafety: false, enforceConventionFollowing: false, enforceVerification: false, verificationTools: [] },
+        actionFirstDirectives: useActionFirst
+          ? this.config.actionFirstDirectives ?? DEFAULT_ACTION_FIRST_DIRECTIVES
+          : { prohibitPlanOnlyResponses: false, requireToolUsageForFileOps: false, requireToolUsageForExecution: false },
+      };
+      systemPrompt = buildEnhancedSystemPrompt(promptConfig);
+    } else {
+      systemPrompt = buildSystemPrompt(projectDir, toolDefs, rulesContent, combinedContext);
+    }
 
     // Initialize conversation
     const messages: AgentMessage[] = [
@@ -1532,6 +1791,11 @@ export class AgentLoopController {
       estimatedCost: 0,
     };
     const loopStartTime = Date.now();
+
+    // ─── Action-First Detection: initialize re-prompt tracking (Req 2.3, 2.5) ───
+    const actionFirstDetector = new ActionFirstDetector();
+    let rePromptAttempts = 0;
+    const maxRePromptAttemptsResolved = this.config.maxRePromptAttempts ?? DEFAULT_MAX_RE_PROMPT_ATTEMPTS;
 
     // Iteration loop
     while (iteration < maxIterations) {
@@ -1703,6 +1967,29 @@ export class AgentLoopController {
 
       // Check if response contains tool calls
       if (!response.tool_calls || response.tool_calls.length === 0) {
+        // ─── Action-First Re-prompting: detect text-only when tools expected (Req 2.3, 2.5) ───
+        // Only re-prompt if:
+        // 1. Feature gate is enabled
+        // 2. actionFirstEnabled config is not explicitly false
+        // 3. Re-prompt attempts haven't been exhausted
+        // 4. The LLM hasn't already used tools in this session (toolCallsExecuted === 0)
+        // 5. The user message implies tool usage
+        if (
+          this.isFeatureEnabled('production_ux_action_first') &&
+          this.config.actionFirstEnabled !== false &&
+          rePromptAttempts < maxRePromptAttemptsResolved &&
+          toolCallsExecuted === 0 &&
+          actionFirstDetector.isTextOnlyWhenToolsExpected(response, message)
+        ) {
+          // Text-only response when tools were expected — re-prompt the LLM
+          rePromptAttempts++;
+          const rePromptMsg = actionFirstDetector.buildRePromptMessage(response.content || '');
+          messages.push({ role: 'assistant', content: response.content || '' });
+          messages.push({ role: 'user', content: rePromptMsg });
+          // Continue the loop to re-invoke the LLM
+          continue;
+        }
+
         // No tool calls — LLM produced a final answer
         onProgress?.({
           iteration,
@@ -1946,10 +2233,17 @@ export class AgentLoopController {
       .filter((m) => m.role === 'assistant')
       .pop();
 
+    // ─── Iteration Persistence: build work summary and incomplete indicator (Req 1.3) ───
+    const iterationPersistenceEnabled = this.isFeatureEnabled('production_ux_iteration_persistence');
+    const workSummary = iterationPersistenceEnabled
+      ? this.buildWorkSummary(toolCallsExecuted, filesModified, iteration, maxIterations)
+      : undefined;
+
     return {
       response:
         (lastAssistantMsg?.content || '') +
-        `\n\n⚠️ Maximum iteration limit (${maxIterations}) reached. The task may be incomplete.`,
+        `\n\n⚠️ Maximum iteration limit (${maxIterations}) reached. The task may be incomplete.` +
+        (workSummary ? `\n\n📋 Work Summary:\n${workSummary}` : ''),
       toolCallsExecuted,
       iterations: iteration,
       tokenUsage,
@@ -1958,7 +2252,31 @@ export class AgentLoopController {
       traceId,
       artifactIds: artifactIds.length > 0 ? artifactIds : undefined,
       ...(driftMonitor ? { driftConfidence: driftMonitor.getState().confidence, driftSignalCount: driftMonitor.getState().signals.length } : {}),
+      ...(iterationPersistenceEnabled ? { incomplete: true, workSummary } : {}),
     };
+  }
+
+  // ─── Iteration Persistence: Work Summary Builder (Req 1.3) ──
+
+  /**
+   * Build a human-readable summary of work performed during the loop.
+   * Used when the loop terminates due to max iterations being reached.
+   */
+  private buildWorkSummary(
+    toolCallsExecuted: number,
+    filesModified: string[],
+    iterations: number,
+    maxIterations: number,
+  ): string {
+    const lines: string[] = [];
+    lines.push(`- Iterations completed: ${iterations}/${maxIterations}`);
+    lines.push(`- Tool calls executed: ${toolCallsExecuted}`);
+    if (filesModified.length > 0) {
+      lines.push(`- Files modified (${filesModified.length}): ${filesModified.join(', ')}`);
+    } else {
+      lines.push('- Files modified: none');
+    }
+    return lines.join('\n');
   }
 
   // ─── AutoTuner Integration ──────────────────────────────────
@@ -1981,7 +2299,7 @@ export class AgentLoopController {
     const { autoTuner, getBenchmarkHistory, onParameterOverride } = autoTunerConfig;
 
     // Step 1: Classify the task type (Req 16.1)
-    const classification = autoTuner.classifyTask(message);
+    const classification = await autoTuner.classifyTaskAsync(message);
 
     // Step 2: Get recommended parameters for the task type (Req 16.2)
     let recommendedParams = autoTuner.getRecommendedParams(classification.type);

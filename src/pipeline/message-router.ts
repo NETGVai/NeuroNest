@@ -5,9 +5,16 @@
  * - Conversational messages → Simple responder
  * - Build tasks → Orchestrator pipeline
  * - Skill-specific tasks → Skill routing system
+ *
+ * When the `unified_intent_gate` feature flag is enabled, all classification
+ * is delegated to the IntentGate cascade. Legacy paths remain active when
+ * the flag is disabled (Requirements: 1.6, 14.1).
  */
 
-import { classifyIntent, ClassificationResult } from './intent-classifier';
+import { classifyIntent } from './intent-classifier';
+import type { FeatureGateSystem } from '../feature-gate/feature-gate-system.js';
+import type { IIntentGate, SessionContext } from './intent-gate.js';
+import { routeWithIntentGate } from './intent-gate-router.js';
 
 export interface MessageIntent {
   type: 'conversational' | 'build_task' | 'skill_specific' | 'complex_orchestration' | 'clarification';
@@ -362,5 +369,61 @@ export async function routeMessageWithLLM(message: string, llmClient: any): Prom
   }
 
   // Fallback to pattern-based classification
+  return routeMessage(message);
+}
+
+
+/**
+ * Unified routing function that uses the IntentGate when the `unified_intent_gate`
+ * feature flag is enabled. Falls back to legacy `routeMessageWithLLM` / `routeMessage`
+ * when the flag is disabled, preserving backward compatibility.
+ *
+ * This is the recommended entry point for all message routing when the IntentGate
+ * subsystem is available.
+ *
+ * Requirements: 1.3, 1.4, 1.5, 1.6, 14.1
+ */
+export async function routeMessageUnified(
+  message: string,
+  llmClient: any,
+  options?: {
+    intentGate?: IIntentGate;
+    featureGate?: FeatureGateSystem;
+    sessionContext?: SessionContext;
+  },
+): Promise<RoutingDecision> {
+  // Attempt IntentGate routing when all required components are available
+  if (options?.intentGate && options?.featureGate) {
+    const sessionContext: SessionContext = options.sessionContext ?? {
+      recentTurns: [],
+      activeInterview: false,
+      activeOrchestration: false,
+      lastAssistantSubject: null,
+    };
+
+    const result = await routeWithIntentGate(
+      message,
+      sessionContext,
+      options.intentGate,
+      options.featureGate,
+    );
+
+    if (result !== null) {
+      console.log(
+        '[MessageRouter] IntentGate classification:',
+        result.decision.intent,
+        'confidence:', result.decision.confidence,
+        'stage:', result.decision.stage,
+        'route:', result.route,
+      );
+      return result.legacyCompat;
+    }
+    // result === null means flag is disabled — fall through to legacy
+  }
+
+  // Legacy fallback: use LLM-based or pattern-based classification
+  if (llmClient) {
+    return routeMessageWithLLM(message, llmClient);
+  }
   return routeMessage(message);
 }

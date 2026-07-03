@@ -25,14 +25,13 @@
     "noUncheckedIndexedAccess": true,
     "experimentalDecorators": true,
     "emitDecoratorMetadata": true,
-    "baseUrl": "./src",
     "paths": {
-      "@/*": ["*"],
-      "@/services/*": ["services/*"],
-      "@/models/*": ["models/*"],
-      "@/utils/*": ["utils/*"],
-      "@/config/*": ["config/*"],
-      "@/types/*": ["types/*"]
+      "@/*": ["./src/*"],
+      "@/services/*": ["./src/services/*"],
+      "@/models/*": ["./src/models/*"],
+      "@/utils/*": ["./src/utils/*"],
+      "@/config/*": ["./src/config/*"],
+      "@/types/*": ["./src/types/*"]
     }
   },
   "include": [

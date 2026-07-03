@@ -3,6 +3,9 @@
  * This is the main entry point — referenced by package.json "main".
  */
 
+// reflect-metadata polyfill required by @peculiar/x509 v2 (via tsyringe)
+import 'reflect-metadata';
+
 // Suppress EPIPE errors from console.log when stdout pipe is broken
 process.stdout?.on?.('error', (err: any) => { if (err?.code === 'EPIPE') return; });
 process.stderr?.on?.('error', (err: any) => { if (err?.code === 'EPIPE') return; });

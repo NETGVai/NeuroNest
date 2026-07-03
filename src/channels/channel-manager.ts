@@ -1,7 +1,7 @@
 // NeuroNest Channel Manager
 // Unified connection manager for all messaging platform integrations.
 // Each SDK is dynamically required so the app won't crash if a package is missing.
-/* eslint-disable @typescript-eslint/no-require-imports, no-empty, @typescript-eslint/ban-ts-comment */
+/* eslint-disable @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires, no-empty, @typescript-eslint/ban-ts-comment */
 
 import * as path from 'path';
 import * as os from 'os';

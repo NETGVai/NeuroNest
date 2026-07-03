@@ -60,6 +60,48 @@ export interface FeatureGateFlags {
   verification_agent: boolean;
   enhanced_drift_classification: boolean;
   drift_aware_orchestration: boolean;
+
+  // ─── Production UX Audit Flags ──────────────────────────────────
+  production_ux_iteration_persistence: boolean;
+  production_ux_action_first: boolean;
+  production_ux_code_quality: boolean;
+  production_ux_realtime_activity: boolean;
+  production_ux_status_indicators: boolean;
+  production_ux_file_tree_updates: boolean;
+  production_ux_change_summary: boolean;
+  production_ux_visual_diff: boolean;
+  production_ux_error_quality: boolean;
+  production_ux_loading_states: boolean;
+  production_ux_approval_gate: boolean;
+  production_ux_tool_robustness: boolean;
+  production_ux_progress_panel: boolean;
+  production_ux_responsive_ui: boolean;
+  production_ux_execution_modes: boolean;
+  production_ux_steering: boolean;
+  production_ux_hooks: boolean;
+  production_ux_spec_workflow: boolean;
+  production_ux_powers: boolean;
+  production_ux_focus_mode: boolean;
+  production_ux_streaming: boolean;
+  production_ux_parallel_visibility: boolean;
+
+  // ─── Unified Intent Gate & Efficiency Flags ─────────────────────
+  unified_intent_gate: boolean;              // Master gate for intent gate subsystem
+  intent_chip_ux: boolean;                   // Intent chip rendering
+  spec_interview_engine: boolean;            // Spec interview engine
+  spec_review_card: boolean;                 // Spec review card UX
+  learning_loop: boolean;                    // Override-based learning
+  context_condenser_v2: boolean;             // Enhanced context condenser
+  prompt_cache_discipline: boolean;          // Provider cache optimization
+  stuck_detector: boolean;                   // Pathological loop detection
+  session_shell: boolean;                    // Persistent PTY sessions
+  context_scoped_delegation: boolean;        // Envelope-based delegation
+  trigger_gated_knowledge: boolean;          // Conditional knowledge injection
+  trajectory_recording: boolean;             // Session export/replay
+  efficiency_kpi_instrumentation: boolean;   // KPI metrics
+
+  // ─── GCF Expansion Flags ────────────────────────────────────────
+  gcf_expanded_handoffs: boolean;            // Gates GCF on new handoff surfaces
 }
 
 /** Default flags — all disabled */
@@ -113,6 +155,48 @@ export const DEFAULT_FEATURE_FLAGS: FeatureGateFlags = {
   verification_agent: false,
   enhanced_drift_classification: false,
   drift_aware_orchestration: false,
+
+  // ─── Production UX Audit Flags ──────────────────────────────────
+  production_ux_iteration_persistence: false,
+  production_ux_action_first: true,
+  production_ux_code_quality: false,
+  production_ux_realtime_activity: false,
+  production_ux_status_indicators: false,
+  production_ux_file_tree_updates: false,
+  production_ux_change_summary: false,
+  production_ux_visual_diff: false,
+  production_ux_error_quality: false,
+  production_ux_loading_states: false,
+  production_ux_approval_gate: false,
+  production_ux_tool_robustness: false,
+  production_ux_progress_panel: false,
+  production_ux_responsive_ui: false,
+  production_ux_execution_modes: false,
+  production_ux_steering: false,
+  production_ux_hooks: false,
+  production_ux_spec_workflow: false,
+  production_ux_powers: false,
+  production_ux_focus_mode: false,
+  production_ux_streaming: false,
+  production_ux_parallel_visibility: false,
+
+  // ─── Unified Intent Gate & Efficiency Flags ─────────────────────
+  unified_intent_gate: false,
+  intent_chip_ux: false,
+  spec_interview_engine: false,
+  spec_review_card: false,
+  learning_loop: false,
+  context_condenser_v2: false,
+  prompt_cache_discipline: false,
+  stuck_detector: false,
+  session_shell: false,
+  context_scoped_delegation: false,
+  trigger_gated_knowledge: false,
+  trajectory_recording: false,
+  efficiency_kpi_instrumentation: false,
+
+  // ─── GCF Expansion Flags ────────────────────────────────────────
+  gcf_expanded_handoffs: false,
 };
 
 // ─── Dependency Declarations ────────────────────────────────────
@@ -153,6 +237,11 @@ export const FEATURE_DEPENDENCIES: FeatureDependency[] = [
   {
     feature: 'sandbox',
     incompatible: ['wasm_sandbox'],
+  },
+  {
+    feature: 'gcf_expanded_handoffs',
+    requires: [],  // No hard FeatureGateFlags prerequisites
+    // Note: requires GCF_WIRE_FORMAT in PERF_FLAGS, enforced at runtime
   },
 ];
 

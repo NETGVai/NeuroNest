@@ -9,6 +9,7 @@ import type { ChatMessage, ChatServiceEvent, MessageId, RoomId } from './types';
 import { ChatList } from './chat-list';
 import { ChatInput } from './chat-input';
 import { ChatService } from './chat-service';
+import { buttonGroupManager } from '../../services';
 
 export type { ChatMessage, ChatRoom, RoomId, MessageId } from './types';
 
@@ -92,6 +93,10 @@ class ChatPanel implements PanelModule {
 
   /** Handle message submission from the input. */
   private handleSubmit = async (content: string): Promise<void> => {
+    // Disable any active action button groups since the user chose to type manually
+    // (Requirement 4.1, 4.2, 4.3)
+    buttonGroupManager.onManualInput();
+
     // Create an optimistic local message
     const localMessage: ChatMessage = {
       id: generateLocalId(),

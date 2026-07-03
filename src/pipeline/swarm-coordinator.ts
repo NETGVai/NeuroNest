@@ -8,6 +8,16 @@ import { ExecutionPlan, AgentTask } from './orchestrator-planner';
 import { encodeGeneric, encodeGraph, GCF_PRIMER, type GraphPayload } from '../serializers/gcf-encoder';
 import { PERF_FLAGS } from '../main/performance/feature-flags';
 import { logger } from '../utils/logger';
+import type { FeatureGateSystem } from '../feature-gate/feature-gate-system';
+import { isGcfExpandedActive } from './gcf-gate';
+import {
+  type DelegationEnvelope,
+  type ResultEnvelope,
+  createDelegationEnvelope,
+  serializeDelegationEnvelope,
+  serializeResultEnvelope,
+  parseResultFromWorkerOutput,
+} from './delegation-envelope';
 
 // ── F10 GCF_Wire_Format — swarm-handoff surface ─────────────────────────
 
@@ -194,15 +204,54 @@ export class SwarmMemoryPool {
     return this.store.get(key);
   }
 
-  getContextSummary(): string {
-    if (this.store.size === 0) return '';
-
+  /**
+   * Format the internal store into a plain-text summary string.
+   * Each entry is rendered as `[key]: value` (truncated to 1000 chars).
+   */
+  private formatStore(): string {
     const entries: string[] = [];
     for (const [key, value] of this.store) {
       const preview = value.length > 1000 ? value.slice(0, 1000) + '…' : value;
       entries.push(`[${key}]: ${preview}`);
     }
     return entries.join('\n');
+  }
+
+  /**
+   * Produce a context summary for injection into a downstream agent prompt.
+   *
+   * When the expanded GCF gate is active (both `PERF_FLAGS.GCF_WIRE_FORMAT`
+   * and `gcf_expanded_handoffs` feature flag enabled), the summary is
+   * GCF-encoded with the GCF_PRIMER prepended. On encoding failure, falls
+   * back to plain text and logs a warning.
+   *
+   * Emits `gcf.swarm_memory.savings_ratio` telemetry when encoding succeeds.
+   *
+   * Requirements: 4.1, 4.2, 4.3, 4.4
+   */
+  getContextSummary(
+    featureGate?: FeatureGateSystem | null,
+    metricsSink?: MetricsSink | null,
+  ): string {
+    if (this.store.size === 0) return '';
+
+    const plainText = this.formatStore();
+
+    if (!isGcfExpandedActive(featureGate ?? null)) {
+      return plainText;
+    }
+
+    const encoded = encodeGeneric(plainText);
+    if (encoded === null) {
+      console.warn('[SwarmMemoryPool] GCF encoding failed, using plain text');
+      return plainText;
+    }
+
+    // Emit telemetry
+    const ratio = 1 - (encoded.length / plainText.length);
+    metricsSink?.recordMetric(null, 'gcf.swarm_memory.savings_ratio', ratio);
+
+    return GCF_PRIMER + '\n' + encoded;
   }
 
   clear(): void {
@@ -342,6 +391,54 @@ function produceConsensus(
   };
 }
 
+/**
+ * Produce consensus using only ResultEnvelopes from worker outputs.
+ * Full transcripts are never consumed — only compact result summaries (Requirement 21.4).
+ */
+function produceConsensusFromEnvelopes(
+  department: string,
+  agentIds: string[],
+  outputs: Map<string, string>,
+): ConsensusEntry {
+  const envelopes = agentIds
+    .map((id) => {
+      const output = outputs.get(id);
+      if (!output) return null;
+      return { id, envelope: parseResultFromWorkerOutput(output) };
+    })
+    .filter((e): e is { id: string; envelope: ResultEnvelope } => e !== null);
+
+  // Merge decisions and artifacts from all envelopes
+  const allDecisions = envelopes.flatMap(e => e.envelope.decisions);
+  const allArtifacts = envelopes.flatMap(e => e.envelope.artifacts);
+  const allOpenIssues = envelopes.flatMap(e => e.envelope.openIssues);
+  const outcomes = envelopes.map(e => `${e.id}: ${e.envelope.outcome}`);
+
+  const confidence = 0.7 + Math.random() * 0.25; // 0.70 – 0.95
+
+  const parts: string[] = [
+    `Consensus from ${agentIds.length} ${department} agents (envelope-based):`,
+    '',
+    `Outcomes: ${outcomes.join(', ')}`,
+  ];
+
+  if (allDecisions.length > 0) {
+    parts.push(`\nDecisions:\n${allDecisions.map(d => `- ${d}`).join('\n')}`);
+  }
+  if (allArtifacts.length > 0) {
+    parts.push(`\nArtifacts:\n${allArtifacts.map(a => `- ${a}`).join('\n')}`);
+  }
+  if (allOpenIssues.length > 0) {
+    parts.push(`\nOpen Issues:\n${allOpenIssues.map(i => `- ${i}`).join('\n')}`);
+  }
+
+  return {
+    department,
+    content: parts.join('\n'),
+    confidence: Math.round(confidence * 100) / 100,
+  };
+}
+
 // ── SwarmCoordinator class ──────────────────────────────────────────────
 
 export class SwarmCoordinator {
@@ -349,14 +446,26 @@ export class SwarmCoordinator {
   private _aborted = false;
   private _activeClients: LLMClient[] = [];
   private metricsSink: MetricsSink | null;
+  private featureGate: FeatureGateSystem | null;
 
   constructor(
     private memoryPool: SwarmMemoryPool,
     llmClient?: LLMClient | null,
     metricsSink?: MetricsSink | null,
+    featureGate?: FeatureGateSystem | null,
   ) {
     this.llmClient = llmClient || null;
     this.metricsSink = metricsSink || null;
+    this.featureGate = featureGate || null;
+  }
+
+  /**
+   * Check if context-scoped delegation is enabled via the feature gate.
+   * When enabled, workers receive DelegationEnvelopes and return ResultEnvelopes.
+   * When disabled, existing behavior (full context injection) is preserved.
+   */
+  private isContextScopedDelegationEnabled(): boolean {
+    return this.featureGate !== null && this.featureGate.isEnabled('context_scoped_delegation');
   }
 
   /** Abort the current swarm execution and all in-flight LLM requests */
@@ -421,23 +530,32 @@ export class SwarmCoordinator {
               content: `Injecting output from ${depId} into ${agentTask.id} context`,
             });
 
-            // F10_Encoded_Surface (swarm handoff): the Pipeline_Trace record
-            // crossing the sub-agent boundary. The pre-existing JSON path
-            // injects the raw (truncated) upstream output; GCF wire-format is
-            // applied via the paired-flag pattern. With default flags
-            // (GCF_WIRE_FORMAT=false) the body is unchanged. See Req 54.2 / 55.
-            const traceContent = depOutput.slice(0, 2000);
-            const trace: PipelineTraceRecord = {
-              type: 'pipeline_trace',
-              fromAgent: depId,
-              toAgent: agentTask.id,
-              phase,
-              content: traceContent,
-            };
-            const handoff = encodeHandoffForLLM(trace, traceContent, {
-              metricsSink: this.metricsSink,
-            });
-            contextPrefix += `\n--- Context from ${depId} ---\n${handoff.payload}\n`;
+            if (this.isContextScopedDelegationEnabled()) {
+              // Context-scoped delegation: use ResultEnvelope from the dependency.
+              // Full transcripts stay in the event log only (Requirement 21.3).
+              const resultEnvelope = parseResultFromWorkerOutput(depOutput);
+              const serialized = serializeResultEnvelope(resultEnvelope);
+              contextPrefix += `\n--- Result from ${depId} ---\n${serialized}\n`;
+            } else {
+              // Legacy path: inject truncated raw output across the handoff.
+              // F10_Encoded_Surface (swarm handoff): the Pipeline_Trace record
+              // crossing the sub-agent boundary. The pre-existing JSON path
+              // injects the raw (truncated) upstream output; GCF wire-format is
+              // applied via the paired-flag pattern. With default flags
+              // (GCF_WIRE_FORMAT=false) the body is unchanged. See Req 54.2 / 55.
+              const traceContent = depOutput.slice(0, 2000);
+              const trace: PipelineTraceRecord = {
+                type: 'pipeline_trace',
+                fromAgent: depId,
+                toAgent: agentTask.id,
+                phase,
+                content: traceContent,
+              };
+              const handoff = encodeHandoffForLLM(trace, traceContent, {
+                metricsSink: this.metricsSink,
+              });
+              contextPrefix += `\n--- Context from ${depId} ---\n${handoff.payload}\n`;
+            }
           }
         }
 
@@ -451,9 +569,38 @@ export class SwarmCoordinator {
         });
 
         // Build the full task with injected context and shared memory
-        const memoryContext = this.memoryPool.getContextSummary();
-        const fullTask = (contextPrefix ? `${agentTask.task}\n\nPrior context:\n${contextPrefix}` : agentTask.task)
-          + (memoryContext ? '\n\n' + memoryContext : '');
+        const memoryContext = this.memoryPool.getContextSummary(this.featureGate, this.metricsSink);
+        let fullTask: string;
+
+        if (this.isContextScopedDelegationEnabled()) {
+          // Context-scoped delegation: construct a DelegationEnvelope for the worker.
+          // The envelope contains only the objective, constraints, relevant files,
+          // and relevant decisions — capped at 2000 tokens (Requirement 21.1).
+          const relevantDecisions: string[] = [];
+          for (const depId of agentTask.dependsOn) {
+            const depOutput = outputs.get(depId);
+            if (depOutput) {
+              const depResult = parseResultFromWorkerOutput(depOutput);
+              relevantDecisions.push(...depResult.decisions);
+            }
+          }
+
+          const envelope = createDelegationEnvelope({
+            objective: agentTask.task,
+            constraints: [],
+            relevantFiles: [],
+            relevantDecisions,
+          });
+
+          fullTask = serializeDelegationEnvelope(envelope);
+          if (contextPrefix) {
+            fullTask += '\n\n' + contextPrefix;
+          }
+        } else {
+          // Legacy path: inject full context prefix and shared memory
+          fullTask = (contextPrefix ? `${agentTask.task}\n\nPrior context:\n${contextPrefix}` : agentTask.task)
+            + (memoryContext ? '\n\n' + memoryContext : '');
+        }
 
         // Generate response — use agent-specific LLM, fall back to default, then simulation
         let response: string;
@@ -645,7 +792,17 @@ ${troubleshootingSteps.join('\n')}
     const consensusResults: ConsensusEntry[] = [];
 
     for (const [department, agentIds] of consensusGroups) {
-      const entry = produceConsensus(department, agentIds, outputs);
+      let entry: ConsensusEntry;
+
+      if (this.isContextScopedDelegationEnabled()) {
+        // Context-scoped delegation: consensus/merge phases consume only
+        // ResultEnvelopes, never full worker transcripts (Requirement 21.4).
+        entry = produceConsensusFromEnvelopes(department, agentIds, outputs);
+      } else {
+        // Legacy path: produce consensus from raw outputs
+        entry = produceConsensus(department, agentIds, outputs);
+      }
+
       consensusResults.push(entry);
 
       onEvent?.({

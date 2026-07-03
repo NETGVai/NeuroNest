@@ -11,3 +11,14 @@ export type { InputConfig, InputType } from './input';
 
 export { showToast, dismissAllToasts } from './toast';
 export type { ToastConfig, ToastLevel } from './toast';
+
+export {
+  BuildWithDefaultsButton,
+  createBuildWithDefaultsButton,
+  hasUnresolvedQuestions,
+  countUnresolved,
+  shouldShowBuildWithDefaults,
+  INTERVIEW_ACTION_CHANNEL,
+  DEFAULTS_ACTION,
+} from './build-with-defaults-button';
+export type { BuildWithDefaultsButtonOptions, BuildWithDefaultsStatus } from './build-with-defaults-button';
