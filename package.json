@@ -1,6 +1,6 @@
 {
   "name": "neuronest",
-  "version": "0.1.545",
+  "version": "0.1.546",
   "description": "NeuroNest - The AI Coding SuperAgent",
   "author": "NeuroNest <admin@neuronest.cc>",
   "private": true,
@@ -269,5 +269,8 @@
   },
   "engines": {
     "node": ">=20.0.0"
+  },
+  "overrides": {
+    "esbuild": "0.25.12"
   }
 }
