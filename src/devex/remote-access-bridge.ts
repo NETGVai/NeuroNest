@@ -211,6 +211,7 @@ export class RemoteAccessBridge extends EventEmitter {
   private running = false;
   private startedAt: string | null = null;
   private authSession: AuthSession | null = null;
+  private actualPort = 0;
   private pendingPermissions: Map<string, {
     request: PermissionRequest;
     resolve: (decision: 'approved' | 'denied') => void;
@@ -219,6 +220,11 @@ export class RemoteAccessBridge extends EventEmitter {
 
   constructor(private config: RemoteAccessConfig) {
     super();
+  }
+
+  /** Get the actual port the server is listening on (resolves port 0 to the OS-assigned port). */
+  getPort(): number {
+    return this.actualPort || this.config.port;
   }
 
   /**
@@ -249,13 +255,20 @@ export class RemoteAccessBridge extends EventEmitter {
     await new Promise<void>((resolve, reject) => {
       this.server!.on('error', reject);
       this.server!.listen(this.config.port, () => {
+        // Record the actual port (important when config.port is 0)
+        const addr = this.server!.address();
+        if (addr && typeof addr === 'object') {
+          this.actualPort = addr.port;
+        } else {
+          this.actualPort = this.config.port;
+        }
         resolve();
       });
     });
 
     this.running = true;
     this.startedAt = new Date().toISOString();
-    this.emit('started', { port: this.config.port, bridge: this.config.bridge });
+    this.emit('started', { port: this.actualPort, bridge: this.config.bridge });
   }
 
   /**
