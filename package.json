@@ -1,6 +1,6 @@
 {
   "name": "neuronest",
-  "version": "0.1.564",
+  "version": "0.1.565",
   "description": "NeuroNest - The AI Coding SuperAgent",
   "author": "NeuroNest <admin@neuronest.cc>",
   "private": true,
@@ -134,7 +134,8 @@
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist",
       "notarize": true,
-      "x64ArchFiles": "Contents/Resources/app.asar.unpacked/**/*.node Contents/Resources/app.asar.unpacked/**/*.dylib Contents/Resources/app.asar.unpacked/node_modules/better-sqlite3/bin/**/* Contents/Resources/app.asar.unpacked/node_modules/onnxruntime-node/bin/**/*",
+      "singleArchFiles": "Contents/Resources/app.asar.unpacked/**",
+      "x64ArchFiles": "Contents/Resources/app.asar.unpacked/**",
       "target": [
         {
           "target": "dmg",
