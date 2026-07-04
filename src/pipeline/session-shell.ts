@@ -343,7 +343,10 @@ export class SessionShellImpl implements SessionShell {
             stdout = stdout.slice(0, endIdx).trimEnd();
           }
 
-          finish(exitCode);
+          // Allow a microtask tick for any in-flight stderr data to arrive
+          // before resolving. Stderr and stdout are independent pipes; the OS
+          // may deliver stderr slightly after the stdout sentinel is read.
+          setImmediate(() => finish(exitCode));
         }
       };
 
