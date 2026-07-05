@@ -211,8 +211,11 @@ export class SupertonicTTS {
     });
 
     // Sample noisy latent
-    const wavLenMax = Math.max(...duration) * this.sampleRate;
-    const wavLengths = duration.map(d => Math.floor(d * this.sampleRate));
+    // Duration predictor outputs duration per character in units of audio chunks
+    // (each chunk = base_chunk_size samples). Multiply by base_chunk_size to get
+    // wav lengths in samples. NOT by sampleRate (which would be ~86x too large).
+    const wavLenMax = Math.max(...duration) * this.cfgs.ae.base_chunk_size;
+    const wavLengths = duration.map(d => Math.floor(d * this.cfgs.ae.base_chunk_size));
     const chunkSize = this.cfgs.ae.base_chunk_size * this.cfgs.ttl.chunk_compress_factor;
     const latentLen = Math.floor((wavLenMax + chunkSize - 1) / chunkSize);
     const latentDim = this.cfgs.ttl.latent_dim * this.cfgs.ttl.chunk_compress_factor;

@@ -199,8 +199,11 @@ async function inferSingle(
   });
 
   // Sample noisy latent
-  const wavLenMax = Math.max(...duration) * sampleRate;
-  const wavLengths = duration.map(d => Math.floor(d * sampleRate));
+  // Duration predictor outputs duration per character in units of audio chunks
+  // (each chunk = base_chunk_size samples). Multiply by base_chunk_size to get
+  // wav lengths in samples. NOT by sampleRate (which would be ~86x too large).
+  const wavLenMax = Math.max(...duration) * cfgs.ae.base_chunk_size;
+  const wavLengths = duration.map(d => Math.floor(d * cfgs.ae.base_chunk_size));
   const chunkSize = cfgs.ae.base_chunk_size * cfgs.ttl.chunk_compress_factor;
   const latentLen = Math.floor((wavLenMax + chunkSize - 1) / chunkSize);
   const latentDim = cfgs.ttl.latent_dim * cfgs.ttl.chunk_compress_factor;
