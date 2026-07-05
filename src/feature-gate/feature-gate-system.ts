@@ -14,6 +14,7 @@ import {
   FEATURE_DEPENDENCIES,
   RUNTIME_SECURITY_DEPENDENCIES,
   ENHANCED_FEATURE_DEPENDENCIES,
+  LOOP_ENGINE_DEPENDENCIES,
   type FeatureDependency,
   type FeatureGateFlags,
   type ResolvedFeatureConfig,
@@ -42,6 +43,7 @@ export class FeatureGateSystem {
       ...FEATURE_DEPENDENCIES,
       ...RUNTIME_SECURITY_DEPENDENCIES,
       ...ENHANCED_FEATURE_DEPENDENCIES,
+      ...LOOP_ENGINE_DEPENDENCIES,
     ];
 
     // Auto-enable hard prerequisites transitively
@@ -186,6 +188,7 @@ export class FeatureGateSystem {
       ...FEATURE_DEPENDENCIES,
       ...RUNTIME_SECURITY_DEPENDENCIES,
       ...ENHANCED_FEATURE_DEPENDENCIES,
+      ...LOOP_ENGINE_DEPENDENCIES,
     ];
 
     for (const dep of allDependencies) {

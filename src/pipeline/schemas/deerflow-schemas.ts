@@ -8,7 +8,7 @@ import { z } from 'zod';
 
 // ─── Execution_Mode_Router ──────────────────────────────────────
 
-export const ExecutionModeSchema = z.enum(['flash', 'standard', 'pro', 'ultra']);
+export const ExecutionModeSchema = z.enum(['flash', 'standard', 'pro', 'ultra', 'loop']);
 
 // ─── Skill_Loader ───────────────────────────────────────────────
 

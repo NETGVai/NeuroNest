@@ -44,7 +44,7 @@ export interface ContextSummarizerConfig {
 
 // ─── Execution_Mode_Router ──────────────────────────────────────
 
-export type ExecutionMode = 'flash' | 'standard' | 'pro' | 'ultra';
+export type ExecutionMode = 'flash' | 'standard' | 'pro' | 'ultra' | 'loop';
 
 export interface ModeConfig {
   mode: ExecutionMode;

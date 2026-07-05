@@ -1,15 +1,16 @@
 /**
- * Execution_Mode_Router — selects and enforces one of four execution modes
- * (flash, standard, pro, ultra) for a given task.
+ * Execution_Mode_Router — selects and enforces one of five execution modes
+ * (flash, standard, pro, ultra, loop) for a given task.
  *
  * - flash:    bypass Swarm_Coordinator, route to single best-fit agent via scoreAllAgents()
  * - standard: planning then single agent via Swarm_Coordinator
  * - pro:      planning then sequential multi-agent via Swarm_Coordinator
  * - ultra:    decompose into sub-tasks, parallel execution via Swarm_Coordinator
+ * - loop:     bounded iterative execution via LoopRunner (mutual exclusion with SwarmCoordinator)
  *
  * Dependencies are injected via interfaces so tests can mock them.
  *
- * Requirements: 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 3.7
+ * Requirements: 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 3.7, 6.1, 6.2, 6.3, 6.4
  */
 
 import type {
@@ -24,6 +25,7 @@ const MODE_TOKEN_BUDGETS: Record<ExecutionMode, number> = {
   standard: 4_096,
   pro: 8_192,
   ultra: 16_384,
+  loop: 16_384,
 };
 
 // ─── Dependency interfaces (for DI / mocking) ──────────────────
@@ -52,6 +54,26 @@ export interface SwarmCoordinatorLike {
   ): Promise<{ output: string; agentsUsed: string[]; tokensUsed: number }>;
 }
 
+/**
+ * Minimal interface for the Loop_Runner used in loop mode.
+ * The actual LoopRunner implementation will be provided by the loop-engine subsystem.
+ *
+ * Requirements: 6.2, 6.5
+ */
+export interface LoopRunnerLike {
+  start(task: string, sessionId: string): Promise<{ runId: string; output: string; tokensUsed: number }>;
+}
+
+/**
+ * Minimal interface for feature flag checking.
+ * Used to gate loop mode on the loops_enabled flag.
+ *
+ * Requirements: 6.3
+ */
+export interface FeatureGateLike {
+  isEnabled(feature: string): boolean;
+}
+
 // ─── ExecutionModeRouter ────────────────────────────────────────
 
 export class ExecutionModeRouter {
@@ -61,6 +83,8 @@ export class ExecutionModeRouter {
     private readonly swarmCoordinator: SwarmCoordinatorLike,
     private readonly llmClient: LLMClientLike,
     private readonly agentRegistry: AgentDefinitionLike[],
+    private readonly loopRunner?: LoopRunnerLike,
+    private readonly featureGate?: FeatureGateLike,
   ) {}
 
   /**
@@ -83,7 +107,7 @@ export class ExecutionModeRouter {
   /**
    * Route a task through the appropriate execution pipeline based on the active mode.
    *
-   * Requirements: 3.1, 3.3, 3.4, 3.5
+   * Requirements: 3.1, 3.3, 3.4, 3.5, 6.1, 6.2, 6.3
    */
   async execute(task: string, sessionId: string): Promise<ExecutionResult> {
     const mode = this.currentMode;
@@ -97,6 +121,8 @@ export class ExecutionModeRouter {
         return this.executePro(task, sessionId);
       case 'ultra':
         return this.executeUltra(task, sessionId);
+      case 'loop':
+        return this.executeLoop(task, sessionId);
       default: {
         // Exhaustive check — should never happen with typed input
         const _exhaustive: never = mode;
@@ -207,6 +233,45 @@ export class ExecutionModeRouter {
       output: result.output,
       mode: 'ultra',
       agentsUsed: result.agentsUsed,
+      tokensUsed: result.tokensUsed,
+    };
+  }
+
+  /**
+   * Loop mode: bounded iterative execution via LoopRunner.
+   *
+   * Enforces mutual exclusion (REQ-6.2): exactly one component is invoked —
+   * the LoopRunner. The SwarmCoordinator is NOT called directly by the router
+   * in loop mode (the LoopRunner itself calls SwarmCoordinator once per pass).
+   *
+   * Checks the loops_enabled feature flag (REQ-6.3): throws if disabled.
+   *
+   * Requirements: 6.1, 6.2, 6.3, 6.4
+   */
+  private async executeLoop(task: string, sessionId: string): Promise<ExecutionResult> {
+    // REQ-6.3: Check loops_enabled feature flag
+    if (!this.featureGate || !this.featureGate.isEnabled('loops_enabled')) {
+      throw new Error(
+        'Loop execution mode is not enabled. Enable the loops_enabled feature flag to use loop mode.',
+      );
+    }
+
+    // REQ-6.2: Mutual exclusion — exactly one component invoked (LoopRunner)
+    // Never both LoopRunner and SwarmCoordinator from the router, and never neither.
+    if (!this.loopRunner) {
+      throw new Error(
+        'Loop execution mode requires a LoopRunner instance. Provide a LoopRunner via the constructor.',
+      );
+    }
+
+    // Delegate to LoopRunner only — SwarmCoordinator is NOT invoked here.
+    // The LoopRunner itself calls SwarmCoordinator once per pass (REQ-6.5).
+    const result = await this.loopRunner.start(task, sessionId);
+
+    return {
+      output: result.output,
+      mode: 'loop',
+      agentsUsed: ['loop-runner'],
       tokensUsed: result.tokensUsed,
     };
   }

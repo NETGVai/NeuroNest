@@ -102,6 +102,16 @@ export interface FeatureGateFlags {
 
   // ─── GCF Expansion Flags ────────────────────────────────────────
   gcf_expanded_handoffs: boolean;            // Gates GCF on new handoff surfaces
+
+  // ─── Loop Engine & Harness Flags ────────────────────────────────
+  harness_permission_patterns: boolean;      // Permission Pattern Engine for zero-prompt operation
+  harness_hooks: boolean;                    // Deterministic pre/post tool-use hooks
+  harness_subagents: boolean;                // Fresh-context verifier subagent dispatch
+  harness_mcp_scoping: boolean;              // Workspace-scoped MCP configuration
+  loops_enabled: boolean;                    // Master gate for loop execution mode
+  loops_catalog_import: boolean;             // External catalog import pipeline
+  loops_discover: boolean;                   // Loop discovery and suggestion
+  loops_scheduler: boolean;                  // Cross-platform scheduled loop runs
 }
 
 /** Default flags — all disabled */
@@ -197,6 +207,16 @@ export const DEFAULT_FEATURE_FLAGS: FeatureGateFlags = {
 
   // ─── GCF Expansion Flags ────────────────────────────────────────
   gcf_expanded_handoffs: false,
+
+  // ─── Loop Engine & Harness Flags ────────────────────────────────
+  harness_permission_patterns: false,
+  harness_hooks: false,
+  harness_subagents: false,
+  harness_mcp_scoping: false,
+  loops_enabled: false,
+  loops_catalog_import: false,
+  loops_discover: false,
+  loops_scheduler: false,
 };
 
 // ─── Dependency Declarations ────────────────────────────────────
@@ -291,6 +311,35 @@ export const ENHANCED_FEATURE_DEPENDENCIES: FeatureDependency[] = [
   {
     feature: 'test_drift_detection',
     requires: ['test_health_analytics'],
+  },
+];
+
+/**
+ * Loop Engine feature dependency declarations.
+ *
+ * - loops_enabled requires harness_permission_patterns AND harness_subagents
+ * - loops_catalog_import requires loops_enabled
+ * - loops_discover requires loops_enabled
+ * - loops_scheduler requires loops_enabled
+ *
+ * Requirements: 15.1, 15.3
+ */
+export const LOOP_ENGINE_DEPENDENCIES: FeatureDependency[] = [
+  {
+    feature: 'loops_enabled',
+    requires: ['harness_permission_patterns', 'harness_subagents'],
+  },
+  {
+    feature: 'loops_catalog_import',
+    requires: ['loops_enabled'],
+  },
+  {
+    feature: 'loops_discover',
+    requires: ['loops_enabled'],
+  },
+  {
+    feature: 'loops_scheduler',
+    requires: ['loops_enabled'],
   },
 ];
 
