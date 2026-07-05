@@ -478,22 +478,74 @@ export class StartupManager {
   }
 
   private async prefetchConfig(): Promise<boolean> {
-    // Stub: simulate config load
-    return true;
+    try {
+      // Load app config from SQLite early to warm the config cache.
+      // This avoids blocking the first IPC handler that reads config.
+      const { initDatabase } = require('../storage/database');
+      const db = initDatabase();
+      const rows = db.prepare("SELECT key, value FROM config WHERE key IN ('providers', 'default-provider', 'theme', 'execution-mode')").all();
+      // Cache in memory for fast access (the IPC layer's getCachedConfig will use DB anyway,
+      // but this ensures the SQLite page cache is warm)
+      return rows.length > 0;
+    } catch {
+      return false;
+    }
   }
 
   private async prefetchSessionState(): Promise<boolean> {
-    // Stub: simulate session state load
-    return true;
+    try {
+      // Load the most recent session to enable fast resume.
+      const { initDatabase } = require('../storage/database');
+      const db = initDatabase();
+      const latestSession = db.prepare(
+        "SELECT id, project_id FROM sessions ORDER BY created_at DESC LIMIT 1"
+      ).get();
+      return latestSession != null;
+    } catch {
+      return false;
+    }
   }
 
   private async prefetchApiKeys(): Promise<boolean> {
-    // Stub: simulate API key load from Keychain
-    return true;
+    try {
+      // Validate that at least one provider has a configured API key.
+      // This lets the UI show "ready" state without waiting for lazy init.
+      const { initDatabase } = require('../storage/database');
+      const db = initDatabase();
+      const provRow = db.prepare("SELECT value FROM config WHERE key = 'providers'").get() as any;
+      if (!provRow?.value) return false;
+      const providers = JSON.parse(provRow.value);
+      return providers.some((p: any) => p.apiKey && p.apiKey.length > 5);
+    } catch {
+      return false;
+    }
   }
 
   private async prefetchProviderHealth(): Promise<boolean> {
-    // Stub: simulate provider health checks
-    return true;
+    try {
+      // Perform a lightweight reachability check on the first configured provider.
+      // Uses a HEAD request with 3s timeout — doesn't block startup if provider is slow.
+      const { initDatabase } = require('../storage/database');
+      const db = initDatabase();
+      const provRow = db.prepare("SELECT value FROM config WHERE key = 'providers'").get() as any;
+      if (!provRow?.value) return false;
+      const providers = JSON.parse(provRow.value);
+      const first = providers[0];
+      if (!first?.baseUrl && !first?.type) return true; // Local model, assumed healthy
+
+      const url = first.baseUrl || `https://api.${first.type}.com`;
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 3000);
+      try {
+        const response = await fetch(url, { method: 'HEAD', signal: controller.signal });
+        clearTimeout(timeout);
+        return response.status < 500;
+      } catch {
+        clearTimeout(timeout);
+        return false; // Provider unreachable — not fatal, just informational
+      }
+    } catch {
+      return false;
+    }
   }
 }

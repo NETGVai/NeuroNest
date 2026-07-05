@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 🔒 Report a Security Vulnerability
+    url: https://github.com/NETGVai/NeuroNest/security/advisories/new
+    about: Please report security vulnerabilities privately via GitHub Security Advisories — never in a public issue.
+  - name: 💬 Questions & Discussions
+    url: https://github.com/NETGVai/NeuroNest/discussions
+    about: Ask questions, share ideas, and discuss NeuroNest with the community.
+  - name: 📖 Documentation
+    url: https://neuronest.cc/docs
+    about: Check the official documentation before filing an issue.

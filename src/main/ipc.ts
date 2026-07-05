@@ -213,6 +213,7 @@ let lintTestServiceRef: any = null; // Reference to AutoLintTestService, set dur
 let notificationServiceRef: any = null; // Reference to NotificationService, set during IPC init
 let _ipcMainWindow: BrowserWindow | null = null; // Module-level reference for deferred channel wiring
 let autonomyManagerRef: any = null; // Reference to AutonomyManager, set during IPC init
+let providerRegistryRef: import('../providers/provider-registry').IProviderRegistry | null = null;
 let smartRouterRef: any = null; // Reference to SmartModelRouter, set during IPC init
 let providerHealthRef: any = null; // Reference to ProviderHealthMonitor, set during IPC init
 let agentMemoryClient: any = null; // Reference to AgentMemoryClient, set during IPC init
@@ -401,6 +402,36 @@ function cachedStmt(sql: string) {
 
 /** Resolve the active LLM provider from cached config (used in multiple handlers) */
 function resolveActiveLLMClient(): ReturnType<typeof createLLMClient> | null {
+  // ── Provider Registry path (formal routing with priority/failover/usage tracking) ──
+  // When the registry is populated, use it as the primary resolution path.
+  if (providerRegistryRef) {
+    try {
+      const adapter = providerRegistryRef.getProvider();
+      // Wrap the adapter as an LLMClient-compatible object for backward compat
+      const wrappedClient = {
+        chat: async (messages: any[], opts?: any) => {
+          const result = await adapter.chatCompletion(
+            messages.map((m: any) => ({ role: m.role, content: m.content })),
+            { temperature: opts?.temperature, maxTokens: opts?.maxTokens, stopSequences: opts?.stop },
+          );
+          return { content: result.content, usage: { promptTokens: result.tokensUsed.prompt, completionTokens: result.tokensUsed.completion } };
+        },
+        stream: async function*(messages: any[], opts?: any) {
+          for await (const chunk of adapter.streamCompletion(
+            messages.map((m: any) => ({ role: m.role, content: m.content })),
+            { temperature: opts?.temperature, maxTokens: opts?.maxTokens, stopSequences: opts?.stop },
+          )) {
+            yield chunk.content;
+          }
+        },
+      };
+      return wrappedClient as any;
+    } catch {
+      // Registry not populated or provider unavailable — fall through to legacy path
+    }
+  }
+
+  // ── Legacy path (direct provider config lookup) ──
   try {
     const provJson = getCachedConfig('providers');
     const defJson = getCachedConfig('default-provider');
@@ -747,6 +778,25 @@ async function initDeferredModules(): Promise<void> {
       pricingTable = loadPricingTable();
       console.log('[IPC] Cost tracking initialized');
     } catch (e) { console.warn('[IPC] Cost tracking init error:', e); }
+
+    // Initialize ProviderRegistry with formal adapter wrapping
+    try {
+      const { ProviderRegistry } = require('../providers/provider-registry.impl');
+      const { FeatureGateSystem } = require('../feature-gate/feature-gate-system');
+      const { createAdaptersFromConfigs } = require('../providers/llm-client-adapter');
+      const featureGate = new FeatureGateSystem();
+      const registry = new ProviderRegistry(db, featureGate);
+      const provJson = getCachedConfig('providers');
+      if (provJson) {
+        const providers = JSON.parse(provJson);
+        const adapters = createAdaptersFromConfigs(providers);
+        for (const { adapter, priority } of adapters) {
+          try { registry.register(adapter, priority); } catch {}
+        }
+      }
+      providerRegistryRef = registry;
+      console.log('[IPC] ProviderRegistry initialized with', registry.getStatus().length, 'providers');
+    } catch (e) { console.warn('[IPC] ProviderRegistry init error (non-fatal, using legacy path):', e); }
 
     // Test database tables
     try {
@@ -3511,9 +3561,59 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
       isCommand: true, agent: 'ZERA',
     });
 
-    // Step 2: Orchestrator Planning
+    // Step 2: Execution Mode Selection + Orchestrator Planning
     const orchestratorStartTime = Date.now();
+
+    // Use ExecutionModeRouter to determine optimal execution mode for this task
+    let selectedMode: 'flash' | 'standard' | 'pro' | 'ultra' = 'pro'; // default
+    try {
+      const { scoreAllAgents } = require('../pipeline/orchestrator-planner');
+      const agentScores = scoreAllAgents(zeraResult.optimizedPrompt);
+      const topScore = Math.max(...Array.from(agentScores.values()));
+      const qualifiedAgentCount = Array.from(agentScores.values()).filter(s => s > 5).length;
+
+      // Mode selection heuristic based on task complexity
+      if (topScore > 40 && qualifiedAgentCount <= 2) {
+        selectedMode = 'flash'; // Single highly-qualified agent — skip orchestrator overhead
+      } else if (qualifiedAgentCount <= 3) {
+        selectedMode = 'standard'; // Small team — sequential execution
+      } else if (qualifiedAgentCount <= 6) {
+        selectedMode = 'pro'; // Medium team — sequential multi-agent
+      } else {
+        selectedMode = 'ultra'; // Large team — parallel decomposition
+      }
+
+      // Allow user override from session preferences
+      const modeOverride = getCachedConfig('execution-mode');
+      if (modeOverride && ['flash', 'standard', 'pro', 'ultra'].includes(modeOverride)) {
+        selectedMode = modeOverride as typeof selectedMode;
+      }
+    } catch {}
+
+    sendAndStore(mainWindow, {
+      role: 'assistant',
+      content: `⚡ **Execution Mode:** ${selectedMode.toUpperCase()} ${selectedMode === 'flash' ? '(single agent)' : selectedMode === 'standard' ? '(focused team)' : selectedMode === 'pro' ? '(sequential multi-agent)' : '(parallel decomposition)'}`,
+      isCommand: true, agent: 'Router',
+    });
+
     const plan = orchestratorPlanner.createPlan(zeraResult.optimizedPrompt);
+
+    // Apply mode-based agent limiting
+    if (selectedMode === 'flash') {
+      // Flash: only use the single highest-scored agent
+      plan.agents = plan.agents.slice(0, 1);
+      plan.topology = 'sequential';
+    } else if (selectedMode === 'standard') {
+      // Standard: limit to top 3 agents, sequential
+      plan.agents = plan.agents.slice(0, 3);
+      plan.topology = 'sequential';
+    } else if (selectedMode === 'pro') {
+      // Pro: use all planned agents, sequential (default behavior)
+      // No change needed — plan.agents stays as-is
+    } else if (selectedMode === 'ultra') {
+      // Ultra: use all planned agents with parallel topology for max concurrency
+      plan.topology = 'swarm';
+    }
 
     // Inject design template for Design department agents
     try {
@@ -5602,6 +5702,24 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
     try {
       return getCachedConfig('default-provider') || null;
     } catch { return null; }
+  });
+
+  // ── Execution Mode Router ──
+  ipcMain.handle('get-execution-mode', async () => {
+    try {
+      return getCachedConfig('execution-mode') || 'auto';
+    } catch { return 'auto'; }
+  });
+
+  ipcMain.handle('set-execution-mode', async (_ev, arg: any) => {
+    try {
+      const mode = typeof arg === 'string' ? arg : arg?.mode || 'auto';
+      if (!['auto', 'flash', 'standard', 'pro', 'ultra'].includes(mode)) {
+        return { success: false, error: 'Invalid mode. Use: auto, flash, standard, pro, ultra' };
+      }
+      setCachedConfig('execution-mode', mode);
+      return { success: true, mode };
+    } catch (e: any) { return { success: false, error: e.message }; }
   });
 
   ipcMain.handle('pull-ollama-model', async (_ev, arg: any) => {
@@ -8179,14 +8297,46 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
     console.log('[IPC] Tool Executor registered');
   } catch (error) { console.warn('[IPC] Tool Executor not available:', error); }
 
-  // ── Context Condenser ──
+  // ── Context Condenser (V1 + V2) ──
   try {
     const { ContextCondenser } = require('../pipeline/context-condenser.js');
     const condenser = new ContextCondenser();
+
+    // V2: Create enhanced condenser gated behind context_condenser_v2 flag
+    let condenserV2: any = null;
+    try {
+      const { createContextCondenserV2, SqliteCondensationLogStore } = require('../pipeline/context-condenser-v2.js');
+      const logStore = db ? new SqliteCondensationLogStore(db) : null;
+      condenserV2 = createContextCondenserV2({
+        config: { enabled: true, budgetRatio: 0.6, summaryMaxTokens: 600, condensationModel: 'fast' },
+        summarize: async (prompt: string) => {
+          // Use the cheapest available model for condensation
+          const llm = resolveActiveLLMClient();
+          if (!llm) throw new Error('No LLM available for condensation');
+          const result = await llm.chat([{ role: 'user', content: prompt }], { temperature: 0.3, maxTokens: 800 });
+          return result.content || '';
+        },
+        logStore: logStore || undefined,
+        sessionId: activeSessionId || 'unknown',
+      });
+      console.log('[IPC] Context Condenser V2 initialized (four-block assembly)');
+    } catch (v2Err: any) {
+      console.warn('[IPC] Context Condenser V2 init failed (using V1 fallback):', v2Err?.message);
+    }
+
     ipcMain.handle('condenser:condense', async (_ev, arg: any) => {
       try {
+        // When V2 is available, use it for more intelligent condensation
+        if (condenserV2 && arg.events) {
+          const stableBlock = { label: 'stable_prefix', content: arg.systemPrompt || '' };
+          const contextWindow = arg.contextWindow || 128000;
+          const modeBudget = arg.modeBudget || 80000;
+          const assembled = await condenserV2.assemble(stableBlock, arg.events, arg.currentTask || '', contextWindow, modeBudget);
+          return { success: true, result: assembled, version: 'v2' };
+        }
+        // Fallback to V1
         const result = await condenser.condense(arg.messages || []);
-        return { success: true, result };
+        return { success: true, result, version: 'v1' };
       } catch (e: any) { return { success: false, error: e.message }; }
     });
     ipcMain.handle('condenser:check', async (_ev, arg: any) => {
@@ -11548,7 +11698,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
   console.log('[IPC] BoundedMessageStore handlers registered');
 }
 
-export { runtimeManager, activeLlmClient };
+export { runtimeManager, activeLlmClient, providerRegistryRef };
 
 export function notifyThemeChange(win: BrowserWindow, theme: 'light' | 'dark'): void {
   win.webContents.send('theme-changed', theme);

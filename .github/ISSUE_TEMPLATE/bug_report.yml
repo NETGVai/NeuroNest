@@ -1,0 +1,150 @@
+name: 🐛 Bug Report
+description: Report a reproducible bug in NeuroNest
+title: "[Bug]: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug!
+
+        ⚠️ **Security vulnerabilities:** Do NOT report them here. Use
+        [GitHub Security Advisories](https://github.com/NETGVai/NeuroNest/security/advisories/new)
+        or email security@netgv.ai instead.
+
+  - type: checkboxes
+    id: prechecks
+    attributes:
+      label: Pre-submission checklist
+      options:
+        - label: I searched existing issues and this bug has not been reported yet
+          required: true
+        - label: I am running the latest version of NeuroNest
+          required: true
+        - label: This is not a security vulnerability (those go to security@netgv.ai)
+          required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug description
+      description: A clear and concise description of what the bug is.
+      placeholder: When I do X, Y happens instead of Z...
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps to reliably reproduce the behavior.
+      placeholder: |
+        1. Launch NeuroNest
+        2. Open project '...'
+        3. Ask the swarm to '...'
+        4. See error
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What actually happened? Include error messages if any.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      description: Which part of NeuroNest does this bug affect?
+      options:
+        - Swarm orchestration / agents
+        - LLM providers / model connections
+        - Code editor (Monaco)
+        - Knowledge graphs
+        - Runtime debugger
+        - Docker sandbox
+        - Messaging channels (WhatsApp/Telegram/Discord/Slack/Email/GitHub)
+        - Security / firewall
+        - Brainstorm mode
+        - Project memory / learning
+        - Crash recovery / sessions
+        - Skills system
+        - CLI (neuronest-cli)
+        - Installation / updates
+        - UI / UX
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: NeuroNest version
+      description: Found in Settings → About (e.g., 0.1.1)
+      placeholder: "0.1.1"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - macOS (Apple Silicon — M1/M2/M3/M4)
+        - macOS (Intel)
+        - Other / building from source
+    validations:
+      required: true
+
+  - type: input
+    id: os-version
+    attributes:
+      label: macOS version
+      placeholder: "e.g., macOS 15.2 (Sequoia)"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: provider
+    attributes:
+      label: LLM provider in use (if relevant)
+      multiple: true
+      options:
+        - OpenAI
+        - Anthropic
+        - Google Gemini
+        - DeepSeek
+        - Grok (xAI)
+        - Mistral
+        - NVIDIA NIM
+        - Groq
+        - Ollama (local)
+        - llama.cpp (local)
+        - OpenMythos (local)
+        - Not applicable
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs / screenshots
+      description: |
+        Paste relevant log output or attach screenshots.
+        ⚠️ **Redact API keys, tokens, and any personal or proprietary code before posting.**
+      render: shell
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Anything else that might help — active security policy preset, sandbox on/off, number of agents in the swarm, etc.

@@ -1,0 +1,90 @@
+name: ✨ Feature Request
+description: Suggest a new feature or improvement for NeuroNest
+title: "[Feature]: "
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting an improvement to NeuroNest! Well-scoped, motivated requests are far more likely to make it onto the roadmap.
+
+  - type: checkboxes
+    id: prechecks
+    attributes:
+      label: Pre-submission checklist
+      options:
+        - label: I searched existing issues and discussions, and this has not been requested yet
+          required: true
+        - label: This is a single, focused feature (multiple ideas → multiple issues)
+          required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: What problem are you trying to solve? Describe the pain point, not the solution.
+      placeholder: "As a user working on large monorepos, I struggle with... because..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: What would you like NeuroNest to do? Be as specific as you can.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What workarounds or alternative approaches have you considered? How do other tools handle this?
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Feature area
+      options:
+        - Swarm orchestration / agents
+        - New LLM provider integration
+        - New messaging channel
+        - Code editor
+        - Knowledge graphs
+        - Runtime debugger
+        - Docker sandbox
+        - Security / firewall / policies
+        - Brainstorm mode
+        - Project memory / learning
+        - Skills system
+        - CLI (neuronest-cli)
+        - Platform support (Windows/Linux)
+        - UI / UX
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: importance
+    attributes:
+      label: How important is this to your workflow?
+      options:
+        - Nice to have
+        - Would meaningfully improve my workflow
+        - Blocking — I can't adopt NeuroNest without it
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: Contribution
+      options:
+        - label: I'm willing to open a PR implementing this feature (see CONTRIBUTING.md)
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Mockups, examples from other tools, links, or anything else that helps.
