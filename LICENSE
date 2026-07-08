@@ -1,21 +1,43 @@
-MIT License
+# NeuroNest License
 
-Copyright (c) 2026 Network Guardian
+NeuroNest Community Edition is licensed under the Business Source License 1.1 (BUSL-1.1).
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+## Licensor
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+Network Guardian Inc.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+## Licensed Work
+
+NeuroNest Community Edition, including all source code, documentation, build scripts, assets, and associated files distributed as part of this repository.
+
+## Additional Use Grant
+
+You may:
+
+- Use NeuroNest for personal, educational, research, evaluation, and internal development purposes.
+- Modify the source code.
+- Create plugins, extensions, integrations, and custom workflows.
+- Deploy NeuroNest internally for non production testing and proof of concept environments.
+
+You may not:
+
+- Offer NeuroNest as a hosted or managed service.
+- Sell or sublicense NeuroNest.
+- Use NeuroNest in commercial production without obtaining a commercial license from Network Guardian Inc.
+
+Commercial licensing:
+licensing@netgv.ai
+
+## Change Date
+
+July 8, 2050
+
+## Change License
+
+Apache License Version 2.0
+
+---
+
+The complete and governing Business Source License 1.1 text is contained in `LICENSE.BUSL`.
+
+If any conflict exists between this document and the Business Source License 1.1, the Business Source License 1.1 shall prevail.
