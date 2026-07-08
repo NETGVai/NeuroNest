@@ -20,6 +20,7 @@
   <img src="https://img.shields.io/badge/version-0.1.1-blue?style=flat-square" alt="Version" />
   <img src="https://img.shields.io/badge/agents-117-purple?style=flat-square" alt="Agents" />
   <img src="https://img.shields.io/badge/providers-11-green?style=flat-square" alt="Providers" />
+
 </p>
 
 ---
@@ -191,6 +192,7 @@ See [Architecture Reference](https://neuronest.cc/docs) for the full system desi
 - **Testing:** Vitest + fast-check (property-based)
 
 ---
+[![License: BUSL-1.1](https://img.shields.io/badge/License-BUSL--1.1-blue.svg)](LICENSE)
 
 <p align="center">
   Built by <a href="https://neuronest.cc">NeuroNest</a>
