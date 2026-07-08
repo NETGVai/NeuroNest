@@ -20,6 +20,7 @@
   <img src="https://img.shields.io/badge/version-0.1.1-blue?style=flat-square" alt="Version" />
   <img src="https://img.shields.io/badge/agents-117-purple?style=flat-square" alt="Agents" />
   <img src="https://img.shields.io/badge/providers-11-green?style=flat-square" alt="Providers" />
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/License-BUSL--1.1-yellow?style=flat-square" alt="License: BUSL-1.1" /></a>
 
 </p>
 

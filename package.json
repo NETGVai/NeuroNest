@@ -3,6 +3,7 @@
   "version": "0.1.571",
   "description": "NeuroNest - The AI Coding SuperAgent",
   "author": "NeuroNest <admin@neuronest.cc>",
+  "license": "BUSL-1.1",
   "private": true,
   "main": "dist/main/electron-app.js",
   "scripts": {
