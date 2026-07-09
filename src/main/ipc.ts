@@ -3569,8 +3569,8 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
     try {
       const { scoreAllAgents } = require('../pipeline/orchestrator-planner');
       const agentScores = scoreAllAgents(zeraResult.optimizedPrompt);
-      const topScore = Math.max(...Array.from(agentScores.values()));
-      const qualifiedAgentCount = Array.from(agentScores.values()).filter(s => s > 5).length;
+      const topScore = Math.max(...Array.from(agentScores.values() as Iterable<number>));
+      const qualifiedAgentCount = Array.from(agentScores.values() as Iterable<number>).filter((s: number) => s > 5).length;
 
       // Mode selection heuristic based on task complexity
       if (topScore > 40 && qualifiedAgentCount <= 2) {
@@ -5704,13 +5704,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
     } catch { return null; }
   });
 
-  // ── Execution Mode Router ──
-  ipcMain.handle('get-execution-mode', async () => {
-    try {
-      return getCachedConfig('execution-mode') || 'auto';
-    } catch { return 'auto'; }
-  });
-
+  // ── Execution Mode: set only (get is registered in deerflow-ipc.ts) ──
   ipcMain.handle('set-execution-mode', async (_ev, arg: any) => {
     try {
       const mode = typeof arg === 'string' ? arg : arg?.mode || 'auto';

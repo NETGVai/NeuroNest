@@ -1468,7 +1468,7 @@ function switchToChatView() {
   // Performance: only rebuild if the DOM is empty or stale (project changed)
   // Check if the chat area already has the correct messages rendered
   var existingMsgCount = area.querySelectorAll('.message').length;
-  var needsRebuild = existingMsgCount === 0 || (messagesToRender.length > 0 && existingMsgCount !== messagesToRender.length);
+  var needsRebuild = existingMsgCount === 0 || existingMsgCount !== messagesToRender.length;
 
   if (needsRebuild) {
     area.innerHTML = '';
