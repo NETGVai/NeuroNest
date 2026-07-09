@@ -5,32 +5,31 @@
 </p>
 
 <p align="center">
-  117 specialized AI agents. 13 departments. One desktop app.<br/>
+  117 specialized AI agents. 14 departments. One desktop app.<br/>
   Ship software faster with swarm intelligence, not just autocomplete.
 </p>
 
 <p align="center">
   <a href="https://neuronest.cc">Website</a> &middot;
   <a href="https://neuronest.cc/docs">Documentation</a> &middot;
-  <a href="https://neuronest.cc/download">Download</a> &middot;
+  <a href="https://neuronest.cc/download">Download</a>
 </p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-000?style=flat-square&logo=electron" alt="Platforms" />
-  <img src="https://img.shields.io/badge/version-0.1.1-blue?style=flat-square" alt="Version" />
+  <img src="https://img.shields.io/badge/version-0.1.573-blue?style=flat-square" alt="Version" />
   <img src="https://img.shields.io/badge/agents-117-purple?style=flat-square" alt="Agents" />
   <img src="https://img.shields.io/badge/providers-11-green?style=flat-square" alt="Providers" />
   <a href="./LICENSE"><img src="https://img.shields.io/badge/License-BUSL--1.1-yellow?style=flat-square" alt="License: BUSL-1.1" /></a>
-
 </p>
 
 ---
 
 ## What is NeuroNest?
 
-NeuroNest is a desktop AI development environment that goes beyond code completion. Instead of a single copilot, you get an entire engineering organization that collaborates through swarm orchestration to tackle complex software tasks.
+NeuroNest is a desktop AI development environment that goes beyond code completion. Instead of a single copilot, you get an entire engineering organization — 117 specialist agents across 14 departments — that collaborates through swarm orchestration to tackle complex software tasks.
 
-Ask it to build a feature. It plans the architecture, assigns specialists, executes in parallel, reviews the output, and delivers tested results.
+Ask it to build a feature. It plans the architecture, assigns specialists, selects the optimal execution mode, runs agents in parallel, verifies results with an adversarial reviewer, and delivers tested code with an immutable receipt.
 
 ---
 
@@ -38,21 +37,57 @@ Ask it to build a feature. It plans the architecture, assigns specialists, execu
 
 ### 117 Specialized AI Agents
 
-Not one generic assistant. A full engineering team across 13 departments: Engineering, Security, Data, DevOps, Design, QA, Product, Research, Mobile, AI/ML, Infrastructure, Blockchain, and a central Orchestrator. Each agent has focused expertise, domain-specific prompts, and scoped tool permissions.
+A full engineering team across 14 departments: Engineering, Design, Marketing, Product, Project Management, Testing, Support, Specialized, Consensus, Infrastructure, Optimization, Research, Software Delivery, and NeuroNest Orchestration. Each agent has focused expertise, domain-specific system prompts, and scoped tool permissions.
 
-### Swarm Orchestration
+### Swarm Orchestration with 5 Execution Modes
 
-Describe a task. NeuroNest decomposes it into subtasks, assigns the right specialists, executes agents in parallel phases, merges outputs through consensus, and delivers a unified result. Shared memory lets agents build on each other's work.
+NeuroNest dynamically selects the optimal execution strategy based on task complexity:
 
-### 11 LLM Providers
+| Mode | Agents | Strategy | Best For |
+|------|--------|----------|----------|
+| **Flash** | 1 | Single best-fit agent | Simple edits, renames, quick fixes |
+| **Standard** | ≤3 | Focused team, sequential | Moderate tasks, bug fixes |
+| **Pro** | All planned | Sequential multi-agent | Feature implementation |
+| **Ultra** | All planned | Parallel decomposition | Large-scale refactoring |
+| **Loop** | Iterative | Bounded verification-gated passes | Fix-all-errors, test repair |
 
-Connect any combination of cloud and local models:
+Mode selection is automatic (based on agent scoring) or manually overridable via settings.
+
+### Loop Engine
+
+Bounded, verification-gated iterative execution. Define a goal, verification checks, and stop conditions — NeuroNest loops until the checks pass or limits are hit. Built-in loops: Type-clean (tsc), Test-repair (vitest), Docs-current (link-check). Features include:
+
+- 11-state deterministic state machine with guaranteed termination
+- Independent verifier subagent that catches 11 fake-done shortcut patterns
+- Immutable receipts for every run (auditable, reproducible)
+- Crash recovery with checkpoint persistence
+- Cross-platform scheduler (macOS launchd, Linux systemd, Windows Task Scheduler)
+
+### 11 LLM Providers with Formal Registry
+
+Connect any combination of cloud and local models through the priority-based Provider Registry:
 
 **Cloud:** OpenAI, Anthropic, Google Gemini, DeepSeek, Grok (xAI), Mistral, NVIDIA NIM, Groq
 
 **Local:** Ollama, llama.cpp, OpenMythos
 
-Switch providers per agent. Get a second opinion by querying two models on the same prompt and comparing results.
+Provider management features:
+- Priority-based routing with automatic rate-limit fallback
+- Hot-swap between providers without restart
+- Per-provider usage tracking (tokens, cost) persisted to SQLite
+- Task-type classification with intelligent model selection
+- Exponential backoff failover with provider chain exhaustion handling
+
+### Context Compression (V2)
+
+Four-block prompt assembly that prevents context rot in long conversations:
+
+1. **Stable prefix** — system prompt + agent definition + skills (byte-stable, cacheable)
+2. **Condensed summary** — LLM-summarized older events (≤600 tokens)
+3. **Recent events** — last K messages kept verbatim
+4. **Current task** — active work description
+
+Triggers automatically at 60% of model context window. Uses the cheapest model for condensation. Achieves ~2x reduction in per-turn API costs with full audit logging.
 
 ### Knowledge Graphs
 
@@ -60,7 +95,11 @@ Visualize your codebase as an interactive network. NeuroNest scans your project,
 
 ### 6 Messaging Channels
 
-NeuroNest receives and responds to messages from WhatsApp, Telegram, Discord, Slack, Email, and GitHub. Incoming messages flow through the AI pipeline and responses are sent back to the originating platform. Your agents are reachable everywhere.
+Receive and respond to messages from WhatsApp, Telegram, Discord, Slack, Email, and GitHub. Incoming messages flow through the full AI pipeline (with configurable smart vs full mode) and responses are sent back to the originating platform.
+
+### On-Device Voice Synthesis
+
+ONNX-based text-to-speech via the Supertonic engine. Runs entirely on-device with no cloud API calls. Summarizes agent responses and reads them aloud with natural intonation. Multiple voice styles (5 male, 5 female) with configurable speed.
 
 ### Integrated Code Editor
 
@@ -70,25 +109,21 @@ Monaco-powered editor with syntax highlighting, multi-tab support, split views, 
 
 Detect your project's tech stack, install dependencies, and run services with live log streaming and a browser preview panel. Supports Node.js, Python, Go, Rust, and static HTML.
 
-### Docker Sandbox
+### Skills System
 
-Optional secure execution environment with read-only filesystem, memory limits, CPU constraints, and network isolation. Run untrusted code safely in Docker containers.
-
-### Project Learning Memory
-
-NeuroNest learns patterns, preferences, and pitfalls specific to each project. Conventions like "this project uses Zod for validation" or "tests go in tests/ not \_\_tests\_\_/" are remembered across sessions and injected into future prompts. Knowledge compounds over time and decays gracefully to stay current.
+198 skills with 2,275 agent-skill assignments. Bundled catalog, design templates, custom skills, workspace-specific skills, and skill packs. Skills are auto-assigned to agents by keyword matching and reinforced through usage tracking. Includes a skill learner that extracts new skills from successful executions.
 
 ### Brainstorm Mode
 
-When you describe a feature, NeuroNest asks 3-5 clarifying questions before writing any code. Forces design thinking before implementation. Generates a design summary from the Q&A that feeds into the development pipeline.
+When you describe a feature, NeuroNest asks 3–5 clarifying questions before writing any code. Forces design thinking before implementation. Generates a design summary that feeds into the development pipeline.
 
-### Crash Recovery
+### Project Learning Memory
 
-Session state is auto-saved every 30 seconds: decisions made, remaining work, failed approaches, active agents. If the app crashes or you restart, you can resume exactly where you left off.
+Learns patterns, preferences, and pitfalls specific to each project. Conventions are remembered across sessions and injected into future prompts. Knowledge compounds over time and decays gracefully to stay current.
 
-### Skills System
+### Crash Recovery & Checkpoints
 
-198 skills with 2,275 agent-skill assignments. Bundled catalog, design templates, custom skills, and workspace-specific skills. Skills are auto-assigned to agents by keyword matching and reinforced through usage tracking.
+Session state is auto-saved every 30 seconds. Loop runs persist after each pass. Partial passes are cleaned up on restart. Resume exactly where you left off after any interruption.
 
 ---
 
@@ -100,27 +135,73 @@ NeuroNest implements a 7-layer defense-in-depth security model. Each layer opera
 |-------|-----------|
 | Firewall Engine | 4-tier scanning: sanitization, prompt injection detection, secrets scanning, policy enforcement |
 | Enhanced Firewall | Hybrid regex + semantic analysis with sophistication assessment and PII redaction |
-| Action Analyzer | Pre-execution risk classification for shell commands and file operations |
+| Action Security Analyzer | Pre-execution risk classification (LOW/MEDIUM/HIGH) for shell commands and file operations |
+| Permission Pattern Engine | Declarative allow/deny patterns enabling zero-prompt unattended operation during loops |
 | Runtime Protection | Anti-tamper, anti-debug, file integrity verification (production builds) |
 | Secure Communication | HTTPS enforcement, certificate pinning, request signing, replay protection |
-| Native Module | Compiled C++ addon for cryptographic operations |
-| Edit Lock | Directory-scoped file edit restrictions during debugging |
+| Edit Lock Manager | Directory-scoped file edit restrictions with glob pattern enforcement |
 
-Policy presets: Permissive, Balanced, Strict, Enterprise. Per-agent and per-project policy overrides. Full configuration UI in the dashboard.
-
-See [Security Architecture](https://neuronest.cc/security) for details.
+Policy presets: Standard, Strict, Enterprise. Per-agent and per-project policy overrides. Security policies can only be tightened (standard → strict → enterprise), never loosened. Full configuration UI in the dashboard.
 
 ---
 
 ## Architecture
 
-NeuroNest is built on Electron with a clean separation between the main process (Node.js backend) and renderer process (vanilla JS frontend). Communication flows through a typed IPC bridge with ~200 allowlisted channels.
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│                        Renderer (Vanilla JS)                         │
+│  Chat UI · Monaco Editor · Knowledge Graphs · Loop Run Panel         │
+│  Harness Health Widget · LoopSpec Editor · File Tree                  │
+└────────────────────────────────┬─────────────────────────────────────┘
+                                 │ IPC Bridge (~400 channels, Zod-validated)
+┌────────────────────────────────▼─────────────────────────────────────┐
+│                      Main Process (Node.js)                          │
+│                                                                      │
+│  ┌─────────────┐  ┌──────────────┐  ┌───────────────────────────┐    │
+│  │ Brainstorm  │→ │ ZERA         │→ │ Execution Mode Router     │    │
+│  │ Mode        │  │ Optimizer    │  │ (flash/standard/pro/ultra)│    │
+│  └─────────────┘  └──────────────┘  └─────────────┬─────────────┘    │
+│                                                   │                  │
+│  ┌─────────────────────────────────────────────────▼──────────────┐  │
+│  │              Orchestrator Planner                              │  │
+│  │  Agent scoring · Phase dependency graph · Topology selection   │  │
+│  └─────────────────────────────────┬──────────────────────────────┘  │
+│                                    │                                 │
+│  ┌─────────────────────────────────▼──────────────────────────────┐  │
+│  │              Swarm Coordinator                                 │  │
+│  │  Parallel phases · Agent handoffs · Consensus detection        │  │
+│  │  GCF wire format · Shared memory · Result envelopes            │  │
+│  └─────────────────────────────────┬──────────────────────────────┘  │
+│                                    │                                 │
+│  ┌────────────┐  ┌────────────────▼───────────────┐  ┌───────────┐   │
+│  │ Loop       │  │ Agent Loop Controller          │  │ Provider  │   │
+│  │ Engine     │  │ Iterative tool-use (LLM→tool→  │  │ Registry  │   │
+│  │ (bounded   │  │ result→LLM) with 30+ optional  │  │ Priority  │   │
+│  │ iterative) │  │ subsystems (feature-gated)     │  │ routing + │   │
+│  └────────────┘  └────────────────────────────────┘  │ failover  │   │
+│                                                      └───────────┘   │
+│  ┌─────────────────────────────────────────────────────────────-─┐   │
+│  │ Harness Layer                                                 │   │
+│  │ Permission Patterns · Standing Context · Memory Vault         │   │
+│  │ Deterministic Hooks · Verifier Subagent · MCP Scoping         │   │
+│  │ GOAL.md/PLAN.md · Progress Hash · Context Budget · Skills     │   │
+│  └─────────────────────────────────────────────────────────────-─┘   │
+│                                                                      │
+│  ┌──────────────────────────────────────────────────────────────-┐   │
+│  │ Infrastructure                                                │   │
+│  │ SQLite (WAL, 41 migrations) · Event Bus · Checkpoint Service  │   │
+│  │ Cost Tracking · Feature Gate System · Cron Scheduler          │   │
+│  │ Firewall · Action Analyzer · Credential Vault · Graph Manager │   │
+│  └─────────────────────────────────────────────────────────────-─┘   │
+└──────────────────────────────────────────────────────────────────────┘
+```
 
-The AI pipeline processes messages through: Brainstorm Mode, Firewall, ZERA Optimizer, Orchestrator Planner, Execution Mode Router, Swarm Coordinator, LLM Client, Action Security Analyzer, and Event Stream.
+**Key data flows:**
+- User message → Brainstorm (optional) → Firewall scan → ZERA optimization → Mode selection → Orchestrator plan → Swarm execution → Response
+- Loop mode: LoopSpec → Runner state machine → Pass execution → Verification → Feedback → Receipt
+- Provider resolution: Registry lookup → Priority selection → Rate-limit fallback → Failover chain
 
-Data is persisted in SQLite (WAL mode) with 10 migration files covering sessions, messages, skills, agent tasks, cost records, security scans, long-term memory, and more.
-
-See [Architecture Reference](https://neuronest.cc/docs) for the full system design.
+**Persistence:** SQLite with 41 migrations covering sessions, messages, skills, agent tasks, cost records, security scans, long-term memory, loop specs, loop runs, loop passes, condensation logs, and more.
 
 ---
 
@@ -142,7 +223,7 @@ See [Architecture Reference](https://neuronest.cc/docs) for the full system desi
 
 ## Getting Started
 
-1. Download the appropriate version for your architecture
+1. Download the appropriate version for your platform
 2. Drag NeuroNest to Applications (macOS), run the installer (Windows), or make the AppImage executable (Linux)
 3. Launch and enter your invitation code
 4. Add an AI provider in Settings (OpenAI, Anthropic, or any supported provider)
@@ -156,17 +237,20 @@ See [Architecture Reference](https://neuronest.cc/docs) for the full system desi
 |---|-----------|-------------|-----------|
 | Price | Free | $29/month | Contact Sales |
 | AI Agents | 117 | 117 | 117 |
-| Swarm Orchestration | Yes | Yes | Yes |
-| Multi-Model Support | Yes | Yes | Yes |
-| Knowledge Graphs | Yes | Yes | Yes |
-| All Channels | Yes | Yes | Yes |
-| Cloud Sync | - | Yes | Yes |
-| Team Collaboration | - | Yes | Yes |
-| Priority Model Access | - | Yes | Yes |
-| Advanced Analytics | - | Yes | Yes |
-| Custom Deployment | - | - | Yes |
-| SSO / RBAC | - | - | Yes |
-| Dedicated Support | - | - | Yes |
+| Swarm Orchestration | ✓ | ✓ | ✓ |
+| Loop Engine | ✓ | ✓ | ✓ |
+| Multi-Model Support | ✓ | ✓ | ✓ |
+| Knowledge Graphs | ✓ | ✓ | ✓ |
+| All Channels | ✓ | ✓ | ✓ |
+| On-Device Voice | ✓ | ✓ | ✓ |
+| Cloud Sync | - | ✓ | ✓ |
+| Team Collaboration | - | ✓ | ✓ |
+| Priority Model Access | - | ✓ | ✓ |
+| Advanced Analytics | - | ✓ | ✓ |
+| Scheduled Loops | - | ✓ | ✓ |
+| Custom Deployment | - | - | ✓ |
+| SSO / RBAC | - | - | ✓ |
+| Dedicated Support | - | - | ✓ |
 
 ---
 
@@ -184,17 +268,32 @@ See [Architecture Reference](https://neuronest.cc/docs) for the full system desi
 
 - **Runtime:** Electron 33, Node.js 20+
 - **Language:** TypeScript (main process), Vanilla JS (renderer)
-- **Database:** SQLite via better-sqlite3 (WAL mode)
+- **Database:** SQLite via better-sqlite3 (WAL mode, 41 migrations)
 - **Editor:** Monaco Editor
 - **Graphs:** Cytoscape.js
+- **Voice:** ONNX Runtime (Supertonic TTS, on-device)
 - **Auth:** WebAuthn / Passkeys (local HTTPS)
 - **Payments:** Stripe
 - **Native:** C++ addon via Node-API (macOS CommonCrypto)
 - **Testing:** Vitest + fast-check (property-based)
+- **Validation:** Zod (IPC schemas, LoopSpec, config)
 
 ---
-[![License: BUSL-1.1](https://img.shields.io/badge/License-BUSL--1.1-blue.svg)](LICENSE)
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and guidelines.
+
+## Security
+
+See [SECURITY.md](SECURITY.md) for reporting vulnerabilities.
+
+## License
+
+NeuroNest is licensed under the [Business Source License 1.1](LICENSE). See [LICENSE.BUSL](LICENSE.BUSL) for the full legal text.
+
+---
 
 <p align="center">
-  Built by <a href="https://neuronest.cc">NeuroNest</a>
+  Built by <a href="https://neuronest.cc">NeuroNest</a> · © 2024-2025 Network Guardian Inc.
 </p>
