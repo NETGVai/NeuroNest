@@ -15,6 +15,7 @@
  */
 
 import type { FunctionDefinition } from './agent-loop';
+import { buildIdentityAnchor } from './overwrite-protection/identity-anchor';
 
 // ─── Interfaces ─────────────────────────────────────────────────
 
@@ -111,6 +112,15 @@ export function buildEnhancedSystemPrompt(config: SystemPromptConfig): string {
   const codeQualitySection = buildCodeQualitySection(codeQualityDirectives);
   const actionFirstSection = buildActionFirstSection(actionFirstDirectives);
 
+  // ── Identity Anchor (regenerated each message cycle) ──────────
+  const identityAnchor = buildIdentityAnchor(projectDir, rulesContent ?? null);
+  const identitySection = identityAnchor.section
+    ? `\n\n${identityAnchor.section}`
+    : '';
+  const relatedProjectsSection = identityAnchor.relatedProjectsSection
+    ? `\n\n${identityAnchor.relatedProjectsSection}`
+    : '';
+
   const powerSection = powerContext
     ? `\n\n## Active Power Context\n${powerContext}`
     : '';
@@ -133,6 +143,8 @@ export function buildEnhancedSystemPrompt(config: SystemPromptConfig): string {
     `- NEVER respond with only text when the user asked you to build, create, or implement something. Use your tools.` +
     codeQualitySection +
     actionFirstSection +
+    identitySection +
+    relatedProjectsSection +
     powerSection
   );
 }

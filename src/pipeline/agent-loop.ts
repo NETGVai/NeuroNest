@@ -58,6 +58,8 @@ import { RemoteAccessBridge } from '../devex/remote-access-bridge.js';
 import { VoiceIOService } from '../devex/voice-io-service.js';
 import { RepoReadinessScanner } from '../intelligence/repo-readiness-scanner.js';
 import { ComplianceGateRunner } from '../devex/compliance-gate-runner.js';
+import { computeScopeDivergence, deriveProjectManifest, evaluateOverwrite, parseOverwriteProtectionConfig, registerProject } from './overwrite-protection';
+import type { ScopeWarningPayload, ScopeDetectorConfig, OverwriteGateConfig, OverwriteConfirmationPayload } from './overwrite-protection';
 import { WasmSandbox } from '../security/wasm-sandbox.js';
 import { BrowserAutomation } from '../devex/browser-automation.js';
 import { BackpropagationEngine } from '../intelligence/backpropagation-engine.js';
@@ -678,6 +680,8 @@ export class AgentLoopController {
   private complianceGateRunner: ComplianceGateRunner | null = null;
   /** WASM sandbox — null when wasm_sandbox feature gate is disabled (Req 28.1, 28.6) */
   private wasmSandbox: WasmSandbox | null = null;
+  /** Overwrite gate config — null when protection is not configured (Req 2.1, 4.1) */
+  private overwriteGateConfig: OverwriteGateConfig | null = null;
   /** Browser automation — null when browser_automation feature gate is disabled (Req 29.1, 29.6) */
   private browserAutomation: BrowserAutomation | null = null;
   /** Backpropagation engine — null when backpropagation feature gate is disabled (Req 30.1, 30.6) */
@@ -1386,6 +1390,52 @@ export class AgentLoopController {
       ? { temperature: autoTuningResult.recommendedParams.temperature, maxTokens: autoTuningResult.recommendedParams.maxTokens }
       : undefined;
 
+    // ─── Scope Divergence Detection in Plan Mode (Req 3.1, 4.3, 5.3, 5.5, 6.5) ───
+    // Configuration is reloaded from rules.md on each plan-mode invocation.
+    // When `overwrite_protection: disabled`, planProtectionSettings.scopeDetector.enabled
+    // is false, so the entire scope detection block is skipped — absolute guarantee
+    // that no scope warnings appear. Overwrite_Gate checks are deferred to executePlan.
+    const planProtectionSettings = parseOverwriteProtectionConfig(rulesContent ?? null);
+    if (planProtectionSettings.scopeDetector.enabled) {
+      try {
+        const manifest = deriveProjectManifest(projectDir);
+        const scopeResult = computeScopeDivergence(message, manifest, planProtectionSettings.scopeDetector);
+
+        if (scopeResult.isNewProjectRequest) {
+          // Pause execution and send Scope Warning via IPC (Req 3.3, 4.3)
+          if (this.config.ipcSend) {
+            const payload: ScopeWarningPayload = {
+              type: 'scope-warning',
+              currentProject: {
+                name: manifest.name,
+                stack: manifest.framework ? `${manifest.primaryLanguage}/${manifest.framework}` : manifest.primaryLanguage,
+                purpose: manifest.purpose,
+              },
+              inferredNewProject: {
+                name: scopeResult.inferredProjectName || 'new-project',
+                stack: scopeResult.inferredStack,
+              },
+              explanation: scopeResult.explanation,
+              options: ['create_new_project', 'cancel'],
+            };
+            this.config.ipcSend('overwrite-protection:scope-warning', payload);
+          }
+
+          // Return early — no plan generated for divergent project requests (Req 3.5)
+          return {
+            response: `⚠️ Scope divergence detected: ${scopeResult.explanation}\n\nThis appears to be a request for a different project. Please confirm whether to create a new project or cancel.`,
+            toolCallsExecuted: 0,
+            iterations: 0,
+            tokenUsage: { promptTokens: 0, completionTokens: 0, totalTokens: 0, estimatedCost: 0 },
+            filesModified: [],
+          };
+        }
+      } catch (err) {
+        // Scope_Detector error — proceed with normal plan generation (Req 3.8)
+        console.warn('[overwrite-protection] Scope detection failed in plan mode, proceeding normally:', err);
+      }
+    }
+
     // Run Smart Context selection if enabled (requirement 11.3)
     const relevantContext = await runSmartContextSelection(message, projectDir, smartContextEnabled, smartContextConfig);
 
@@ -1584,6 +1634,14 @@ export class AgentLoopController {
     // Build context for LLM after execution
     const aiRules = loadAIRules(projectDir);
     const rulesContent = aiRules?.content ?? undefined;
+
+    // ─── Overwrite Protection: reload config for plan execution phase (Req 4.3, 5.3, 5.5, 6.5) ───
+    // Config is reloaded here so that if the user disabled protection between plan
+    // approval and execution, the disabled state takes effect immediately.
+    // When overwriteGate.enabled === false, evaluateOverwrite returns allowed at entry.
+    const executionProtectionSettings = parseOverwriteProtectionConfig(rulesContent ?? null);
+    this.overwriteGateConfig = executionProtectionSettings.overwriteGate;
+
     const systemPrompt = buildSystemPrompt(projectDir, toolDefs, rulesContent);
     const messages: AgentMessage[] = [
       { role: 'system', content: systemPrompt },
@@ -1635,6 +1693,101 @@ export class AgentLoopController {
 
       let toolResult: ToolResult;
       try {
+        // ─── Overwrite Gate: check file writes during plan execution (Req 2.1, 4.1, 4.3) ───
+        const PLAN_FILE_WRITE_TOOLS = ['file-write', 'file-edit', 'create_file', 'write_file'];
+        if (PLAN_FILE_WRITE_TOOLS.includes(step.toolId) && this.overwriteGateConfig?.enabled) {
+          const argsRecord = step.estimatedInput as Record<string, unknown> | undefined;
+          const filePath = argsRecord?.['path'] as string | undefined;
+          if (filePath) {
+            const proposedContent = (argsRecord?.['content'] as string) || '';
+            const decision = evaluateOverwrite(filePath, proposedContent, projectDir, this.overwriteGateConfig);
+
+            if (decision.requiresConfirmation) {
+              // Send confirmation request via IPC (Req 4.4, 4.5)
+              if (this.config.ipcSend) {
+                const payload: OverwriteConfirmationPayload = {
+                  type: 'overwrite-confirmation',
+                  filePath: decision.filePath,
+                  relatednessScore: decision.relatedness.score,
+                  sharedIdentifiers: decision.relatedness.sharedIdentifiers,
+                  summary: `File "${filePath}" would be overwritten with unrelated content (${Math.round(decision.relatedness.score * 100)}% related).`,
+                  options: ['confirm', 'reject'],
+                };
+                this.config.ipcSend('overwrite-protection:confirm', payload);
+              }
+
+              // Block the write — skip this plan step
+              toolResult = {
+                success: false,
+                output: null,
+                error: `Write to "${filePath}" was blocked by overwrite protection (relatedness: ${Math.round(decision.relatedness.score * 100)}%). User confirmation required.`,
+              };
+
+              if (callbackEngine) {
+                await callbackEngine.emit({
+                  event: 'after-tool-call',
+                  toolName: step.toolId,
+                  input: step.estimatedInput,
+                  output: toolResult,
+                  error: new Error(toolResult.error || 'Blocked by overwrite protection'),
+                  sessionId,
+                  iteration,
+                });
+              }
+
+              // Append blocked result and continue to next step
+              messages.push({
+                role: 'assistant',
+                content: '',
+                tool_calls: [{
+                  id: `plan_call_${step.order}`,
+                  type: 'function',
+                  function: {
+                    name: step.toolId,
+                    arguments: JSON.stringify(step.estimatedInput),
+                  },
+                }],
+              });
+              messages.push({
+                role: 'tool',
+                content: JSON.stringify({ success: false, error: toolResult.error }),
+                tool_call_id: `plan_call_${step.order}`,
+              });
+              toolCallsExecuted++;
+              continue;
+            }
+
+            if (!decision.allowed) {
+              // Path safety failure — block immediately (Req 2.8)
+              toolResult = {
+                success: false,
+                output: null,
+                error: `Write to "${filePath}" was blocked: path is not safe (outside project directory).`,
+              };
+
+              messages.push({
+                role: 'assistant',
+                content: '',
+                tool_calls: [{
+                  id: `plan_call_${step.order}`,
+                  type: 'function',
+                  function: {
+                    name: step.toolId,
+                    arguments: JSON.stringify(step.estimatedInput),
+                  },
+                }],
+              });
+              messages.push({
+                role: 'tool',
+                content: JSON.stringify({ success: false, error: toolResult.error }),
+                tool_call_id: `plan_call_${step.order}`,
+              });
+              toolCallsExecuted++;
+              continue;
+            }
+          }
+        }
+
         toolResult = await toolSystem.execute(step.toolId, step.estimatedInput, toolContext);
       } catch (error) {
         toolResult = {
@@ -1793,6 +1946,67 @@ export class AgentLoopController {
     // Load AI rules (reload per message — requirement 5.5)
     const aiRules = loadAIRules(projectDir);
     const rulesContent = aiRules?.content ?? undefined;
+
+    // ─── Overwrite Protection Configuration (Req 5.3, 5.5, 6.5) ───────────────
+    // Configuration is reloaded from rules.md on EVERY message cycle. This ensures:
+    //   1. Runtime transitions (enabled → disabled) take effect on the next message
+    //      without requiring a restart.
+    //   2. When `overwrite_protection: disabled`, the absolute guarantee is enforced
+    //      via early-return guards: scopeDetector.enabled === false skips scope
+    //      detection entirely, and overwriteGate.enabled === false causes
+    //      evaluateOverwrite() to return allowed immediately before any processing.
+    //   3. In-progress operations that were started under "enabled" mode will
+    //      switch to original behavior on the next message cycle when config
+    //      changes to "disabled".
+    // ──────────────────────────────────────────────────────────────────────────────
+    const protectionSettings = parseOverwriteProtectionConfig(rulesContent ?? null);
+    this.overwriteGateConfig = protectionSettings.overwriteGate;
+
+    // ─── Scope Divergence Detection: check if user is requesting a different project (Req 3.1, 3.2, 4.2) ───
+    // Early-return guard: when scopeDetector.enabled === false (i.e. protection disabled),
+    // the entire scope detection block is skipped — no warnings, no prompts, no processing.
+    if (protectionSettings.scopeDetector.enabled) {
+      try {
+        const manifest = deriveProjectManifest(projectDir);
+        const scopeResult = computeScopeDivergence(message, manifest, protectionSettings.scopeDetector);
+
+        if (scopeResult.isNewProjectRequest) {
+          // Pause execution and send Scope Warning via IPC (Req 3.3, 4.2)
+          if (this.config.ipcSend) {
+            const payload: ScopeWarningPayload = {
+              type: 'scope-warning',
+              currentProject: {
+                name: manifest.name,
+                stack: manifest.framework ? `${manifest.primaryLanguage}/${manifest.framework}` : manifest.primaryLanguage,
+                purpose: manifest.purpose,
+              },
+              inferredNewProject: {
+                name: scopeResult.inferredProjectName || 'new-project',
+                stack: scopeResult.inferredStack,
+              },
+              explanation: scopeResult.explanation,
+              options: ['create_new_project', 'cancel'],
+            };
+            this.config.ipcSend('overwrite-protection:scope-warning', payload);
+          }
+
+          // Return early — execution is paused pending user response (Req 3.4, 3.5, 3.6)
+          // On "create new project" → sibling directory creation + registry handled by IPC response handler (Req 3.9)
+          // On "cancel" → abort request, no changes made (Req 3.5)
+          return {
+            response: `⚠️ Scope divergence detected: ${scopeResult.explanation}\n\nThis appears to be a request for a different project. Please confirm whether to create a new project or cancel.`,
+            toolCallsExecuted: 0,
+            iterations: 0,
+            tokenUsage: { promptTokens: 0, completionTokens: 0, totalTokens: 0, estimatedCost: 0 },
+            filesModified: [],
+            traceId,
+          };
+        }
+      } catch (err) {
+        // Scope_Detector error — proceed with normal execution (Req 3.8)
+        console.warn('[overwrite-protection] Scope detection failed, proceeding normally:', err);
+      }
+    }
 
     // Run Smart Context selection if enabled (requirement 11.3)
     const relevantContext = await runSmartContextSelection(message, projectDir, smartContextEnabled, smartContextConfig);
@@ -2178,6 +2392,60 @@ export class AgentLoopController {
             }
           } catch (err) {
             console.warn('[DriftMonitor] Scope validation failed, allowing tool call:', err);
+          }
+        }
+
+        // ─── Overwrite Gate: check file writes before execution (Req 2.1, 2.3, 2.4, 2.5, 2.8, 4.1, 4.4, 4.5) ───
+        const FILE_WRITE_TOOLS = ['file-write', 'file-edit', 'create_file', 'write_file'];
+        if (FILE_WRITE_TOOLS.includes(toolName)) {
+          const argsRecord = parsedArgs as Record<string, unknown>;
+          const filePath = argsRecord['path'] as string | undefined;
+          if (filePath && this.overwriteGateConfig?.enabled) {
+            const proposedContent = (argsRecord['content'] as string) || '';
+            const decision = evaluateOverwrite(filePath, proposedContent, projectDir, this.overwriteGateConfig);
+
+            if (decision.requiresConfirmation) {
+              // Send confirmation request via IPC (Req 4.4, 4.5)
+              if (this.config.ipcSend) {
+                const payload: OverwriteConfirmationPayload = {
+                  type: 'overwrite-confirmation',
+                  filePath: decision.filePath,
+                  relatednessScore: decision.relatedness.score,
+                  sharedIdentifiers: decision.relatedness.sharedIdentifiers,
+                  summary: `File "${filePath}" would be overwritten with unrelated content (${Math.round(decision.relatedness.score * 100)}% related).`,
+                  options: ['confirm', 'reject'],
+                };
+                this.config.ipcSend('overwrite-protection:confirm', payload);
+              }
+
+              // Block the write and inform the LLM (Req 2.3, 2.5)
+              const blockedResult = JSON.stringify({
+                success: false,
+                error: `Write to "${filePath}" was blocked by overwrite protection (relatedness: ${Math.round(decision.relatedness.score * 100)}%). The file contains unrelated content. User confirmation required.`,
+              });
+              messages.push({
+                role: 'tool',
+                content: blockedResult,
+                tool_call_id: toolCall.id,
+              });
+              toolCallsExecuted++;
+              continue;
+            }
+
+            if (!decision.allowed) {
+              // Path safety failure — block immediately (Req 2.8)
+              const blockedResult = JSON.stringify({
+                success: false,
+                error: `Write to "${filePath}" was blocked: path is not safe (outside project directory).`,
+              });
+              messages.push({
+                role: 'tool',
+                content: blockedResult,
+                tool_call_id: toolCall.id,
+              });
+              toolCallsExecuted++;
+              continue;
+            }
           }
         }
 
