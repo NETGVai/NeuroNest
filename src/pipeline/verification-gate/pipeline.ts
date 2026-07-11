@@ -17,8 +17,12 @@ import { SyntaxStage } from './stages/syntax-stage';
 import { TypecheckStage } from './stages/typecheck-stage';
 import { LintStage } from './stages/lint-stage';
 import { SecurityStage } from './stages/security-stage';
+import { OverEngineeringReviewStage } from '../over-engineering-review';
+import { TestGapDetectorStage } from './stages/test-gap-stage';
 import { TestStage } from './stages/test-stage';
+import { GUIAcceptanceStage } from './stages/gui-acceptance-stage';
 import { SmokeStage } from './stages/smoke-stage';
+import { BeforeMergeStage } from './stages/before-merge-stage';
 
 // ─── Default Configuration ──────────────────────────────────────
 
@@ -169,8 +173,12 @@ export class VerificationGatePipeline implements VerificationPipeline {
       new TypecheckStage(),
       new LintStage(),
       new SecurityStage(),
+      new OverEngineeringReviewStage(), // Runs BEFORE test-gap detection
+      new TestGapDetectorStage(),        // Runs AFTER over-engineering review
       new TestStage(),
+      new GUIAcceptanceStage(),          // Activated selectively for UI-touching tasks
       new SmokeStage(),
+      new BeforeMergeStage(),            // Final stage — aggregates all quality signals
     ];
   }
 }

@@ -19,6 +19,7 @@ export interface SpecialistRole {
   systemPrompt: string;
   allowedTools: string[];       // tool IDs this role can use
   filePermissions: string[];    // glob patterns for allowed file access
+  skillAllowlist?: string[];    // skill IDs this role is allowed to receive; if undefined, all skills allowed
 }
 
 export interface RoleTaggedOutput {
@@ -406,5 +407,29 @@ export class SpecialistRoleLoader {
    */
   hasRole(name: string): boolean {
     return this.roles.has(name);
+  }
+
+  /**
+   * Filter a list of skill IDs against the role's skillAllowlist (Req 5.5).
+   *
+   * Only skills on the allowlist are injectable; non-allowlisted skills are
+   * silently dropped regardless of keyword match.
+   *
+   * If the role has no skillAllowlist defined (undefined), all skills are allowed.
+   * If the role does not exist, returns an empty array.
+   */
+  filterSkillsByAllowlist(roleName: string, skillIds: string[]): string[] {
+    const role = this.roles.get(roleName);
+    if (!role) {
+      return [];
+    }
+
+    // If no allowlist is defined, all skills pass through
+    if (role.skillAllowlist === undefined) {
+      return [...skillIds];
+    }
+
+    // Only return skills that appear in the allowlist
+    return skillIds.filter((skillId) => role.skillAllowlist!.includes(skillId));
   }
 }

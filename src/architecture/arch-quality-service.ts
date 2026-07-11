@@ -3,13 +3,16 @@
  *
  * Computes a continuous quality signal (0–10,000) from 5 root-cause metrics:
  * modularity, acyclicity, depth, equality, redundancy.
- * Includes quality gate, rules engine, evolution tracking, DSM, test gaps.
+ * Includes quality gate, rules engine, evolution tracking, DSM, test gaps,
+ * and bloat scoring dimension (Requirement 7).
  */
 
 import type Database from 'better-sqlite3';
 import { randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { OverEngineeringReview } from '../pipeline/over-engineering-review';
+import type { BloatFinding } from '../pipeline/over-engineering-review';
 
 // ── Types ──────────────────────────────────────────────────────
 
@@ -41,6 +44,45 @@ export interface TestGap {
 
 export interface DSMEntry {
   from: string; to: string; weight: number;
+}
+
+/**
+ * Bloat scoring dimension result.
+ *
+ * Additive quality dimension that evaluates the repository for over-engineering
+ * patterns without modifying existing scoring logic.
+ *
+ * Requirements: 7.1, 7.2, 7.3, 7.4, 7.5
+ */
+export interface BloatScore {
+  /** All bloat findings detected, ranked by netLineReduction descending */
+  findings: BloatFinding[];
+  /** Total estimated lines removable (sum of all netLineReduction values) */
+  totalLinesRemovable: number;
+  /** Counts of findings by category */
+  categories: {
+    reinventedStdlib: number;
+    redundantDeps: number;
+    singleImplAbstractions: number;
+  };
+}
+
+/**
+ * Accessibility friction entry logged when the GUI_Agent fails to interact
+ * with a DOM element due to poor labeling, missing ARIA roles, or non-semantic markup.
+ * General failures (network errors, timing issues) do NOT produce these entries.
+ *
+ * Requirements: 15.4, 15.5
+ */
+export interface AccessibilityFrictionEntry {
+  /** CSS selector identifying the problematic element */
+  elementSelector: string;
+  /** The specific accessibility issue detected */
+  issue: 'missing-label' | 'no-aria-role' | 'non-semantic-markup';
+  /** Operability friction score (0–1, where 1 = completely inoperable) */
+  operabilityScore: number;
+  /** ISO 8601 timestamp when the friction was logged */
+  timestamp: string;
 }
 
 // ── Service ────────────────────────────────────────────────────
@@ -204,6 +246,52 @@ export class ArchQualityService {
   getTestGaps(projectId: string): TestGap[] {
     return (this.db.prepare('SELECT * FROM test_gaps WHERE project_id = ? AND has_tests = 0 ORDER BY file_path ASC').all(projectId) as any[])
       .map(r => ({ filePath: r.file_path, hasTests: r.has_tests === 1, testFile: r.test_file || undefined, gapReason: r.gap_reason || undefined }));
+  }
+
+  // ── Accessibility Friction (Requirements 15.4, 15.5) ──
+
+  /**
+   * Log an accessibility friction entry when the GUI_Agent fails due to
+   * poor labeling, missing ARIA roles, or non-semantic markup.
+   *
+   * General failures (network errors, timing issues) should NOT be logged here.
+   * Only accessibility-specific issues produce entries.
+   */
+  logAccessibilityFriction(projectId: string, entry: AccessibilityFrictionEntry): void {
+    this.db.prepare(
+      'INSERT INTO accessibility_friction (id, project_id, element_selector, issue, operability_score, logged_at) VALUES (?, ?, ?, ?, ?, ?)'
+    ).run(randomUUID(), projectId, entry.elementSelector, entry.issue, entry.operabilityScore, entry.timestamp);
+  }
+
+  /**
+   * Retrieve all accessibility friction entries for a project.
+   * Entries are ordered by timestamp descending (most recent first).
+   */
+  getAccessibilityFriction(projectId: string): AccessibilityFrictionEntry[] {
+    return (this.db.prepare(
+      'SELECT * FROM accessibility_friction WHERE project_id = ? ORDER BY logged_at DESC'
+    ).all(projectId) as any[]).map(r => ({
+      elementSelector: r.element_selector,
+      issue: r.issue as AccessibilityFrictionEntry['issue'],
+      operabilityScore: r.operability_score,
+      timestamp: r.logged_at,
+    }));
+  }
+
+  /**
+   * Compute the overall accessibility score from friction entries.
+   * Returns a value 0–100 where 100 = no accessibility issues found.
+   * Uses a decaying penalty: more entries and higher operability scores reduce the total.
+   */
+  computeAccessibilityScore(projectId: string): number {
+    const entries = this.getAccessibilityFriction(projectId);
+    if (entries.length === 0) return 100;
+
+    // Sum up friction: each entry penalizes based on operabilityScore
+    const totalFriction = entries.reduce((sum, e) => sum + e.operabilityScore, 0);
+    // Cap penalty: each entry with full friction removes 5 points, min score is 0
+    const penalty = Math.min(100, totalFriction * 5);
+    return Math.max(0, Math.round(100 - penalty));
   }
 
   // ── Private Helpers ──
@@ -383,4 +471,158 @@ export class ArchQualityService {
   private mapScore(r: any): ArchQualityScore {
     return { id: r.id, projectId: r.project_id, overallScore: r.overall_score, modularity: r.modularity, acyclicity: r.acyclicity, depthScore: r.depth_score, equality: r.equality, redundancy: r.redundancy, fileCount: r.file_count, dependencyCount: r.dependency_count, cycleCount: r.cycle_count, godFiles: JSON.parse(r.god_files || '[]'), couplingGrade: r.coupling_grade, details: JSON.parse(r.details || '{}'), scannedAt: r.scanned_at };
   }
+}
+
+// ── Bloat Scoring Dimension (Requirement 7) ─────────────────────
+
+/**
+ * Tag-to-category mapping for classifying BloatFindings into scored categories.
+ *
+ * - 'stdlib' tag → reinventedStdlib (reinvented standard library functionality)
+ * - 'delete' tag → redundantDeps (redundant dependencies that duplicate stdlib)
+ * - 'yagni' tag → singleImplAbstractions (single-implementation abstractions)
+ * - 'native', 'shrink' → distributed across the closest matching category
+ */
+function categorizeFinding(finding: BloatFinding): keyof BloatScore['categories'] {
+  switch (finding.tag) {
+    case 'stdlib':
+      return 'reinventedStdlib';
+    case 'delete':
+      return 'redundantDeps';
+    case 'yagni':
+      return 'singleImplAbstractions';
+    case 'native':
+      // Unnecessary wrappers that should use native features → reinventedStdlib
+      return 'reinventedStdlib';
+    case 'shrink':
+      // Premature generalization (factories/builders with single use) → singleImplAbstractions
+      return 'singleImplAbstractions';
+  }
+}
+
+/**
+ * Compute the bloat scoring dimension for a project directory.
+ *
+ * This is an additive dimension that does not modify existing scoring logic.
+ * It uses the OverEngineeringReview to scan all source files in the project
+ * and aggregates findings into a BloatScore with categorized counts and
+ * total removable lines.
+ *
+ * The function scans all TypeScript/JavaScript source files in the project,
+ * constructs synthetic AgentEdit payloads for the OverEngineeringReview analyzer,
+ * and aggregates the resulting findings.
+ *
+ * Requirements: 7.1, 7.2, 7.3, 7.4, 7.5
+ *
+ * @param projectDir - The root directory of the project to analyze
+ * @returns A BloatScore with ranked findings, category counts, and totalLinesRemovable
+ */
+export function computeBloatScore(projectDir: string): BloatScore {
+  const review = new OverEngineeringReview('advisory');
+
+  // Discover all source files in the project
+  const files = discoverSourceFiles(projectDir);
+
+  // Read file contents and construct a synthetic AgentEdit for analysis
+  const changes: Array<{ filePath: string; content: string }> = [];
+  for (const filePath of files) {
+    try {
+      const content = fs.readFileSync(filePath, 'utf-8');
+      changes.push({ filePath: path.relative(projectDir, filePath), content });
+    } catch {
+      // Skip unreadable files
+    }
+  }
+
+  // Analyze all files through the over-engineering review
+  const result = review.analyze(
+    { id: 'bloat-scan', taskId: 'bloat-score', changes },
+    { rootDir: projectDir, tsconfigPath: path.join(projectDir, 'tsconfig.json') },
+  );
+
+  // Categorize findings
+  const categories: BloatScore['categories'] = {
+    reinventedStdlib: 0,
+    redundantDeps: 0,
+    singleImplAbstractions: 0,
+  };
+
+  for (const finding of result.findings) {
+    const category = categorizeFinding(finding);
+    categories[category]++;
+  }
+
+  // Rank findings by netLineReduction descending (most impactful first)
+  const rankedFindings = [...result.findings].sort(
+    (a, b) => b.netLineReduction - a.netLineReduction,
+  );
+
+  // Compute total lines removable as sum of individual netLineReduction values
+  const totalLinesRemovable = result.findings.reduce(
+    (sum, f) => sum + f.netLineReduction,
+    0,
+  );
+
+  return {
+    findings: rankedFindings,
+    totalLinesRemovable,
+    categories,
+  };
+}
+
+/**
+ * Discover source files in a project directory for bloat analysis.
+ * Skips common non-source directories (node_modules, dist, .git, etc.).
+ */
+function discoverSourceFiles(projectDir: string): string[] {
+  const files: string[] = [];
+  const codeExts = new Set(['.ts', '.js', '.tsx', '.jsx']);
+  const skipDirs = new Set([
+    'node_modules', '.git', 'dist', 'build', '.next', 'vendor',
+    'coverage', '.nyc_output', '__pycache__',
+  ]);
+
+  const walk = (dir: string): void => {
+    try {
+      const entries = fs.readdirSync(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.isDirectory() && !skipDirs.has(entry.name)) {
+          walk(path.join(dir, entry.name));
+        } else if (entry.isFile() && codeExts.has(path.extname(entry.name).toLowerCase())) {
+          // Skip test files and declaration files
+          if (!entry.name.includes('.test.') && !entry.name.includes('.spec.') && !entry.name.endsWith('.d.ts')) {
+            files.push(path.join(dir, entry.name));
+          }
+        }
+      }
+    } catch {
+      // Skip unreadable directories
+    }
+  };
+
+  walk(projectDir);
+  return files;
+}
+
+/**
+ * Convert a BloatScore into a normalized 0–100 readiness-compatible score.
+ *
+ * Higher score = less bloat = better readiness. A project with zero findings
+ * scores 100. The score decays based on the number of findings and total lines
+ * removable. This function enables including bloat as a factor in any readiness
+ * assessment (e.g. ProductionReadinessService, RepoReadinessScanner).
+ *
+ * Requirement 7.4: THE repo readiness scanner SHALL include the bloat score
+ * as a factor in overall readiness assessment.
+ */
+export function computeBloatReadinessScore(bloatScore: BloatScore): number {
+  if (bloatScore.findings.length === 0) return 100;
+
+  // Penalize based on total removable lines — each 50 lines of bloat costs ~10 points
+  const linesPenalty = Math.min(60, Math.floor(bloatScore.totalLinesRemovable / 5));
+
+  // Additional penalty for number of findings — each finding costs 2 points, max 40
+  const findingsPenalty = Math.min(40, bloatScore.findings.length * 2);
+
+  return Math.max(0, 100 - linesPenalty - findingsPenalty);
 }

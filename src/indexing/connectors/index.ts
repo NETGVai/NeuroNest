@@ -10,3 +10,4 @@ export { Connector, ConnectorNode, ConnectorEdge } from './connector-interface';
 
 export { GitConnector } from './git-connector';
 export { DocumentationConnector } from './documentation-connector';
+export { ADRConnector } from './adr-connector';

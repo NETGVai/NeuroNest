@@ -103,6 +103,9 @@ export interface FeatureGateFlags {
   // ─── GCF Expansion Flags ────────────────────────────────────────
   gcf_expanded_handoffs: boolean;            // Gates GCF on new handoff surfaces
 
+  // ─── Enhanced Orchestration Flags ─────────────────────────────────
+  quality_workers: boolean;                  // Background quality workers (testgaps, audit, bloat, etc.)
+
   // ─── Loop Engine & Harness Flags ────────────────────────────────
   harness_permission_patterns: boolean;      // Permission Pattern Engine for zero-prompt operation
   harness_hooks: boolean;                    // Deterministic pre/post tool-use hooks
@@ -207,6 +210,9 @@ export const DEFAULT_FEATURE_FLAGS: FeatureGateFlags = {
 
   // ─── GCF Expansion Flags ────────────────────────────────────────
   gcf_expanded_handoffs: false,
+
+  // ─── Enhanced Orchestration Flags ─────────────────────────────────
+  quality_workers: false,
 
   // ─── Loop Engine & Harness Flags ────────────────────────────────
   harness_permission_patterns: false,

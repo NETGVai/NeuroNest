@@ -3,6 +3,7 @@
 // Catches fake-done shortcuts that consensus-based verification misses.
 // Non-bypassable when harness_subagents flag is enabled.
 // Requirements: 23.1, 23.2, 23.3, 23.4, 23.5, 23.6, 23.7, 23.8
+// Requirements: 6.1, 6.2, 6.3, 6.4, 6.5, 6.7, 10.4
 
 import { getLogger } from '../../utils/structured-logger';
 
@@ -48,6 +49,249 @@ export interface VerifyArrayOnlyResult {
   passes: boolean;
   failures: Array<{ line: number; reason: string }>;
   mode: 'verify-array-only';
+}
+
+// ─── Lean Comment Types (Requirement 6) ────────────────────────
+
+/**
+ * A parsed, well-formed Lean Comment.
+ * Pattern: `// lean: <ceiling_name> — <upgrade_path>`
+ */
+export interface LeanComment {
+  ceilingName: string;
+  upgradePath: string;
+}
+
+/**
+ * Context about the file being analyzed, used for safety exclusion checks.
+ */
+export interface FileContext {
+  filePath: string;
+  /** Optional list of safety-related annotations or categories found in file metadata */
+  safetyAnnotations?: string[];
+}
+
+/**
+ * A Debt Ledger entry for intentional lean simplifications.
+ * Stored in `.neuronest/memory/lean-debt.json`.
+ */
+export interface DebtLedgerEntry {
+  filePath: string;
+  lineNumber: number;
+  ceilingName: string;
+  upgradePath: string;
+  timestamp: string; // ISO 8601
+}
+
+/**
+ * Result from the verifier reconciliation process for a single line.
+ */
+export interface ReconciliationResult {
+  /** Whether the line is classified as intentional (lean comment exempt) */
+  intentional: boolean;
+  /** The debt ledger entry if intentional */
+  debtEntry?: DebtLedgerEntry;
+  /** Whether the line is safety-excluded (always flagged) */
+  safetyExcluded: boolean;
+  /** The shortcut detection if flagged */
+  shortcutDetection?: ShortcutDetection;
+}
+
+// ─── Lean Comment Regex ────────────────────────────────────────
+
+/**
+ * Regex for well-formed Lean Comments (REQ-6.4).
+ * Pattern: `// lean: <ceiling_name> — <upgrade_path>`
+ * - ceiling_name: non-empty identifier (\S+)
+ * - upgrade_path: non-empty description (.+)
+ * - The em-dash (—) separates ceiling from upgrade path
+ */
+export const LEAN_COMMENT_REGEX = /\/\/\s*lean:\s*(\S+)\s*—\s*(.+)$/;
+
+/**
+ * Safety Exclusion categories (REQ-10.4).
+ * Lines involving these categories are NEVER exempted by lean comments.
+ */
+export const SAFETY_EXCLUSION_CATEGORIES = [
+  'trust-boundary',
+  'data-loss',
+  'security',
+  'a11y',
+] as const;
+
+export type SafetyCategory = typeof SAFETY_EXCLUSION_CATEGORIES[number];
+
+/**
+ * Patterns that indicate a line involves a safety-excluded category.
+ * Used by isSafetyExclusion() to determine if lean comments should be ignored.
+ */
+const SAFETY_EXCLUSION_PATTERNS: Array<{ category: SafetyCategory; patterns: RegExp[] }> = [
+  {
+    category: 'trust-boundary',
+    patterns: [
+      /\b(validate|sanitize|verify|authenticate|authorize|checkPermission|verifyToken|checkAuth)\b/i,
+      /(trustBoundary|trust[_-]boundary|input[_-]?validation|csrf|xss)/i,
+      /\b(escapeHtml|encodeURI|sanitizeInput|validateInput)\b/i,
+    ],
+  },
+  {
+    category: 'data-loss',
+    patterns: [
+      /(backup|rollback|transaction|commit|persist|flush|sync|fsync)/i,
+      /(data[_-]?loss|data[_-]?integrity|corruption|atomic[_-]?write)/i,
+      /(ensureSaved|preventLoss|durability|WAL)/i,
+    ],
+  },
+  {
+    category: 'security',
+    patterns: [
+      /\b(encrypt|decrypt|hash|hmac|sign|verify[_-]?signature)\b/i,
+      /(secret|credential|apiKey|api[_-]?key|password|token|jwt|oauth)/i,
+      /(firewall|rateLimit|rate[_-]?limit|blacklist|whitelist|allowlist|denylist)/i,
+      /\b(security|secure|tls|ssl|certificate|cert)\b/i,
+    ],
+  },
+  {
+    category: 'a11y',
+    patterns: [
+      /(aria[_-]|role=|tabIndex|tabindex|alt=|sr[_-]?only|screenReader)/i,
+      /\b(accessibility|a11y|wcag|accessible)\b/i,
+      /(focus[_-]?trap|live[_-]?region|announce|labelledby|describedby)/i,
+    ],
+  },
+];
+
+// ─── Lean Comment Functions ────────────────────────────────────
+
+/**
+ * Parse and validate a Lean Comment on a given line (REQ-6.4).
+ * Returns a LeanComment if the line contains a well-formed comment,
+ * or null if the comment is absent or malformed.
+ *
+ * A well-formed Lean Comment follows the pattern:
+ *   `// lean: <ceiling_name> — <upgrade_path>`
+ * where ceiling_name is a non-empty identifier and upgrade_path is a non-empty description.
+ */
+export function parseLeanComment(line: string): LeanComment | null {
+  const match = line.match(LEAN_COMMENT_REGEX);
+  if (!match) {
+    return null;
+  }
+
+  const ceilingName = match[1];
+  const upgradePath = match[2]?.trim();
+
+  // Validate: ceiling_name must be non-empty and upgrade_path must be non-empty
+  if (!ceilingName || !upgradePath) {
+    return null;
+  }
+
+  return {
+    ceilingName,
+    upgradePath,
+  };
+}
+
+/**
+ * Check if a line involves a Safety_Exclusion category (REQ-10.4).
+ * Lines with safety-excluded patterns are NEVER exempted by lean comments.
+ *
+ * Safety categories: trust-boundary, data-loss, security, a11y
+ *
+ * @param line - The code line to check
+ * @param context - The file context (path and annotations)
+ * @returns true if the line involves a safety-excluded category
+ */
+export function isSafetyExclusion(line: string, context: FileContext): boolean {
+  // Check file-level safety annotations from context
+  if (context.safetyAnnotations?.length) {
+    for (const annotation of context.safetyAnnotations) {
+      const normalizedAnnotation = annotation.toLowerCase().replace(/[\s_]/g, '-');
+      if (SAFETY_EXCLUSION_CATEGORIES.some(cat => normalizedAnnotation.includes(cat))) {
+        return true;
+      }
+    }
+  }
+
+  // Check line content against safety exclusion patterns
+  for (const { patterns } of SAFETY_EXCLUSION_PATTERNS) {
+    for (const pattern of patterns) {
+      if (pattern.test(line)) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Reconcile a detected shortcut with Lean Comment presence and safety exclusion (REQ-6.1–6.5, 6.7, 10.4).
+ *
+ * Logic:
+ * 1. If line is in a safety-excluded category → flag as shortcut (no exemption), regardless of comment
+ * 2. If line has a well-formed Lean Comment → classify as intentional, route to Debt Ledger
+ * 3. If line has a malformed Lean Comment or no comment → flag as shortcut (no exemption)
+ *
+ * @param line - The code line content
+ * @param lineNumber - The line number in the file
+ * @param filePath - The file path
+ * @param context - The file context for safety checks
+ * @param shortcutId - The detected shortcut pattern id
+ * @param shortcutReason - The reason for the shortcut detection
+ * @returns ReconciliationResult indicating how to handle the line
+ */
+export function reconcileShortcut(
+  line: string,
+  lineNumber: number,
+  filePath: string,
+  context: FileContext,
+  shortcutId: string,
+  shortcutReason: string,
+): ReconciliationResult {
+  // Step 1: Safety exclusion check — always flag regardless of comment (REQ-10.4)
+  if (isSafetyExclusion(line, context)) {
+    return {
+      intentional: false,
+      safetyExcluded: true,
+      shortcutDetection: {
+        id: shortcutId,
+        line: lineNumber,
+        reason: `${shortcutReason} [SAFETY-EXCLUDED: lean comment does not exempt safety-critical code]`,
+      },
+    };
+  }
+
+  // Step 2: Parse Lean Comment
+  const leanComment = parseLeanComment(line);
+
+  // Step 3: Well-formed comment → intentional, route to Debt Ledger (REQ-6.1, 6.2, 6.3, 6.5)
+  if (leanComment) {
+    const debtEntry: DebtLedgerEntry = {
+      filePath,
+      lineNumber,
+      ceilingName: leanComment.ceilingName,
+      upgradePath: leanComment.upgradePath,
+      timestamp: new Date().toISOString(),
+    };
+
+    return {
+      intentional: true,
+      debtEntry,
+      safetyExcluded: false,
+    };
+  }
+
+  // Step 4: No comment or malformed comment → flag as shortcut (REQ-6.7)
+  return {
+    intentional: false,
+    safetyExcluded: false,
+    shortcutDetection: {
+      id: shortcutId,
+      line: lineNumber,
+      reason: shortcutReason,
+    },
+  };
 }
 
 // ─── Shortcut Catalog ──────────────────────────────────────────
@@ -280,6 +524,7 @@ function parseDiffLines(diff: string): Array<{ type: '+' | '-'; lineNumber: numb
  */
 export class VerifierSubagent {
   private readonly dispatchLog: VerifierDispatchLog[] = [];
+  private readonly pendingDebtEntries: DebtLedgerEntry[] = [];
 
   /**
    * Dispatch verification with fresh (zero maker-conversation) context.
@@ -289,11 +534,16 @@ export class VerifierSubagent {
    * only when the verifier is actually dispatched, via a context-size assertion
    * logged per dispatch.
    *
+   * REQ-6.1–6.5, 6.7, 10.4: Reconciles detected shortcuts with Lean Comments.
+   * Lines with well-formed Lean Comments that are not safety-excluded are
+   * classified as intentional and routed to the Debt Ledger.
+   *
    * @param input - The verifier input containing goal, diff, test output, and lint output.
    * @param makerConversationTokens - The number of maker-conversation tokens in context (must be 0).
+   * @param fileContext - Optional file context for safety exclusion checks during reconciliation.
    * @returns Structured VerifierResult with passes, failures, and shortcutsDetected.
    */
-  async verify(input: VerifierInput, makerConversationTokens: number = 0): Promise<VerifierResult> {
+  async verify(input: VerifierInput, makerConversationTokens: number = 0, fileContext?: FileContext): Promise<VerifierResult> {
     // ─── REQ-23.8: Context-size assertion logged per dispatch ───
     const contextAssertionPassed = makerConversationTokens === 0;
     const inputTokenEstimate = this.estimateInputTokens(input);
@@ -314,8 +564,14 @@ export class VerifierSubagent {
     }
 
     // ─── Scan diff for shortcut patterns (REQ-23.4) ───
-    const shortcutsDetected = this.detectShortcuts(input.diff);
+    // ─── Reconcile with Lean Comments (REQ-6.1–6.5, 6.7, 10.4) ───
+    const { shortcutsDetected, debtEntries } = this.detectAndReconcileShortcuts(input.diff, fileContext);
     const failures: Array<{ line: number; reason: string }> = [];
+
+    // Store debt entries for lines classified as intentional
+    if (debtEntries.length > 0) {
+      this.pendingDebtEntries.push(...debtEntries);
+    }
 
     // Convert shortcut detections to failures
     for (const shortcut of shortcutsDetected) {
@@ -382,7 +638,75 @@ export class VerifierSubagent {
     return this.dispatchLog[this.dispatchLog.length - 1];
   }
 
+  /**
+   * Get pending Debt Ledger entries accumulated from reconciliation (REQ-6.5).
+   * These entries should be written to `.neuronest/memory/lean-debt.json`.
+   */
+  getPendingDebtEntries(): ReadonlyArray<DebtLedgerEntry> {
+    return [...this.pendingDebtEntries];
+  }
+
+  /**
+   * Clear pending debt entries after they've been persisted to the ledger.
+   */
+  clearPendingDebtEntries(): void {
+    this.pendingDebtEntries.length = 0;
+  }
+
   // ─── Private Helpers ─────────────────────────────────────────
+
+  /**
+   * Detect shortcut patterns in the diff and reconcile with Lean Comments (REQ-6.1–6.5, 6.7, 10.4).
+   *
+   * For each detected shortcut:
+   * 1. If safety-excluded → always flag (no exemption)
+   * 2. If well-formed Lean Comment present and NOT safety-excluded → classify as intentional, add debt entry
+   * 3. If malformed or no Lean Comment → flag as shortcut
+   *
+   * @param diff - The diff string to scan
+   * @param fileContext - Optional file context for safety exclusion checks
+   * @returns Object containing filtered shortcuts (still flagged) and debt entries (intentional)
+   */
+  private detectAndReconcileShortcuts(
+    diff: string,
+    fileContext?: FileContext,
+  ): { shortcutsDetected: ShortcutDetection[]; debtEntries: DebtLedgerEntry[] } {
+    const rawDetections = this.detectShortcuts(diff);
+
+    // If no file context provided, skip reconciliation — all detections remain as shortcuts
+    if (!fileContext) {
+      return { shortcutsDetected: rawDetections, debtEntries: [] };
+    }
+
+    const diffLines = parseDiffLines(diff);
+    const shortcutsDetected: ShortcutDetection[] = [];
+    const debtEntries: DebtLedgerEntry[] = [];
+
+    for (const detection of rawDetections) {
+      // Find the diff line content for this detection
+      const diffLine = diffLines.find(dl => dl.lineNumber === detection.line);
+      const lineContent = diffLine?.content?.slice(1) ?? ''; // remove leading +/-
+
+      const result = reconcileShortcut(
+        lineContent,
+        detection.line ?? 0,
+        fileContext.filePath,
+        fileContext,
+        detection.id,
+        detection.reason,
+      );
+
+      if (result.intentional && result.debtEntry) {
+        // Line is intentional — route to Debt Ledger, exclude from shortcuts
+        debtEntries.push(result.debtEntry);
+      } else if (result.shortcutDetection) {
+        // Line is flagged (safety-excluded or no/malformed comment)
+        shortcutsDetected.push(result.shortcutDetection);
+      }
+    }
+
+    return { shortcutsDetected, debtEntries };
+  }
 
   /**
    * Detect shortcut patterns in the diff (REQ-23.4).

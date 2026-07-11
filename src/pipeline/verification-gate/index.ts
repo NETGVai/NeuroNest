@@ -1,8 +1,8 @@
 /**
  * Verification Gate — multi-stage pipeline for validating agent-generated edits.
  *
- * Stage sequence: syntax → typecheck → lint → test → smoke
- * Scores: syntax=1, typecheck=2, lint=3, test=4, smoke=5 (max=15)
+ * Stage sequence: syntax → typecheck → lint → security → over-engineering-review → test-gap → test → gui-acceptance → smoke → before-merge
+ * Scores: syntax=1, typecheck=2, lint=3, security=3, over-engineering-review=2, test-gap=3, test=4, gui-acceptance=4, smoke=5, before-merge=5 (max=32)
  *
  * Features:
  * - Sequential execution stopping at first failure
@@ -10,6 +10,8 @@
  * - Dependency-graph-based test selection (run only affected tests)
  * - Sandbox smoke-run with no network access and 10s timeout
  * - Exact line/column reporting for Tree-Sitter syntax errors
+ * - GUI acceptance stage gated by `gui_acceptance` feature flag
+ * - Before-merge gateway stage gated by `before_merge_gateway` feature flag
  */
 
 export type {
@@ -47,3 +49,34 @@ export type { SandboxRunner, SandboxConfig, SandboxRunResult } from './stages/sm
 
 export { SecurityStage } from './stages/security-stage';
 export type { SecurityStageDeps, SecurityStageCallbackEngine, SecurityStageFirewallEngine } from './stages/security-stage';
+
+export { OverEngineeringReviewStage } from '../over-engineering-review';
+export type { BloatFinding, BloatTag, OverEngineeringReviewResult } from '../over-engineering-review';
+export { OverEngineeringReview } from '../over-engineering-review';
+
+export { TestGapDetectorStage } from './stages/test-gap-stage';
+export type {
+  UncoveredExport,
+  GeneratedTest,
+  TestGapResult,
+  ExportType,
+  RiskLevel,
+  TestTemplate,
+  DockerSandboxRunner,
+  FeatureFlagChecker,
+} from './stages/test-gap-stage';
+export {
+  extractExports,
+  deriveTestFilePaths,
+  isExportTested,
+  isPureFunction,
+  assessRisk,
+  generatePropertyBasedTest,
+  generateExampleBasedTest,
+  DefaultDockerSandboxRunner,
+  DefaultFeatureFlagChecker,
+} from './stages/test-gap-stage';
+
+export { GUIAcceptanceStage } from './stages/gui-acceptance-stage';
+
+export { BeforeMergeStage } from './stages/before-merge-stage';

@@ -1161,3 +1161,311 @@ export function createLLMClient(
   }
   return new LLMClient(clientConfig);
 }
+
+// ─── Provider Failover Client (Requirement 21) ───────────────────────────────
+
+/**
+ * A provider entry used in failover configuration.
+ * Reuses existing per-agent provider config without requiring new schemas.
+ */
+export interface FailoverProviderEntry {
+  /** Provider identifier (e.g., 'openai', 'anthropic', 'deepseek') */
+  provider: string;
+  /** Model to use for this provider */
+  model: string;
+  /** API key for the provider (optional, uses system config if omitted) */
+  apiKey?: string;
+  /** Custom base URL (optional) */
+  baseUrl?: string;
+}
+
+/**
+ * Configuration for the ProviderFailoverClient.
+ */
+export interface ProviderFailoverConfig {
+  /** Ordered list of providers to try on failover */
+  providers: FailoverProviderEntry[];
+  /** Timeout in milliseconds for each provider call. Default: 120000 */
+  timeoutMs: number;
+  /** Maximum retries per provider before moving to the next. Default: 1 */
+  maxRetries: number;
+}
+
+/**
+ * Event emitted on each failover for observability.
+ * Logged with originating provider, error type, and target provider.
+ */
+export interface ProviderFailoverEvent {
+  /** The provider that failed */
+  originatingProvider: string;
+  /** Classification of the error (e.g., 'timeout', 'rate_limit', 'server_error', 'network_error') */
+  errorType: string;
+  /** The provider being failed over to */
+  targetProvider: string;
+  /** ISO 8601 timestamp of the failover */
+  timestamp: string;
+}
+
+/**
+ * Error thrown when all providers in the failover chain are exhausted.
+ * This is a non-recoverable error that surfaces to the pipeline.
+ */
+export class AllProvidersFailedError extends Error {
+  public readonly failoverEvents: ProviderFailoverEvent[];
+  public readonly lastError: Error | null;
+
+  constructor(failoverEvents: ProviderFailoverEvent[], lastError: Error | null) {
+    const providerNames = failoverEvents.map(e => e.originatingProvider);
+    // Include the last provider that failed even if it has no failover event
+    const msg = providerNames.length > 0
+      ? `All configured LLM providers failed: [${providerNames.join(', ')}]. Non-recoverable error.`
+      : 'All configured LLM providers failed. Non-recoverable error.';
+    super(msg);
+    this.name = 'AllProvidersFailedError';
+    this.failoverEvents = failoverEvents;
+    this.lastError = lastError;
+  }
+}
+
+/**
+ * System-wide default provider list used as fallback when no per-agent
+ * provider configuration is available.
+ */
+export const SYSTEM_DEFAULT_PROVIDERS: FailoverProviderEntry[] = [
+  { provider: 'openai', model: 'gpt-4o' },
+  { provider: 'anthropic', model: 'claude-sonnet-4-20250514' },
+  { provider: 'deepseek', model: 'deepseek-chat' },
+];
+
+/**
+ * ProviderFailoverClient — Wraps LLM calls with automatic provider failover.
+ *
+ * Implements the same interface as LLMClient (chat method) so it can be used
+ * as a drop-in replacement. On error/timeout, automatically tries the next
+ * provider in the per-agent configuration. When all providers are exhausted,
+ * surfaces a non-recoverable error to the pipeline.
+ *
+ * Falls back to system-wide default provider list when no per-agent config
+ * is provided.
+ *
+ * Every failover event is logged with the originating provider, error type,
+ * and target provider for observability.
+ *
+ * Requirements: 21.1, 21.2, 21.3, 21.4, 21.5
+ */
+export class ProviderFailoverClient {
+  private readonly config: ProviderFailoverConfig;
+  private readonly failoverEvents: ProviderFailoverEvent[] = [];
+  private readonly logger: (event: ProviderFailoverEvent) => void;
+  private readonly proxyConfig?: ProxyConfig;
+
+  constructor(
+    config?: Partial<ProviderFailoverConfig>,
+    options?: {
+      /** Optional proxy config for Professional Mode */
+      proxyConfig?: ProxyConfig;
+      /** Optional custom logger for failover events. Defaults to console.warn. */
+      logger?: (event: ProviderFailoverEvent) => void;
+    },
+  ) {
+    const providers = config?.providers?.length
+      ? config.providers
+      : SYSTEM_DEFAULT_PROVIDERS;
+
+    this.config = {
+      providers,
+      timeoutMs: config?.timeoutMs ?? 120000,
+      maxRetries: config?.maxRetries ?? 1,
+    };
+    this.proxyConfig = options?.proxyConfig;
+    this.logger = options?.logger ?? ProviderFailoverClient.defaultLogger;
+  }
+
+  /**
+   * Make a chat completion call with automatic provider failover.
+   *
+   * Iterates through the configured provider list in order. For each provider:
+   * - Attempts the call up to `maxRetries` times
+   * - On retryable error or timeout, moves to the next provider
+   * - Logs each failover event
+   *
+   * When all providers are exhausted, throws AllProvidersFailedError.
+   *
+   * Requirements: 21.1, 21.2, 21.3, 21.4
+   */
+  async chat(
+    messages: LLMMessage[],
+    options?: { temperature?: number; maxTokens?: number; tools?: Array<{ type: string; function: { name: string; description: string; parameters: Record<string, unknown> } }> },
+  ): Promise<{ content: string; reasoning?: string; tokensUsed?: number; promptTokens?: number; completionTokens?: number; tool_calls?: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }> }> {
+    const providers = this.config.providers;
+
+    if (providers.length === 0) {
+      throw new AllProvidersFailedError([], null);
+    }
+
+    let lastError: Error | null = null;
+
+    for (let i = 0; i < providers.length; i++) {
+      const providerEntry = providers[i];
+      let attemptSuccess = false;
+
+      for (let attempt = 0; attempt < this.config.maxRetries; attempt++) {
+        try {
+          const client = this.createClientForProvider(providerEntry);
+          const result = await client.chat(messages, options);
+          attemptSuccess = true;
+          return result;
+        } catch (error: unknown) {
+          lastError = error instanceof Error ? error : new Error(String(error));
+
+          // Non-retryable errors surface immediately (e.g., auth errors, 4xx)
+          if (!this.isRetryableError(error)) {
+            // Still not retryable — fail over to next provider instead of throwing immediately
+            // because the agent wants automatic failover on any error per Req 21.1
+            break;
+          }
+
+          // If more retries are available for this provider, continue
+          if (attempt < this.config.maxRetries - 1) {
+            continue;
+          }
+          // Otherwise fall through to failover
+        }
+      }
+
+      // If succeeded, we already returned above
+      if (attemptSuccess) break;
+
+      // Log failover event if there's a next provider to try
+      if (i < providers.length - 1) {
+        const nextProvider = providers[i + 1];
+        const event: ProviderFailoverEvent = {
+          originatingProvider: providerEntry.provider,
+          errorType: this.classifyError(lastError),
+          targetProvider: nextProvider.provider,
+          timestamp: new Date().toISOString(),
+        };
+        this.failoverEvents.push(event);
+        this.logger(event);
+      }
+    }
+
+    // All providers exhausted → surface non-recoverable error (Req 21.4)
+    throw new AllProvidersFailedError(this.failoverEvents, lastError);
+  }
+
+  /**
+   * Get all failover events that have occurred during this client's lifetime.
+   * Useful for observability and debugging.
+   */
+  getFailoverEvents(): readonly ProviderFailoverEvent[] {
+    return this.failoverEvents;
+  }
+
+  /**
+   * Get the current failover configuration.
+   */
+  getConfig(): Readonly<ProviderFailoverConfig> {
+    return this.config;
+  }
+
+  // ─── Private Helpers ────────────────────────────────────────────
+
+  /**
+   * Create an LLMClient instance for a specific provider entry.
+   */
+  private createClientForProvider(entry: FailoverProviderEntry): LLMClient {
+    const config: any = {
+      apiKey: entry.apiKey,
+      baseUrl: entry.baseUrl,
+      model: entry.model,
+      provider: entry.provider,
+    };
+
+    if (this.proxyConfig) {
+      // Local providers bypass proxy
+      const isLocal = LOCAL_PROVIDER_TYPES.has(entry.provider);
+      config.professionalMode = isLocal
+        ? { ...this.proxyConfig, enabled: false }
+        : this.proxyConfig;
+    }
+
+    return new LLMClient(config);
+  }
+
+  /**
+   * Determine if an error is retryable (should trigger failover).
+   * Retryable: timeouts, 5xx, 429, network errors.
+   * Non-retryable but still failover-eligible: 4xx auth errors, validation errors.
+   * All errors trigger failover to next provider per Req 21.1.
+   */
+  private isRetryableError(error: unknown): boolean {
+    if (error == null) return false;
+
+    // Check for HTTP status code
+    const statusCode = this.extractStatusCode(error);
+    if (statusCode !== null) {
+      // 5xx and 429 are retryable within the same provider
+      if (statusCode >= 500 || statusCode === 429) return true;
+      // 4xx (except 429) are not retryable on same provider but will failover
+      return false;
+    }
+
+    // Timeout errors
+    const message = error instanceof Error ? error.message : String(error);
+    if (/time\s*out|timed\s*out|ETIMEDOUT|ESOCKETTIMEDOUT/i.test(message)) {
+      return true;
+    }
+
+    // Network errors
+    if (/ECONNREFUSED|ECONNRESET|ENOTFOUND|EAI_AGAIN|socket hang up/i.test(message)) {
+      return true;
+    }
+
+    return true; // Default to retryable for unknown errors
+  }
+
+  /**
+   * Classify an error into a human-readable category for logging.
+   */
+  private classifyError(error: unknown): string {
+    if (error == null) return 'unknown';
+
+    const statusCode = this.extractStatusCode(error);
+    if (statusCode === 429) return 'rate_limit';
+    if (statusCode !== null && statusCode >= 500) return `server_error_${statusCode}`;
+    if (statusCode !== null && statusCode >= 400) return `client_error_${statusCode}`;
+
+    const message = error instanceof Error ? error.message : String(error);
+    if (/time\s*out|timed\s*out|ETIMEDOUT|ESOCKETTIMEDOUT/i.test(message)) return 'timeout';
+    if (/ECONNREFUSED|ECONNRESET|ENOTFOUND|EAI_AGAIN|socket hang up/i.test(message)) return 'network_error';
+    if (/insufficient.?credits|402/i.test(message)) return 'insufficient_credits';
+
+    return 'unknown';
+  }
+
+  /**
+   * Extract HTTP status code from an error object.
+   */
+  private extractStatusCode(error: unknown): number | null {
+    if (typeof error !== 'object' || error === null) return null;
+    const err = error as Record<string, unknown>;
+    if (typeof err['status'] === 'number') return err['status'];
+    if (typeof err['statusCode'] === 'number') return err['statusCode'];
+    if (typeof err['response'] === 'object' && err['response'] !== null) {
+      const response = err['response'] as Record<string, unknown>;
+      if (typeof response['status'] === 'number') return response['status'];
+    }
+    return null;
+  }
+
+  /**
+   * Default logger that writes failover events to console.warn.
+   */
+  private static defaultLogger(event: ProviderFailoverEvent): void {
+    console.warn(
+      `[ProviderFailover] Failover: ${event.originatingProvider} → ${event.targetProvider} ` +
+      `(error: ${event.errorType}, time: ${event.timestamp})`,
+    );
+  }
+}

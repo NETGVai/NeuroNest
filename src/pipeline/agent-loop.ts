@@ -2029,7 +2029,7 @@ export class AgentLoopController {
         powerContext: this.config.powerContext,
         codeQualityDirectives: useCodeQuality
           ? this.config.codeQualityDirectives ?? DEFAULT_CODE_QUALITY_DIRECTIVES
-          : { enforceErrorHandling: false, enforceTypeSafety: false, enforceConventionFollowing: false, enforceVerification: false, verificationTools: [] },
+          : { enforceErrorHandling: false, enforceTypeSafety: false, enforceConventionFollowing: false, enforceVerification: false, verificationTools: [], enforceMinimalism: false, minimalismMode: 'full' as const },
         actionFirstDirectives: useActionFirst
           ? this.config.actionFirstDirectives ?? DEFAULT_ACTION_FIRST_DIRECTIVES
           : { prohibitPlanOnlyResponses: false, requireToolUsageForFileOps: false, requireToolUsageForExecution: false },

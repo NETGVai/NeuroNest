@@ -2,7 +2,7 @@
 // Loads the workspace-level NEURONEST.md file as standing context
 // every session and every loop pass. Enforces a hard budget of
 // 300 lines and emits a warning at 250 lines.
-// Requirements: 20.1, 20.2, 20.3, 20.4, 20.6
+// Requirements: 20.1, 20.2, 20.3, 20.4, 20.6, 5.6
 
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -19,6 +19,28 @@ export interface ValidateResult {
   message?: string;
 }
 
+export interface StandingContextOptions {
+  /** When true, the minimalism directive is included in context for all loop passes (Req 5.6) */
+  enforceMinimalism?: boolean;
+}
+
+/**
+ * The minimalism directive content injected into standing context when enforceMinimalism is enabled.
+ * This ensures all loop passes receive the lean coding standards directive (Req 5.6).
+ */
+const MINIMALISM_DIRECTIVE = `## Minimalism Directive (Standing Context)
+
+Apply the Minimalism Ladder to all code produced:
+1. YAGNI — Do not build it unless explicitly required
+2. stdlib — Use standard library before anything else
+3. native — Use native language features over libraries
+4. dependency — Use a single well-known dependency if needed
+5. one-line — Write it in one line if possible
+
+Safety Exclusions: trust-boundary validation, data-loss handling, security controls, and accessibility compliance are NEVER subject to minimalism reduction.
+
+Output constraint: Code first, three or fewer lines of explanation.`;
+
 export class StandingContext {
   /** Hard budget: file content is truncated at this line count (REQ-20.3) */
   private static readonly MAX_LINES = 300;
@@ -28,9 +50,11 @@ export class StandingContext {
   private readonly filePath: string;
   private content: string = '';
   private lineCount: number = 0;
+  private readonly options: StandingContextOptions;
 
-  constructor(private readonly workspacePath: string) {
+  constructor(private readonly workspacePath: string, options?: StandingContextOptions) {
     this.filePath = join(this.workspacePath, 'NEURONEST.md');
+    this.options = options ?? {};
   }
 
   /**
@@ -145,5 +169,29 @@ export class StandingContext {
     }
 
     return patterns;
+  }
+
+  /**
+   * Get the full context for a loop pass, optionally including the minimalism directive (REQ-5.6).
+   *
+   * When `enforceMinimalism` is enabled in options, the minimalism directive is prepended
+   * to the loaded NEURONEST.md content so that all loop passes receive lean coding standards.
+   *
+   * Returns the loaded content (from the last `load()` call) with the minimalism directive
+   * prepended if enabled. If `load()` has not been called, returns only the directive (if enabled)
+   * or an empty string.
+   */
+  getContextForLoopPass(): string {
+    const parts: string[] = [];
+
+    if (this.options.enforceMinimalism) {
+      parts.push(MINIMALISM_DIRECTIVE);
+    }
+
+    if (this.content) {
+      parts.push(this.content);
+    }
+
+    return parts.join('\n\n');
   }
 }

@@ -203,6 +203,62 @@ export const PERF_FLAGS = {
    * skill-pack subsystem if it interacts badly with a specific environment.
    */
   SKILL_PACK_LOADER_ENABLED: true,
+  /**
+   * Toggle the External Browser MCP registration (Requirement 24).
+   *
+   * When ON, the GUI Agent's MCP server is registered via MCPServerManager
+   * for external browser verification scenarios (multi-page navigation,
+   * OAuth redirects, multi-tab interactions) that the embedded in-page
+   * preview cannot cover. All browser actions are validated through the
+   * Action Security Analyzer before execution.
+   *
+   * Default OFF; this is an opt-in flag for phased rollout. Enable after
+   * the GUI Agent acceptance stage is operational.
+   */
+  EXTERNAL_BROWSER_MCP: false,
+  /**
+   * Toggle the Lean Minimalism system prompt directive (Requirement 2).
+   *
+   * When ON, the System_Prompt_Builder injects the five-rung Minimalism
+   * Ladder and Safety Exclusion clause into the system prompt when
+   * `enforceMinimalism` is true in CodeQualityDirectives. Supports "full"
+   * (mandatory enforcement) and "lite" (advisory recommendation) modes.
+   *
+   * When OFF, `enforceMinimalism` is forced to false regardless of its
+   * configured value — no minimalism content appears in prompts.
+   *
+   * Default OFF; flip to `true` after Verifier_Subagent reconciliation
+   * (Requirement 6) is implemented and verified.
+   */
+  PRODUCTION_UX_MINIMALISM: false,
+  /**
+   * Toggle the Execution Mode Router and Phased Pipeline (Requirement 11).
+   *
+   * When ON, the ExecutionModeRouter classifies tasks as "fast path"
+   * (single-file edits) or "phased path" (multi-file, multi-agent, or
+   * UI-touching tasks) and routes phased tasks through the five-phase
+   * pipeline with hard quality gates.
+   *
+   * When OFF, all tasks use the existing single-pass execution flow
+   * regardless of complexity signals — the router always returns 'fast'.
+   *
+   * Default OFF; enable after phased pipeline infrastructure is in place.
+   */
+  PHASED_EXECUTION: false,
+  /**
+   * Toggle the Adaptive Replanning (GOAP-Lite) mechanism (Requirement 23).
+   *
+   * When ON, the Orchestrator Planner replans from current state (informed
+   * by failed-trajectory memory) when a subtask fails, instead of retrying
+   * the same plan. Limited to max 3 replan attempts per pipeline run.
+   *
+   * When OFF, the AdaptiveReplanner returns a no-op result and no
+   * replanning occurs — the pipeline uses its default retry behavior.
+   *
+   * Default OFF; enable after Trajectory Memory (Requirement 17) is
+   * operational and verified.
+   */
+  ADAPTIVE_REPLANNING: false,
 };
 
 /**

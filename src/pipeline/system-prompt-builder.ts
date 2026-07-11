@@ -16,6 +16,7 @@
 
 import type { FunctionDefinition } from './agent-loop';
 import { buildIdentityAnchor } from './overwrite-protection/identity-anchor';
+import { PERF_FLAGS } from '../main/performance/feature-flags';
 
 // ─── Interfaces ─────────────────────────────────────────────────
 
@@ -42,6 +43,10 @@ export interface CodeQualityDirectives {
   enforceConventionFollowing: boolean;
   enforceVerification: boolean;
   verificationTools: string[]; // e.g., ['tsc', 'eslint', 'vitest --run']
+  /** When true (and feature flag enabled), inject minimalism ladder into prompt */
+  enforceMinimalism: boolean;
+  /** "full" = mandatory enforcement; "lite" = advisory recommendation */
+  minimalismMode: 'full' | 'lite';
 }
 
 /** Controls action-first behavior enforcement in the system prompt */
@@ -60,6 +65,8 @@ export const DEFAULT_CODE_QUALITY_DIRECTIVES: CodeQualityDirectives = {
   enforceConventionFollowing: true,
   enforceVerification: true,
   verificationTools: ['tsc', 'eslint'],
+  enforceMinimalism: false,
+  minimalismMode: 'full',
 };
 
 /** Default action-first directives — all enforcement enabled */
@@ -111,6 +118,7 @@ export function buildEnhancedSystemPrompt(config: SystemPromptConfig): string {
 
   const codeQualitySection = buildCodeQualitySection(codeQualityDirectives);
   const actionFirstSection = buildActionFirstSection(actionFirstDirectives);
+  const minimalismSection = buildMinimalismSection(codeQualityDirectives);
 
   // ── Identity Anchor (regenerated each message cycle) ──────────
   const identityAnchor = buildIdentityAnchor(projectDir, rulesContent ?? null);
@@ -143,6 +151,7 @@ export function buildEnhancedSystemPrompt(config: SystemPromptConfig): string {
     `- NEVER respond with only text when the user asked you to build, create, or implement something. Use your tools.` +
     codeQualitySection +
     actionFirstSection +
+    minimalismSection +
     identitySection +
     relatedProjectsSection +
     powerSection
@@ -222,4 +231,55 @@ function buildActionFirstSection(directives: ActionFirstDirectives): string {
   }
 
   return `\n\n## Action-First Directives\n${lines.join('\n')}`;
+}
+
+/**
+ * Build the minimalism directive section.
+ *
+ * Gated behind the `production_ux_minimalism` feature flag — when the flag is
+ * disabled, this returns an empty string regardless of `enforceMinimalism`.
+ *
+ * In "full" mode, the ladder is presented as mandatory enforcement.
+ * In "lite" mode, the ladder is presented as advisory recommendation.
+ *
+ * Always includes the Safety Exclusion clause when the section is emitted.
+ */
+export function buildMinimalismSection(directives: CodeQualityDirectives): string {
+  // Gate behind feature flag — when disabled, force no minimalism
+  if (!PERF_FLAGS.PRODUCTION_UX_MINIMALISM) {
+    return '';
+  }
+
+  if (!directives.enforceMinimalism) {
+    return '';
+  }
+
+  const mode = directives.minimalismMode;
+
+  const preamble = mode === 'full'
+    ? 'You MUST follow the Minimalism Ladder for every code decision. Do not skip rungs.'
+    : 'You SHOULD follow the Minimalism Ladder as a recommendation for code decisions.';
+
+  const ladder = [
+    '1. YAGNI — Do not build it unless explicitly required.',
+    '2. Standard Library — Use the language standard library before anything else.',
+    '3. Native Features — Use native language features over external utilities.',
+    '4. Single Dependency — If a dependency is needed, use one well-known package.',
+    '5. One-Liner — If you must write it, write it in one line if possible.',
+  ].join('\n');
+
+  const outputConstraint = '- Code first, three or fewer lines of explanation.';
+
+  const safetyExclusion =
+    '**Safety Exclusion:** The following categories are NEVER subject to minimalism reduction: ' +
+    'trust-boundary validation, data-loss handling, security controls, and accessibility compliance. ' +
+    'Always implement these fully regardless of the ladder.';
+
+  return (
+    `\n\n## Minimalism Directive\n` +
+    `${preamble}\n\n` +
+    `### Minimalism Ladder\n${ladder}\n\n` +
+    `### Output Rule\n${outputConstraint}\n\n` +
+    `### Safety Exclusion\n${safetyExclusion}`
+  );
 }
