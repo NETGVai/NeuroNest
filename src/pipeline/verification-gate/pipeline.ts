@@ -16,6 +16,7 @@ import { MAX_SCORE, STAGE_ORDER } from './types';
 import { SyntaxStage } from './stages/syntax-stage';
 import { TypecheckStage } from './stages/typecheck-stage';
 import { LintStage } from './stages/lint-stage';
+import { SecurityStage } from './stages/security-stage';
 import { TestStage } from './stages/test-stage';
 import { SmokeStage } from './stages/smoke-stage';
 
@@ -167,6 +168,7 @@ export class VerificationGatePipeline implements VerificationPipeline {
       new SyntaxStage(),
       new TypecheckStage(),
       new LintStage(),
+      new SecurityStage(),
       new TestStage(),
       new SmokeStage(),
     ];

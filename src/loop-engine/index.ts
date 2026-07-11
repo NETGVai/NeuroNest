@@ -5,6 +5,8 @@
 //
 // Requirements: 6.1, 6.5, 15.1
 
+import type { SecurityGate } from '../security/security-gate';
+
 // ─── Core Types ─────────────────────────────────────────────────
 
 export type LoopState =
@@ -281,8 +283,9 @@ export interface LoopStorageLike {
 
 export interface LoopRunnerDeps {
   swarmCoordinator: SwarmCoordinatorLike;
-  firewallEngine: FirewallEngineLike;
-  actionAnalyzer: ActionAnalyzerLike;
+  firewallEngine: FirewallEngineLike | SecurityGate;
+  actionAnalyzer: ActionAnalyzerLike | SecurityGate;
+  securityGate: SecurityGate;
   editLockManager: EditLockManagerLike;
   eventBus: EventBusLike;
   checkpointService: CheckpointServiceLike;
@@ -699,10 +702,18 @@ export async function createLoopEngine(
   const hookEngine = new _HookEngine([], permissionPatternEngine);
 
   // ── 3. Create Loop Runner with Full Dependency Injection ──────
+  // Build a composite SecurityGate that delegates inspect() to the firewall
+  // and classify() to the action analyzer (Requirement 24.4).
+  const securityGate: import('../security/security-gate').SecurityGate = {
+    inspect: (content: string) => (deps.firewallEngine as unknown as import('../security/security-gate').SecurityGate).inspect(content),
+    classify: (action: string) => (deps.actionAnalyzer as unknown as import('../security/security-gate').SecurityGate).classify(action),
+  };
+
   const runnerDeps: LoopRunnerDeps = {
     swarmCoordinator: deps.swarmCoordinator,
     firewallEngine: deps.firewallEngine,
     actionAnalyzer: deps.actionAnalyzer,
+    securityGate,
     editLockManager: deps.editLockManager,
     eventBus: deps.eventBus,
     checkpointService: deps.checkpointService,

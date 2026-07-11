@@ -8,6 +8,11 @@
  * Tier 3: Policy enforcement — checks against configurable rules
  */
 
+import { randomUUID } from 'node:crypto';
+import { readFileSync, existsSync } from 'node:fs';
+import { join } from 'node:path';
+import type { SecurityGate, SecurityGateResult, SecurityFinding, RiskClassification } from '../security/security-gate.js';
+
 export interface FirewallRule {
   id: string;
   name: string;
@@ -73,7 +78,7 @@ export const DEFAULT_RULES: FirewallRule[] = [
   { id: 'pol-04', name: 'External API limit', tier: 3, enabled: true, pattern: '(?i)fetch\\s*\\(\\s*["\']https?://', category: 'policy', severity: 'low', action: 'log', description: 'Logs external API calls by agents' },
 ];
 
-export class FirewallEngine {
+export class FirewallEngine implements SecurityGate {
   private rules: FirewallRule[];
   private events: FirewallEvent[] = [];
   private stats = { total: 0, blocked: 0, warned: 0, passed: 0 };
@@ -119,7 +124,7 @@ export class FirewallEngine {
 
         if (match) {
           const event: FirewallEvent = {
-            id: require('node:crypto').randomUUID(),
+            id: randomUUID(),
             timestamp: Date.now(),
             tier: rule.tier,
             ruleId: rule.id,
@@ -170,6 +175,48 @@ export class FirewallEngine {
   getEvents(limit?: number): FirewallEvent[] { return limit ? this.events.slice(-limit) : this.events; }
   getStats() { return { ...this.stats }; }
 
+  /**
+   * SecurityGate.inspect() — maps evaluate() results to SecurityGateResult.
+   * Runs the firewall evaluation on the content and translates events into SecurityFindings.
+   */
+  async inspect(content: string): Promise<SecurityGateResult> {
+    const result = this.evaluate(content);
+
+    const findings: SecurityFinding[] = result.events.map((event) => {
+      const finding: SecurityFinding = {
+        ruleId: event.ruleId,
+        severity: event.severity as SecurityFinding['severity'],
+        category: event.category,
+        message: `${event.ruleName}: ${event.category} detected`,
+      };
+      if (event.match !== undefined) {
+        finding.match = event.match;
+      }
+      return finding;
+    });
+
+    const response: SecurityGateResult = {
+      allowed: result.passed,
+      findings,
+    };
+    if (result.blocked) {
+      response.reason = `Blocked by firewall rule(s): ${result.events.filter(e => e.blocked).map(e => e.ruleName).join(', ')}`;
+    }
+    return response;
+  }
+
+  /**
+   * SecurityGate.classify() — returns a default low-risk classification.
+   * FirewallEngine primarily performs content inspection, not action classification.
+   * ActionAnalyzer (EnsembleSecurityAnalyzer) is the primary implementor of classify().
+   */
+  async classify(_action: string): Promise<RiskClassification> {
+    return {
+      level: 'low',
+      reason: 'FirewallEngine does not perform action classification; use ActionAnalyzer for risk assessment.',
+    };
+  }
+
   /** Cap stored events to prevent unbounded memory growth */
   private trimEvents(): void {
     if (this.events.length > 1000) {
@@ -203,4 +250,155 @@ export class FirewallEngine {
     this.compiledPatterns.delete(ruleId);
   }
   clearEvents(): void { this.events = []; }
+
+  /**
+   * Load firewall rules from an external JSON configuration file.
+   *
+   * Follows the command-policy-engine config-loading pattern:
+   * - Reads `.neuronest/firewall-rules.json` from the given project directory
+   * - Falls back to DEFAULT_RULES when the file is not present or is malformed
+   * - Invalid individual rules are skipped (valid rules are still loaded)
+   *
+   * The JSON file should contain an array of FirewallRule objects:
+   * ```json
+   * [
+   *   { "id": "custom-01", "name": "...", "tier": 1, "enabled": true, "pattern": "...", "category": "injection", "severity": "high", "action": "block", "description": "..." }
+   * ]
+   * ```
+   *
+   * @param projectDir - The project root directory (resolves `.neuronest/firewall-rules.json` relative to this)
+   * @returns A new FirewallEngine instance loaded with external rules merged with DEFAULT_RULES,
+   *          or DEFAULT_RULES only if the file is absent/invalid.
+   */
+  static loadFromConfig(projectDir: string): FirewallEngine {
+    const configPath = join(projectDir, '.neuronest', 'firewall-rules.json');
+
+    if (!existsSync(configPath)) {
+      return new FirewallEngine([...DEFAULT_RULES]);
+    }
+
+    let fileContent: string;
+    try {
+      fileContent = readFileSync(configPath, 'utf8');
+    } catch {
+      return new FirewallEngine([...DEFAULT_RULES]);
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(fileContent);
+    } catch {
+      return new FirewallEngine([...DEFAULT_RULES]);
+    }
+
+    if (!Array.isArray(parsed)) {
+      return new FirewallEngine([...DEFAULT_RULES]);
+    }
+
+    const externalRules: FirewallRule[] = [];
+    for (const raw of parsed) {
+      const rule = validateFirewallRule(raw);
+      if (rule) {
+        externalRules.push(rule);
+      }
+    }
+
+    // Merge: external rules appended after DEFAULT_RULES
+    const mergedRules = [...DEFAULT_RULES, ...externalRules];
+    return new FirewallEngine(mergedRules);
+  }
+
+  /**
+   * Load rules from an external JSON config file, replacing only the external rules
+   * (DEFAULT_RULES are always retained). Useful for reloading config at runtime.
+   *
+   * @param projectDir - The project root directory
+   */
+  loadExternalRules(projectDir: string): void {
+    const configPath = join(projectDir, '.neuronest', 'firewall-rules.json');
+
+    if (!existsSync(configPath)) {
+      // No external config — keep current rules (which include DEFAULT_RULES)
+      return;
+    }
+
+    let fileContent: string;
+    try {
+      fileContent = readFileSync(configPath, 'utf8');
+    } catch {
+      return;
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(fileContent);
+    } catch {
+      return;
+    }
+
+    if (!Array.isArray(parsed)) {
+      return;
+    }
+
+    const externalRules: FirewallRule[] = [];
+    for (const raw of parsed) {
+      const rule = validateFirewallRule(raw);
+      if (rule) {
+        externalRules.push(rule);
+      }
+    }
+
+    // Replace rules with DEFAULT_RULES + external, then recompile
+    this.rules = [...DEFAULT_RULES, ...externalRules];
+    this.compiledPatterns.clear();
+    this.precompilePatterns();
+  }
+}
+
+/**
+ * Validates a raw JSON object as a FirewallRule.
+ * Returns a valid FirewallRule or null if the object is invalid.
+ */
+function validateFirewallRule(raw: unknown): FirewallRule | null {
+  if (!raw || typeof raw !== 'object') return null;
+
+  const obj = raw as Record<string, unknown>;
+
+  // Required string fields
+  if (typeof obj.id !== 'string' || obj.id.trim() === '') return null;
+  if (typeof obj.name !== 'string' || obj.name.trim() === '') return null;
+  if (typeof obj.description !== 'string') return null;
+
+  // Tier must be 0, 1, 2, or 3
+  if (typeof obj.tier !== 'number' || ![0, 1, 2, 3].includes(obj.tier)) return null;
+
+  // enabled must be boolean
+  if (typeof obj.enabled !== 'boolean') return null;
+
+  // category validation
+  const validCategories = new Set(['injection', 'jailbreak', 'secrets', 'unsafe-command', 'policy', 'sanitize']);
+  if (typeof obj.category !== 'string' || !validCategories.has(obj.category)) return null;
+
+  // severity validation
+  const validSeverities = new Set(['low', 'medium', 'high', 'critical']);
+  if (typeof obj.severity !== 'string' || !validSeverities.has(obj.severity)) return null;
+
+  // action validation
+  const validActions = new Set(['block', 'warn', 'log']);
+  if (typeof obj.action !== 'string' || !validActions.has(obj.action)) return null;
+
+  // pattern is optional but must be a string if present
+  if (obj.pattern !== undefined && typeof obj.pattern !== 'string') return null;
+
+  return {
+    id: obj.id,
+    name: obj.name,
+    tier: obj.tier as 0 | 1 | 2 | 3,
+    enabled: obj.enabled,
+    pattern: obj.pattern as string | undefined,
+    category: obj.category as FirewallRule['category'],
+    severity: obj.severity as FirewallRule['severity'],
+    action: obj.action as FirewallRule['action'],
+    description: obj.description,
+  };
 }

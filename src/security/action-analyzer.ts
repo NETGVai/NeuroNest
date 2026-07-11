@@ -11,6 +11,8 @@
  * - EnsembleAnalyzer: combines multiple analyzers, takes worst-case risk
  */
 
+import type { SecurityGate, SecurityGateResult, RiskClassification } from './security-gate.js';
+
 export type SecurityRisk = 'LOW' | 'MEDIUM' | 'HIGH' | 'UNKNOWN';
 
 export interface ActionAnalysisResult {
@@ -131,7 +133,7 @@ export class PolicyRailSecurityAnalyzer {
 
 // ─── Ensemble Analyzer ──────────────────────────────────────────
 
-export class EnsembleSecurityAnalyzer {
+export class EnsembleSecurityAnalyzer implements SecurityGate {
   private analyzers: Array<PatternSecurityAnalyzer | PolicyRailSecurityAnalyzer>;
 
   constructor(analyzers?: Array<PatternSecurityAnalyzer | PolicyRailSecurityAnalyzer>) {
@@ -155,6 +157,44 @@ export class EnsembleSecurityAnalyzer {
       reasons: allReasons.length > 0 ? allReasons : ['No threats detected'],
       analyzer: 'ensemble',
       timestamp: Date.now(),
+    };
+  }
+
+  /**
+   * Classify the risk level of an action string.
+   * Maps from the existing analyze() method to the SecurityGate interface.
+   *
+   * Requirements: 24.3
+   */
+  async classify(action: string): Promise<RiskClassification> {
+    const analyzableAction = classifyAction(action);
+    const result = this.analyze(analyzableAction);
+
+    // Map SecurityRisk ('LOW' | 'MEDIUM' | 'HIGH' | 'UNKNOWN') to RiskClassification level
+    const levelMap: Record<SecurityRisk, RiskClassification['level']> = {
+      LOW: 'low',
+      MEDIUM: 'medium',
+      HIGH: 'high',
+      UNKNOWN: 'medium',
+    };
+
+    return {
+      level: levelMap[result.risk],
+      reason: result.reasons.join('; '),
+    };
+  }
+
+  /**
+   * Inspect content for security threats.
+   * ActionAnalyzer primarily does action classification, not content inspection,
+   * so this returns a default allowed result.
+   *
+   * Requirements: 24.3
+   */
+  async inspect(_content: string): Promise<SecurityGateResult> {
+    return {
+      allowed: true,
+      findings: [],
     };
   }
 }

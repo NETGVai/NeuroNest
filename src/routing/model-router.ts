@@ -30,7 +30,20 @@ export type TaskType =
   | 'code_review'
   | 'commit_message'
   | 'test_generation'
-  | 'general';
+  | 'general'
+  // Meta-work types (cheap tier) — used by orchestration subsystems
+  | 'agent_routing'
+  | 'refusal_detection'
+  | 'prompt_scoring'
+  | 'metadata_extraction'
+  | 'orchestration_meta';
+
+/**
+ * Model tier classification for cost-appropriate routing.
+ * - 'expensive': Complex reasoning tasks (gpt-4, claude-sonnet class)
+ * - 'cheap': Classification and routing tasks (gpt-4o-mini, haiku class)
+ */
+export type ModelTier = 'expensive' | 'cheap';
 
 /**
  * A single provider-model pair with priority ordering.
@@ -99,6 +112,32 @@ const SIMPLE_EDIT_KEYWORDS = [
  */
 const REVIEW_TOOLS = ['lint', 'diagnostics', 'code_review', 'security_scan'] as const;
 const TEST_TOOLS = ['run_tests', 'test_runner', 'coverage'] as const;
+
+// ─── Tier Classification ────────────────────────────────────────
+
+/**
+ * Maps each TaskType to its model tier.
+ * Expensive tier: complex reasoning (code generation, architecture, tests)
+ * Cheap tier: lightweight classification, routing, and meta-work
+ *
+ * Requirements: 6.1, 6.3
+ */
+const TIER_MAP: Record<TaskType, ModelTier> = {
+  // Expensive tier — complex reasoning tasks
+  code_generation: 'expensive',
+  architecture_reasoning: 'expensive',
+  test_generation: 'expensive',
+  // Cheap tier — lightweight classification and meta-work
+  simple_edit: 'cheap',
+  commit_message: 'cheap',
+  code_review: 'cheap',
+  general: 'cheap',
+  agent_routing: 'cheap',
+  refusal_detection: 'cheap',
+  prompt_scoring: 'cheap',
+  metadata_extraction: 'cheap',
+  orchestration_meta: 'cheap',
+};
 
 // ─── ModelRouter Class ──────────────────────────────────────────
 
@@ -214,6 +253,20 @@ export class ModelRouter {
     }
 
     return entry.providers.map((p) => ({ providerId: p.providerId, model: p.model }));
+  }
+
+  /**
+   * Get the tier classification for a task type.
+   * Returns 'expensive' for complex reasoning tasks and 'cheap' for
+   * lightweight classification and routing tasks.
+   *
+   * Handles unknown TaskType values gracefully by returning 'cheap' as a
+   * safe default to minimize cost.
+   *
+   * Requirements: 6.1, 6.2, 6.3, 6.8, 6.9
+   */
+  getTier(taskType: TaskType): ModelTier {
+    return TIER_MAP[taskType] ?? 'cheap';
   }
 
   // ─── Private Helpers ────────────────────────────────────────────

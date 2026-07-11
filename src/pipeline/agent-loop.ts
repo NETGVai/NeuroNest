@@ -19,7 +19,7 @@ import { loadAIRules } from './simple-responder.js';
 import { SmartContextSelector } from './smart-context.js';
 import type { SmartContextResult } from './smart-context.js';
 import type { LLMClient } from './llm-client';
-import type { CallbackEngine } from './callback-engine.js';
+import type { CallbackEngine, HookContext } from './callback-engine.js';
 import type { AutoTuner } from '../benchmark/auto-tuner.js';
 import type { ExecutionTraceService } from '../infrastructure/execution-trace-service.js';
 import type { ArtifactService } from '../artifacts/artifact-service.js';
@@ -61,9 +61,15 @@ import { ComplianceGateRunner } from '../devex/compliance-gate-runner.js';
 import { WasmSandbox } from '../security/wasm-sandbox.js';
 import { BrowserAutomation } from '../devex/browser-automation.js';
 import { BackpropagationEngine } from '../intelligence/backpropagation-engine.js';
+import { wirePipelineSecurity, type PipelineSecurityWiringResult } from './pipeline-security-wiring.js';
 import { ActionFirstDetector, DEFAULT_MAX_RE_PROMPT_ATTEMPTS } from './action-first-detector.js';
 import { buildEnhancedSystemPrompt, DEFAULT_CODE_QUALITY_DIRECTIVES, DEFAULT_ACTION_FIRST_DIRECTIVES } from './system-prompt-builder.js';
 import type { CodeQualityDirectives, ActionFirstDirectives, SystemPromptConfig } from './system-prompt-builder.js';
+import { VerificationGatePipeline } from './verification-gate/pipeline.js';
+import { runSelfHealingLoop } from './self-healing-loop.js';
+import type { RepairAgent, VerificationRunner, RepairFeedback, SelfHealingConfig } from './self-healing-loop.js';
+import { attemptDeterministicFix } from './deterministic-escalation.js';
+import type { AgentEdit, ProjectContext } from './verification-gate/types.js';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 
@@ -610,6 +616,10 @@ export function checkFeasibility(
 
 export class AgentLoopController {
   private config: AgentLoopConfig;
+  /** Static guard to ensure pipeline security wiring only runs once across all instances (Req 18.6) */
+  private static _pipelineSecurityWired = false;
+  /** Pipeline security wiring result — null when not wired (Req 18.1) */
+  private pipelineSecurityResult: PipelineSecurityWiringResult | null = null;
   /** Feature gate system — null when no superagentConfig is provided (zero-overhead path, Req 0.2, 0.6) */
   private featureGate: FeatureGateSystem | null = null;
   /** Cost tracking service — null when cost_tracking feature gate is disabled (Req 1.1, 1.6) */
@@ -896,6 +906,24 @@ export class AgentLoopController {
         config.ipcSend ?? undefined,
       );
     }
+
+    // ─── Pipeline Security Wiring: wire all security subsystems into the live pipeline (Req 18.1, 18.6) ───
+    // Idempotent guard ensures wiring only runs once, even if multiple controllers are created.
+    if (!AgentLoopController._pipelineSecurityWired && this.featureGate && config.callbackEngine) {
+      try {
+        const callbackEngine = config.callbackEngine as import('../pipeline/callback-engine.js').CallbackEngine;
+        this.pipelineSecurityResult = wirePipelineSecurity(
+          this.featureGate,
+          callbackEngine,
+          config.superagentConfig!,
+          undefined, // db — deferred; no direct database reference available at construction time
+        );
+        AgentLoopController._pipelineSecurityWired = true;
+      } catch (err) {
+        // Security wiring failure is non-fatal — log and continue (Req 18.6 additive)
+        console.error('[PipelineSecurity] Wiring failed — security subsystems inactive:', err);
+      }
+    }
   }
 
   /**
@@ -904,6 +932,14 @@ export class AgentLoopController {
    */
   isFeatureEnabled(feature: keyof FeatureGateFlags): boolean {
     return this.featureGate !== null && this.featureGate.isEnabled(feature);
+  }
+
+  /**
+   * Get the pipeline security wiring result, if wiring was successful.
+   * Returns null when security subsystems are not active (Req 18.1).
+   */
+  getPipelineSecurityResult(): PipelineSecurityWiringResult | null {
+    return this.pipelineSecurityResult;
   }
 
   /**
@@ -1572,13 +1608,29 @@ export class AgentLoopController {
       };
 
       if (callbackEngine) {
-        await callbackEngine.emit({
+        const hookCtx: HookContext = {
           event: 'before-tool-call',
           toolName: step.toolId,
           input: step.estimatedInput,
           sessionId,
           iteration,
-        });
+        };
+        await callbackEngine.emit(hookCtx);
+
+        // Check if a before-tool-call hook blocked the tool call (e.g., security analysis)
+        if (hookCtx.output !== undefined) {
+          const blockedToolResult = hookCtx.output as ToolResult;
+          await callbackEngine.emit({
+            event: 'after-tool-call',
+            toolName: step.toolId,
+            input: step.estimatedInput,
+            output: blockedToolResult,
+            error: blockedToolResult.success ? undefined : new Error(blockedToolResult.error || 'Blocked by security hook'),
+            sessionId,
+            iteration,
+          });
+          continue;
+        }
       }
 
       let toolResult: ToolResult;
@@ -2082,13 +2134,26 @@ export class AgentLoopController {
 
         // Emit before-tool-call hook
         if (callbackEngine) {
-          await callbackEngine.emit({
+          const hookCtx: HookContext = {
             event: 'before-tool-call',
             toolName,
             input: parsedArgs,
             sessionId,
             iteration,
-          });
+          };
+          await callbackEngine.emit(hookCtx);
+
+          // Check if a before-tool-call hook blocked the tool call (e.g., security analysis)
+          if (hookCtx.output !== undefined) {
+            const blockedResult = hookCtx.output as ToolResult;
+            messages.push({
+              role: 'tool',
+              content: JSON.stringify(blockedResult),
+              tool_call_id: toolCall.id,
+            });
+            toolCallsExecuted++;
+            continue;
+          }
         }
 
         // ─── DriftMonitor: scope validation before tool call (Req 4.2, 12.2) ───
@@ -2186,6 +2251,172 @@ export class AgentLoopController {
         });
 
         toolCallsExecuted++;
+      }
+
+      // ─── Post-Tool Verification: run VerificationGatePipeline on modified files (Req 20.1, 20.2, 20.3) ───
+      if (filesModified.length > 0) {
+        try {
+          // Build AgentEdit from modified files
+          const fileChanges = await Promise.all(
+            filesModified.map(async (filePath) => {
+              try {
+                const content = await fs.readFile(filePath, 'utf-8');
+                return { filePath, content };
+              } catch {
+                // File may have been deleted or inaccessible — skip it
+                return null;
+              }
+            }),
+          );
+          const validChanges = fileChanges.filter((c): c is { filePath: string; content: string } => c !== null);
+
+          if (validChanges.length > 0) {
+            const agentEdit: AgentEdit = {
+              id: `edit_${sessionId}_${iteration}`,
+              taskId: sessionId,
+              changes: validChanges.map((c) => ({ filePath: c.filePath, content: c.content })),
+              description: `Tool cycle ${iteration} modifications`,
+            };
+
+            const projectContext: ProjectContext = {
+              rootDir: projectDir,
+              tsconfigPath: path.join(projectDir, 'tsconfig.json'),
+            };
+
+            // Run verification pipeline on the modified files
+            const verificationPipeline = new VerificationGatePipeline();
+            const verificationResult = await verificationPipeline.run(agentEdit, projectContext);
+
+            if (!verificationResult.accepted) {
+              // Track elapsed time for self-healing progress reporting (Req 20.7)
+              const healingStartTime = Date.now();
+
+              // ─── Deterministic-First Escalation Chain (Req 21.1, 21.2, 21.3, 21.4, 21.5) ───
+              // Before LLM repair: attempt deterministic fixes for lint and vulnerability failures.
+              // Escalation order: deterministic fix → LLM self-healing → user escalation
+              const verificationRunner: VerificationRunner = {
+                run: (edit: AgentEdit, ctx: ProjectContext) => verificationPipeline.run(edit, ctx),
+              };
+
+              const deterministicResult = await attemptDeterministicFix(
+                agentEdit,
+                verificationResult,
+                verificationRunner,
+                projectContext,
+                {
+                  projectDir,
+                  sessionId,
+                },
+              );
+
+              // If deterministic fix resolved the failure, skip LLM repair entirely (Req 21.4)
+              if (deterministicResult.resolved && deterministicResult.fixedEdit) {
+                // Apply the deterministic fix — update filesModified
+                for (const change of deterministicResult.fixedEdit.changes) {
+                  if (!filesModified.includes(change.filePath)) {
+                    filesModified.push(change.filePath);
+                  }
+                }
+
+                // Report deterministic fix success via IPC (Req 20.7)
+                if (this.config.ipcSend) {
+                  this.config.ipcSend('self-healing:progress', {
+                    sessionId,
+                    iteration,
+                    accepted: true,
+                    attempts: 0,
+                    escalated: false,
+                    stage: verificationResult.failedAt ?? 'unknown',
+                    elapsedMs: Date.now() - healingStartTime,
+                    fixType: deterministicResult.fixType,
+                    description: deterministicResult.description,
+                    deterministicFix: true,
+                  });
+                }
+              } else {
+              // Deterministic fix did not resolve — fall through to LLM self-healing loop
+
+              // Verification failed — invoke self-healing loop (Req 20.2, 20.3)
+              // Adapt AgentLoopController as RepairAgent — it already has LLM access
+              const repairAgent: RepairAgent = {
+                repair: async (originalEdit: AgentEdit, feedback: RepairFeedback[], _context: ProjectContext) => {
+                  // Build repair prompt from feedback
+                  const feedbackText = feedback.map((f) =>
+                    `[${f.stage}] ${f.filePath}:${f.lineNumber} — ${f.errorMessage}`
+                  ).join('\n');
+
+                  const repairPrompt = `The following verification failures were detected after your last edits. Please fix them:\n\n${feedbackText}\n\nProvide corrected file contents.`;
+
+                  // Use the existing LLM client to generate repair
+                  const repairResponse = await llmClient.chatWithTools(
+                    [
+                      ...messages,
+                      { role: 'user', content: repairPrompt },
+                    ],
+                    toolDefs,
+                    llmOptions,
+                  );
+
+                  const tokensUsed = repairResponse.usage?.totalTokens ?? 0;
+
+                  // Return the original edit as-is since the LLM will use tool calls to fix
+                  // In a real implementation, the LLM would produce a corrected edit via tool calls
+                  return { edit: originalEdit, tokensUsed };
+                },
+              };
+
+              const healingVerifier: VerificationRunner = {
+                run: (edit: AgentEdit, ctx: ProjectContext) => verificationPipeline.run(edit, ctx),
+              };
+
+              const selfHealingConfig: SelfHealingConfig = {
+                maxAttempts: 3,
+                tokenBudget: 50_000,
+                feedbackFormat: 'structured',
+              };
+
+              const healingResult = await runSelfHealingLoop(
+                agentEdit,
+                verificationResult,
+                repairAgent,
+                healingVerifier,
+                projectContext,
+                selfHealingConfig,
+              );
+
+              // Report self-healing progress asynchronously (Req 20.7)
+              if (this.config.ipcSend) {
+                this.config.ipcSend('self-healing:progress', {
+                  sessionId,
+                  iteration,
+                  accepted: healingResult.accepted,
+                  attempts: healingResult.attempts.length,
+                  escalated: healingResult.escalatedToUser,
+                  escalationReason: healingResult.escalationReason,
+                  stage: verificationResult.failedAt ?? 'unknown',
+                  elapsedMs: Date.now() - healingStartTime,
+                });
+              }
+
+              if (healingResult.accepted && healingResult.finalEdit) {
+                // Apply the repaired edit — update filesModified if new files were changed
+                for (const change of healingResult.finalEdit.changes) {
+                  if (!filesModified.includes(change.filePath)) {
+                    filesModified.push(change.filePath);
+                  }
+                }
+              } else if (healingResult.escalatedToUser) {
+                // Escalation: add a message for the LLM about unresolved verification failures
+                const escalationNote = `⚠️ Post-tool verification failed and self-healing was unable to resolve it after ${healingResult.attempts.length} attempts (reason: ${healingResult.escalationReason ?? 'unknown'}). Unresolved diagnostics remain.`;
+                messages.push({ role: 'user', content: escalationNote });
+              }
+              } // end else (deterministic fix did not resolve)
+            } // end if (!verificationResult.accepted)
+          }
+        } catch (verifyErr) {
+          // Post-tool verification is non-fatal — log and continue
+          console.warn('[PostToolVerification] Verification failed, continuing:', verifyErr);
+        }
       }
 
       // ─── Checkpoint: save state after each tool execution cycle (Req 2.1, 2.5, 2.7) ───

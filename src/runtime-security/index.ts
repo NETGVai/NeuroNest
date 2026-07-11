@@ -16,3 +16,7 @@ export * from './realtime-code-analyzer';
 export * from './security-evidence-store';
 export * from './threat-modeler';
 export * from './runtime-security-wiring';
+export * from './sast-engine';
+export * from './secrets-detector';
+export * from './operational-hardening';
+export * from './wire-security-monitoring';

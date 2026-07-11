@@ -20,10 +20,7 @@ export interface FirewallConfiguration {
   // Semantic-guard (LLM tier) integration settings
   semanticGuardConfig: {
     enabled: boolean;
-    apiUrl?: string;
-    apiKey?: string;
-    localModel?: string;
-    maxLatencyMs: number;
+    timeoutMs: number;
   };
 }
 
@@ -46,7 +43,7 @@ export const DEFAULT_FIREWALL_CONFIG: FirewallConfiguration = {
     fallbackMode: 'regex-only',
     sensitivityThreshold: 0.5,
     enableAdvancedRedaction: false,
-    maxLLMLatencyMs: 5000
+    maxLLMLatencyMs: 2000
   },
   
   agentPolicies: {
@@ -61,7 +58,7 @@ export const DEFAULT_FIREWALL_CONFIG: FirewallConfiguration = {
   
   semanticGuardConfig: {
     enabled: false,
-    maxLatencyMs: 5000
+    timeoutMs: 2000
   }
 };
 

@@ -1,14 +1,19 @@
 // ─── Security Enforcement Per Pass ──────────────────────────────
 // Enforces the full security stack before each pass execution:
-// Firewall Engine, Action Security Analyzer, EditLock, and tool allowlists.
+// SecurityGate (unified interface), EditLock, and tool allowlists.
 //
-// Requirements: 5.1, 5.2, 5.3, 5.4, 5.5
+// Requirements: 5.1, 5.2, 5.3, 5.4, 5.5, 24.4
 
 import type {
   LoopState,
   LoopSpec,
   LoopRunnerDeps,
 } from '../index';
+
+import type {
+  SecurityGateResult,
+  RiskClassification,
+} from '../../security/security-gate';
 
 // ─── Security Decision Types ────────────────────────────────────
 
@@ -20,20 +25,24 @@ export type SecurityDecision =
 
 /**
  * SecurityEnforcer orchestrates per-pass security checks before execution.
- * It coordinates the Firewall Engine, Action Security Analyzer, and EditLock
- * to ensure no pass bypasses existing security controls.
+ * It uses the unified SecurityGate interface for content inspection and action
+ * classification, ensuring that concrete class method renames cannot break
+ * enforcement (Requirement 24.4).
  *
- * Requirements: 5.1, 5.2, 5.3, 5.4, 5.5
+ * Requirements: 5.1, 5.2, 5.3, 5.4, 5.5, 24.4
  */
 export class SecurityEnforcer {
   /**
    * Enforces all security checks before a pass transitions to EXECUTING_PASS.
    *
    * Order of operations:
-   * 1. Firewall Engine inspection — blocks malicious content (REQ 5.1)
-   * 2. Action Security Analyzer — classifies risk, pauses on HIGH (REQ 5.2, 5.3)
+   * 1. SecurityGate.inspect() — blocks malicious content (REQ 5.1, 24.4)
+   * 2. SecurityGate.classify() — classifies risk, pauses on HIGH/critical (REQ 5.2, 5.3, 24.4)
    * 3. EditLock constraint — restricts file writes to allowedPaths (REQ 5.4)
    * 4. Tool allowlist validation — restricts tools to allowedTools (REQ 5.5)
+   *
+   * Uses the unified SecurityGate interface so that concrete class method name
+   * changes cannot break enforcement (Requirement 24.4).
    *
    * @param actionPlan - The planned action content for this pass
    * @param spec - The LoopSpec defining scope constraints
@@ -45,22 +54,44 @@ export class SecurityEnforcer {
     spec: LoopSpec,
     deps: LoopRunnerDeps,
   ): Promise<SecurityDecision> {
-    // ─── Step 1: Firewall Engine inspection (REQ 5.1) ─────────
-    const firewallResult = await deps.firewallEngine.inspect(actionPlan);
-    if (firewallResult.blocked) {
+    // ─── Step 1: SecurityGate content inspection (REQ 5.1, 24.4, 24.5) ───
+    // Fail-closed: if inspect() throws, block the operation (REQ 24.5, 24.6)
+    let inspectResult: SecurityGateResult;
+    try {
+      inspectResult = await deps.securityGate.inspect(actionPlan);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
       return {
         allowed: false,
-        reason: firewallResult.reason ?? 'firewall_blocked',
+        reason: `SecurityGate.inspect() failed (fail-closed): ${message}`,
+        nextState: 'BLOCKED',
+      };
+    }
+    if (!inspectResult.allowed) {
+      return {
+        allowed: false,
+        reason: inspectResult.reason ?? 'firewall_blocked',
         nextState: 'BLOCKED',
       };
     }
 
-    // ─── Step 2: Action Security Analyzer classification (REQ 5.2, 5.3) ───
-    const riskResult = await deps.actionAnalyzer.classify(actionPlan);
-    if (riskResult.risk === 'HIGH') {
+    // ─── Step 2: SecurityGate action classification (REQ 5.2, 5.3, 24.4, 24.5) ───
+    // Fail-closed: if classify() throws, block the operation (REQ 24.5, 24.6)
+    let riskResult: RiskClassification;
+    try {
+      riskResult = await deps.securityGate.classify(actionPlan);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
       return {
         allowed: false,
-        reason: `Action classified as HIGH risk: requires approval`,
+        reason: `SecurityGate.classify() failed (fail-closed): ${message}`,
+        nextState: 'BLOCKED',
+      };
+    }
+    if (riskResult.level === 'high' || riskResult.level === 'critical') {
+      return {
+        allowed: false,
+        reason: `Action classified as ${riskResult.level.toUpperCase()} risk: requires approval`,
         nextState: 'AWAITING_APPROVAL',
       };
     }

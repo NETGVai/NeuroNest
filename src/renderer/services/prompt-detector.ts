@@ -56,6 +56,18 @@ const QUESTION_LINE = /^.*(\?|:\s*)$/;
  */
 const DESTRUCTIVE_SIGNALS = /\b(irreversible|cannot be undone|destructive|permanently delete)\b/i;
 
+/**
+ * Yes/No confirmation patterns — follow-up confirmation phrasings that ask
+ * the user to say/type "yes" or "no" to proceed.
+ */
+const YES_NO_CONFIRMATION_PATTERNS: RegExp[] = [
+  /confirm\s+by\s+saying\s+['"]?(yes|no)['"]?\s*(or\s+['"]?(yes|no)['"]?)?/gi,
+  /say\s+['"]?(yes)['"]?\s+to\s+(proceed|continue|confirm)/gi,
+  /respond\s+(['"]?yes['"]?\s+or\s+['"]?no['"]?)/gi,
+  /type\s+(yes|no)\s+(or\s+(yes|no)\s+)?to\s/gi,
+  /\b(yes)\s*\/\s*(no)\b/gi,
+];
+
 // ---------------------------------------------------------------------------
 // Internal Match Representation
 // ---------------------------------------------------------------------------
@@ -96,6 +108,9 @@ export class PromptDetector implements IPromptDetector {
 
       // 2. Find all explicit keyword matches
       this.findExplicitKeywordMatches(text, matches);
+
+      // 2.5 Find all yes/no confirmation matches
+      this.findYesNoConfirmationMatches(text, matches);
 
       // 3. Find all binary approval question matches
       this.findBinaryApprovalMatches(text, matches);
@@ -248,16 +263,44 @@ export class PromptDetector implements IPromptDetector {
     }
   }
 
+  private findYesNoConfirmationMatches(text: string, matches: InternalMatch[]): void {
+    const hasDestructiveContext = DESTRUCTIVE_SIGNALS.test(text);
+    for (const pattern of YES_NO_CONFIRMATION_PATTERNS) {
+      pattern.lastIndex = 0;
+      let match: RegExpExecArray | null;
+      while ((match = pattern.exec(text)) !== null) {
+        matches.push({
+          type: hasDestructiveContext ? 'destructive-confirmation' : 'binary-approval',
+          responseText: 'yes',
+          offset: match.index,
+          isDestructive: hasDestructiveContext,
+        });
+      }
+    }
+  }
+
   private findBinaryApprovalMatches(text: string, matches: InternalMatch[]): void {
     const hasDestructiveContext = DESTRUCTIVE_SIGNALS.test(text);
 
-    // Find sentences ending with "?" that contain approval keywords
-    const sentencePattern = /[^.!?\n]*\?/g;
+    // Find sentences ending with "?" or "." that contain approval keywords
+    const sentencePattern = /[^.!?\n]*[.?]/g;
     let sentenceMatch: RegExpExecArray | null;
+
+    // Confirmation-intent heuristic: for declarative sentences (ending with '.'),
+    // requires a second-person pronoun, imperative verb, or request verb to qualify.
+    // This prevents false positives on narrative sentences like "The process will continue running."
+    const confirmationIntent = /\b(you|please|kindly|confirm|say|type|respond)\b/i;
 
     while ((sentenceMatch = sentencePattern.exec(text)) !== null) {
       const sentence = sentenceMatch[0];
       if (APPROVAL_KEYWORDS.test(sentence)) {
+        // For sentences ending with '.', apply confirmation-intent heuristic
+        const endsWithDot = sentence.trimEnd().endsWith('.');
+        if (endsWithDot && !confirmationIntent.test(sentence)) {
+          // Narrative sentence with incidental approval keyword — skip
+          continue;
+        }
+
         // Avoid double-counting: skip if this sentence also contains an explicit keyword match
         let hasExplicitMatch = false;
         for (const pattern of EXPLICIT_KEYWORD_PATTERNS) {
@@ -313,15 +356,24 @@ export class PromptDetector implements IPromptDetector {
   }
 
   private buildResult(match: InternalMatch): DetectionResult {
-    const confirmLabel = match.responseText
-      ? this.capitalize(match.responseText)
-      : 'Confirm';
+    let confirmLabel: string;
+    let cancelLabel: string;
+
+    if (match.responseText === 'yes') {
+      confirmLabel = 'Yes';
+      cancelLabel = 'No';
+    } else {
+      confirmLabel = match.responseText
+        ? this.capitalize(match.responseText)
+        : 'Confirm';
+      cancelLabel = 'Cancel';
+    }
 
     return {
       type: match.type,
       responseText: match.responseText,
       confirmLabel,
-      cancelLabel: 'Cancel',
+      cancelLabel,
       isDestructive: match.isDestructive,
       promptOffset: match.offset,
     };

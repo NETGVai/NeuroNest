@@ -4,10 +4,11 @@
  * Stub implementation with in-memory state. Applies optimization techniques
  * to user prompts, supports profiles, custom profiles, and prompt pair logging.
  *
- * Requirements: 10.1–10.8
+ * Requirements: 10.1–10.8, 1.1, 1.2, 1.4, 1.5, 1.6, 1.7
  */
 
 import { randomUUID } from 'node:crypto';
+import { DeliverableGuard, DeliverableType } from './deliverable-guard';
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -27,6 +28,7 @@ export interface OptimizedPrompt {
   optimized: string;
   techniques: OptimizationTechnique[];
   profile: string;
+  deliverableType: DeliverableType;
 }
 
 export interface OptimizationContext {
@@ -45,6 +47,7 @@ export interface PromptPair {
   agentId: string;
   sessionId: string;
   timestamp: Date;
+  deliverableType: DeliverableType;
 }
 
 // ─── Built-in profiles ──────────────────────────────────────────
@@ -82,6 +85,7 @@ export class PromptOptimizer {
   private profiles = new Map<string, OptimizationProfile>();
   private history: PromptPair[] = [];
   private enabledAgents = new Set<string>(); // agents with optimizer enabled
+  private guard = new DeliverableGuard();
 
   constructor() {
     for (const profile of BUILT_IN_PROFILES) {
@@ -91,7 +95,7 @@ export class PromptOptimizer {
 
   /**
    * Optimize a prompt using the specified profile.
-   * Requirements: 10.1, 10.2, 10.6
+   * Requirements: 10.1, 10.2, 10.6, 1.1, 1.2, 1.4, 1.5, 1.6, 1.7
    */
   async optimize(prompt: string, context: OptimizationContext): Promise<OptimizedPrompt> {
     const profile = this.profiles.get(context.profile);
@@ -99,12 +103,21 @@ export class PromptOptimizer {
       throw new Error(`Unknown optimization profile: ${context.profile}`);
     }
 
+    // Classify deliverable type before applying any techniques
+    const classification = this.guard.classify(prompt);
+
     let optimized = prompt;
     const appliedTechniques: OptimizationTechnique[] = [];
 
     for (const technique of profile.techniques) {
-      optimized = this.applyTechnique(optimized, technique, context);
-      appliedTechniques.push(technique);
+      const candidate = this.applyTechnique(optimized, technique, context);
+
+      // Validate that the technique did not corrupt the deliverable type
+      if (this.guard.validate(classification, candidate)) {
+        optimized = candidate;
+        appliedTechniques.push(technique);
+      }
+      // If validation fails, discard the technique (revert to previous optimized value)
     }
 
     const result: OptimizedPrompt = {
@@ -112,9 +125,10 @@ export class PromptOptimizer {
       optimized,
       techniques: appliedTechniques,
       profile: profile.id,
+      deliverableType: classification.type,
     };
 
-    // Log prompt pair
+    // Log prompt pair with deliverableType for auditability
     if (context.sessionId && context.agentId) {
       this.history.push({
         id: randomUUID(),
@@ -125,6 +139,7 @@ export class PromptOptimizer {
         agentId: context.agentId,
         sessionId: context.sessionId,
         timestamp: new Date(),
+        deliverableType: classification.type,
       });
     }
 

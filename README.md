@@ -151,7 +151,7 @@ Policy presets: Standard, Strict, Enterprise. Per-agent and per-project policy o
 ┌──────────────────────────────────────────────────────────────────────┐
 │                        Renderer (Vanilla JS)                         │
 │  Chat UI · Monaco Editor · Knowledge Graphs · Loop Run Panel         │
-│  Harness Health Widget · LoopSpec Editor · File Tree                  │
+│  Harness Health Widget · LoopSpec Editor · File Tree                 │
 └────────────────────────────────┬─────────────────────────────────────┘
                                  │ IPC Bridge (~400 channels, Zod-validated)
 ┌────────────────────────────────▼─────────────────────────────────────┐

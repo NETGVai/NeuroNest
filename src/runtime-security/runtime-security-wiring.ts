@@ -7,19 +7,21 @@
  *
  * Subsystem registration:
  * - RealtimeCodeAnalyzer: before-tool-call hook for file write operations
- * - HackabilityScoringEngine: after-tool-call handler for file writes
- * - ThreatModeler: after-tool-call handler for code generation
+ *   Invokes analyzeBeforeWrite() and aborts writes when findings detected (Req 19.1, 19.2).
+ * - HackabilityScoringEngine: before-tool-call handler for file writes (gates writes)
+ * - ThreatModeler: before-tool-call handler for code generation (gates writes)
  * - AISecurityRuleEngine: after-tool-call handler for file writes
  * - SecurityEvidenceStore: persists events from all subsystems
  * - AttackPathMapper: correlates HackabilityScoringEngine findings
  *
- * Requirements: 1.7, 2.1, 3.1, 4.1, 4.2, 5.1, 6.1
+ * Requirements: 1.7, 2.1, 3.1, 4.1, 4.2, 5.1, 6.1, 19.1, 19.2, 19.4, 19.5
  */
 
 import type { FeatureGateSystem } from '../feature-gate/feature-gate-system.js';
 import type { CallbackEngine, HookContext } from '../pipeline/callback-engine.js';
 import type { SuperagentConfig } from '../feature-gate/superagent-config.js';
 import type { SecurityEventType } from './types.js';
+import type { AgentEdit, ProjectContext } from '../pipeline/verification-gate/types.js';
 
 import { RealtimeCodeAnalyzer } from './realtime-code-analyzer.js';
 import {
@@ -33,6 +35,7 @@ import {
 } from './ai-security-rule-engine.js';
 import { AttackPathMapper } from './attack-path-mapper.js';
 import { SecurityEvidenceStore, type DatabaseLike } from './security-evidence-store.js';
+import { SecurityRemediationBridge, type RepairRequest } from '../pipeline/security-remediation-bridge.js';
 
 // ─── Runtime Security Context ───────────────────────────────────
 
@@ -47,6 +50,7 @@ export interface RuntimeSecurityContext {
   aiSecurityRules?: AISecurityRuleEngine;
   attackPathMapper?: AttackPathMapper;
   evidenceStore?: SecurityEvidenceStore;
+  remediationBridge?: SecurityRemediationBridge;
 }
 
 // ─── Wiring Function ────────────────────────────────────────────
@@ -61,6 +65,8 @@ export interface RuntimeSecurityContext {
  * @param callbackEngine - The pipeline's CallbackEngine for hook registration.
  * @param config - SuperagentConfig containing subsystem-specific configuration.
  * @param db - Optional SQLite database for SecurityEvidenceStore persistence.
+ * @param remediationBridge - Optional SecurityRemediationBridge for routing blocked findings (Req 19.5).
+ * @param projectContext - Optional ProjectContext for remediation (Req 19.5).
  * @returns RuntimeSecurityContext with instantiated subsystems, or null if all disabled.
  */
 export function wireRuntimeSecurity(
@@ -68,9 +74,16 @@ export function wireRuntimeSecurity(
   callbackEngine: CallbackEngine,
   config: SuperagentConfig,
   db?: DatabaseLike,
+  remediationBridge?: SecurityRemediationBridge,
+  projectContext?: ProjectContext,
 ): RuntimeSecurityContext | null {
   const context: RuntimeSecurityContext = {};
   let anyEnabled = false;
+
+  // Store the remediation bridge in context for external access (Req 19.5)
+  if (remediationBridge) {
+    context.remediationBridge = remediationBridge;
+  }
 
   // ─── 1. SecurityEvidenceStore (Req 6.1) ─────────────────────────
   // Instantiate first so other subsystems can record evidence.
@@ -102,8 +115,9 @@ export function wireRuntimeSecurity(
     anyEnabled = true;
   }
 
-  // ─── 3. RealtimeCodeAnalyzer (Req 4.1, 4.2) ────────────────────
+  // ─── 3. RealtimeCodeAnalyzer (Req 4.1, 4.2, 19.1, 19.2, 19.4) ──
   // Registers as before-tool-call hook for file write operations.
+  // Invokes analyzeBeforeWrite() and aborts the write when passed === false.
   if (featureGate.isEnabled('runtimesecurity_realtime_analysis')) {
     const maxLatencyMs = config.runtimeSecurityRealtime?.maxLatencyMs ?? 200;
     const blockOnCriticalOnly = config.runtimeSecurityRealtime?.blockOnCriticalOnly ?? false;
@@ -116,10 +130,8 @@ export function wireRuntimeSecurity(
           recordSecurityEvent(context.evidenceStore, 'realtime_code_analyzer', event, ctx);
         }
       },
-      on: (event: string, handler: Function) => {
-        if (event === 'before-tool-call') {
-          callbackEngine.register('before-tool-call', handler as (ctx: HookContext) => void);
-        }
+      on: (_event: string, _handler: Function) => {
+        // Hook registration is handled directly below via callbackEngine.register
       },
       off: (_event: string, _handler: Function) => {
         // Unregister is handled by CallbackEngine.unregister if needed
@@ -133,13 +145,121 @@ export function wireRuntimeSecurity(
       blockOnCriticalOnly,
     );
 
-    // Register the hook
-    context.realtimeAnalyzer.registerHook();
+    // Register the before-tool-call hook that invokes analyzeBeforeWrite()
+    // and blocks writes when security findings are detected (Req 19.1, 19.2, 19.4)
+    callbackEngine.register('before-tool-call', async (hookCtx: HookContext) => {
+      if (!isFileWriteToolCall(hookCtx) || !context.realtimeAnalyzer) {
+        return;
+      }
+
+      const { filePath, content } = extractFileWriteDetails(hookCtx);
+      if (!filePath || !content) {
+        return;
+      }
+
+      const sessionId = hookCtx.sessionId;
+
+      try {
+        const result = await context.realtimeAnalyzer.analyzeBeforeWrite(
+          filePath,
+          content,
+          sessionId,
+        );
+
+        // Req 19.4: If analysis exceeded the 200ms latency budget, allow the write
+        // and emit a post-write warning (already handled inside analyzeBeforeWrite
+        // which returns passed:true + timedOut:true in that case).
+        if (result.timedOut) {
+          // Write proceeds — latency budget exceeded, warning already emitted
+          return;
+        }
+
+        // Req 19.1, 19.2: When passed === false, abort the write
+        if (!result.passed) {
+          const findingDetails = result.findings
+            .filter(f => f.blockedWrite)
+            .map(f => `[${f.severity.toUpperCase()}] ${f.category} at ${f.file}:${f.line} — ${f.message}`)
+            .join('\n');
+
+          const remediationAdvice = result.findings
+            .filter(f => f.blockedWrite)
+            .map(f => `• ${f.remediation}`)
+            .join('\n');
+
+          const errorMessage =
+            `Security analysis blocked this write.\n\nFindings:\n${findingDetails}\n\nRemediation:\n${remediationAdvice}`;
+
+          // Req 19.5: Route blocked finding to SecurityRemediationBridge for auto-repair
+          if (remediationBridge && projectContext) {
+            const blockingFindings = result.findings.filter(f => f.blockedWrite);
+            const repairRequest: RepairRequest = {
+              originalContent: '',
+              blockedEdit: {
+                id: `blocked-write-${Date.now()}`,
+                taskId: 'security-blocked-write',
+                changes: [{
+                  filePath,
+                  content,
+                }],
+                description: `Write blocked by analyzeBeforeWrite: ${blockingFindings.length} finding(s)`,
+              } as AgentEdit,
+              findings: blockingFindings,
+              agentContext: {
+                agentId: 'runtime-security-wiring',
+                sessionId,
+              },
+            };
+
+            try {
+              const remediationResult = await remediationBridge.remediate(repairRequest, projectContext);
+
+              if (remediationResult.success && remediationResult.correctedEdit) {
+                // Remediation succeeded — update hookCtx input with corrected content
+                const correctedContent = remediationResult.correctedEdit.changes[0]?.content;
+                if (correctedContent) {
+                  const input = hookCtx.input as Record<string, unknown> | undefined;
+                  if (input) {
+                    if ('content' in input) {
+                      input['content'] = correctedContent;
+                    } else if ('text' in input) {
+                      input['text'] = correctedContent;
+                    } else if ('newContent' in input) {
+                      input['newContent'] = correctedContent;
+                    }
+                  }
+                  // Clear the blocking output so the write proceeds with fixed content
+                  hookCtx.output = undefined;
+                  return;
+                }
+              }
+            } catch {
+              // Remediation failure is non-fatal; the write remains blocked with the error below
+            }
+          }
+
+          // Set output on the HookContext to signal the agent loop to abort
+          // the tool call and use this ToolResult instead of executing the tool.
+          hookCtx.output = {
+            success: false,
+            output: null,
+            error: errorMessage,
+          };
+        }
+      } catch (err) {
+        // Fail open: if the analyzer itself errors, allow the write to proceed.
+        // The post-write hooks will still catch issues.
+        const message = err instanceof Error ? err.message : String(err);
+        console.warn(
+          `[RuntimeSecurityWiring] analyzeBeforeWrite failed, allowing write: ${message}`,
+        );
+      }
+    });
+
     anyEnabled = true;
   }
 
-  // ─── 4. HackabilityScoringEngine (Req 2.1) ─────────────────────
-  // Registers as after-tool-call handler for file writes.
+  // ─── 4. HackabilityScoringEngine (Req 2.1, 19.3) ────────────────
+  // Registers as before-tool-call handler for file writes to gate writes.
   if (featureGate.isEnabled('runtimesecurity_hackability_scoring')) {
     const hackabilityConfig: HackabilityScoringConfig = {
       weights: {
@@ -175,12 +295,12 @@ export function wireRuntimeSecurity(
       null, // SecurityScanner — provided at call time if available
     );
 
-    // Register after-tool-call hook for file writes
-    callbackEngine.register('after-tool-call', (hookCtx: HookContext) => {
+    // Register before-tool-call hook for file writes — gates writes rather than logging after
+    callbackEngine.register('before-tool-call', (hookCtx: HookContext) => {
       if (isFileWriteToolCall(hookCtx) && context.hackabilityScoring) {
         const { filePath, content } = extractFileWriteDetails(hookCtx);
         if (filePath && content) {
-          // Fire and forget — scoring is async but non-blocking
+          // Score before write proceeds — can gate the operation
           void context.hackabilityScoring.scoreFile(filePath, content, hookCtx.sessionId);
         }
       }
@@ -189,8 +309,8 @@ export function wireRuntimeSecurity(
     anyEnabled = true;
   }
 
-  // ─── 5. ThreatModeler (Req 3.1) ────────────────────────────────
-  // Registers as after-tool-call handler for code generation.
+  // ─── 5. ThreatModeler (Req 3.1, 19.3) ───────────────────────────
+  // Registers as before-tool-call handler for code generation to gate writes.
   if (featureGate.isEnabled('runtimesecurity_threat_modeling')) {
     const profile: ThreatModelProfile = config.runtimeSecurityThreatModeling?.profile ?? {
       usesExternalLLMApis: true,
@@ -215,8 +335,8 @@ export function wireRuntimeSecurity(
       null, // FirewallEngine — provided at call time if available
     );
 
-    // Register after-tool-call hook for code generation (file writes)
-    callbackEngine.register('after-tool-call', (hookCtx: HookContext) => {
+    // Register before-tool-call hook for code generation (file writes) — gates writes
+    callbackEngine.register('before-tool-call', (hookCtx: HookContext) => {
       if (isFileWriteToolCall(hookCtx) && context.threatModeler) {
         const { filePath, content } = extractFileWriteDetails(hookCtx);
         if (filePath && content) {

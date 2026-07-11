@@ -1,10 +1,10 @@
 /**
- * Built-in tools — Core tool definitions with real and stub implementations.
+ * Built-in tools — Core tool definitions with real implementations.
  *
  * Each tool is an ExecutableToolDefinition with proper id, name, description,
  * inputSchema, riskLevel, and an execute function.
  *
- * Requirements: 15.2–15.11, 15.16
+ * Requirements: 1.1, 2.1, 3.1, 4.1, 5.1, 6.1, 7.1, 15.2–15.11, 15.16
  */
 
 import * as fs from 'fs/promises';
@@ -12,21 +12,20 @@ import * as path from 'path';
 import { execFile, spawn } from 'child_process';
 import fg from 'fast-glob';
 import type { ToolContext, ToolResult } from '../../shared/types.js';
-import type { ExecutableToolDefinition } from '../tool-system.js';
+import type { ExecutableToolDefinition, ToolSystem } from '../tool-system.js';
+import type { ToolDependencies } from './tool-dependencies.js';
+import { webFetchExecute } from './web-fetch.js';
+import { webSearchExecute } from './web-search.js';
+import { createAgentExecute } from './agent-delegate.js';
+import { createSendMessageExecute } from './send-message.js';
+import { createTaskCreateExecute } from './task-create.js';
+import { createTaskUpdateExecute } from './task-update.js';
+import { createToolSearchExecute } from './tool-search.js';
 
 // ─── Constants ──────────────────────────────────────────────────
 
 const DEFAULT_MAX_BYTES = 1_048_576; // 1MB
 const DEFAULT_BASH_TIMEOUT = 60_000; // 60 seconds
-
-// ─── Stub execute helper ────────────────────────────────────────
-
-function stubExecute(toolName: string) {
-  return async (_input: unknown, _context: ToolContext): Promise<ToolResult> => ({
-    success: true,
-    output: `${toolName}: stub implementation — not yet wired`,
-  });
-}
 
 // ─── FileReadTool execute implementation ────────────────────────
 
@@ -330,16 +329,68 @@ export const FileWriteTool: ExecutableToolDefinition = {
   description: 'Create or overwrite a file in the project directory',
   inputSchema: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'] },
   riskLevel: 'write',
-  execute: stubExecute('FileWriteTool'),
+  async execute(input: unknown, context: ToolContext): Promise<ToolResult> {
+    const { path: filePath, content } = input as { path: string; content: string };
+    if (!filePath || content === undefined) {
+      return { success: false, output: null, error: 'Missing required fields: path and content' };
+    }
+    try {
+      const fs = require('node:fs');
+      const pathMod = require('node:path');
+      const os = require('node:os');
+      const projectDir = context.projectDir || pathMod.join(os.homedir(), '.neuronest', 'projects', context.sessionId || 'default');
+      const fullPath = pathMod.resolve(projectDir, filePath);
+      // Security: prevent path traversal outside project
+      if (!fullPath.startsWith(projectDir)) {
+        return { success: false, output: null, error: 'Path traversal blocked — cannot write outside project directory' };
+      }
+      fs.mkdirSync(pathMod.dirname(fullPath), { recursive: true });
+      fs.writeFileSync(fullPath, content, 'utf-8');
+      return { success: true, output: `Written ${content.length} bytes to ${filePath}` };
+    } catch (err: any) {
+      return { success: false, output: null, error: err.message };
+    }
+  },
 };
 
 export const FileEditTool: ExecutableToolDefinition = {
   id: 'file-edit',
   name: 'FileEditTool',
-  description: 'Apply targeted edits to a file with diff preview',
+  description: 'Apply targeted edits to a file — supports find/replace operations',
   inputSchema: { type: 'object', properties: { path: { type: 'string' }, edits: { type: 'array' } }, required: ['path', 'edits'] },
   riskLevel: 'write',
-  execute: stubExecute('FileEditTool'),
+  async execute(input: unknown, context: ToolContext): Promise<ToolResult> {
+    const { path: filePath, edits } = input as { path: string; edits: Array<{ oldText: string; newText: string }> };
+    if (!filePath || !Array.isArray(edits)) {
+      return { success: false, output: null, error: 'Missing required fields: path and edits array' };
+    }
+    try {
+      const fs = require('node:fs');
+      const pathMod = require('node:path');
+      const os = require('node:os');
+      const projectDir = context.projectDir || pathMod.join(os.homedir(), '.neuronest', 'projects', context.sessionId || 'default');
+      const fullPath = pathMod.resolve(projectDir, filePath);
+      // Security: prevent path traversal
+      if (!fullPath.startsWith(projectDir)) {
+        return { success: false, output: null, error: 'Path traversal blocked — cannot edit outside project directory' };
+      }
+      if (!fs.existsSync(fullPath)) {
+        return { success: false, output: null, error: `File not found: ${filePath}` };
+      }
+      let content = fs.readFileSync(fullPath, 'utf-8');
+      let appliedCount = 0;
+      for (const edit of edits) {
+        if (edit.oldText && content.includes(edit.oldText)) {
+          content = content.replace(edit.oldText, edit.newText ?? '');
+          appliedCount++;
+        }
+      }
+      fs.writeFileSync(fullPath, content, 'utf-8');
+      return { success: true, output: `Applied ${appliedCount}/${edits.length} edits to ${filePath}` };
+    } catch (err: any) {
+      return { success: false, output: null, error: err.message };
+    }
+  },
 };
 
 export const GlobTool: ExecutableToolDefinition = {
@@ -645,63 +696,133 @@ export const WebFetchTool: ExecutableToolDefinition = {
   id: 'web-fetch',
   name: 'WebFetchTool',
   description: 'Fetch content from a URL',
-  inputSchema: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] },
+  inputSchema: {
+    type: 'object',
+    properties: {
+      url: { type: 'string', description: 'URL to fetch (http or https)' },
+      timeout: { type: 'number', description: 'Timeout in milliseconds (default: 30000)' },
+    },
+    required: ['url'],
+  },
   riskLevel: 'read-only',
-  execute: stubExecute('WebFetchTool'),
+  execute: webFetchExecute,
 };
 
 export const WebSearchTool: ExecutableToolDefinition = {
   id: 'web-search',
   name: 'WebSearchTool',
   description: 'Perform a web search query',
-  inputSchema: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] },
+  inputSchema: {
+    type: 'object',
+    properties: {
+      query: { type: 'string', description: 'Search query string' },
+      maxResults: { type: 'number', description: 'Maximum number of results (default: 10)' },
+    },
+    required: ['query'],
+  },
   riskLevel: 'read-only',
-  execute: stubExecute('WebSearchTool'),
+  execute: webSearchExecute,
 };
 
 export const AgentTool: ExecutableToolDefinition = {
   id: 'agent',
   name: 'AgentTool',
   description: 'Spawn a sub-agent to handle a delegated task',
-  inputSchema: { type: 'object', properties: { agentId: { type: 'string' }, task: { type: 'string' } }, required: ['agentId', 'task'] },
+  inputSchema: {
+    type: 'object',
+    properties: {
+      agentId: { type: 'string', description: 'ID of the agent to delegate to' },
+      task: { type: 'string', description: 'Task description for the agent' },
+      maxTokens: { type: 'number', description: 'Max tokens for LLM response (default: 4096)' },
+    },
+    required: ['agentId', 'task'],
+  },
   riskLevel: 'execute',
-  execute: stubExecute('AgentTool'),
+  execute: async (_input: unknown, _context: ToolContext): Promise<ToolResult> => ({
+    success: false,
+    output: null,
+    error: 'AgentTool requires dependency injection — use registerBuiltInTools()',
+  }),
 };
 
 export const SendMessageTool: ExecutableToolDefinition = {
   id: 'send-message',
   name: 'SendMessageTool',
   description: 'Send a message to another agent',
-  inputSchema: { type: 'object', properties: { targetAgentId: { type: 'string' }, message: { type: 'string' } }, required: ['targetAgentId', 'message'] },
+  inputSchema: {
+    type: 'object',
+    properties: {
+      targetAgentId: { type: 'string', description: 'ID of the agent to message' },
+      message: { type: 'string', description: 'Message content' },
+    },
+    required: ['targetAgentId', 'message'],
+  },
   riskLevel: 'write',
-  execute: stubExecute('SendMessageTool'),
+  execute: async (_input: unknown, _context: ToolContext): Promise<ToolResult> => ({
+    success: false,
+    output: null,
+    error: 'SendMessageTool requires dependency injection — use registerBuiltInTools()',
+  }),
 };
 
 export const TaskCreateTool: ExecutableToolDefinition = {
   id: 'task-create',
   name: 'TaskCreateTool',
   description: 'Create a new subtask in the current workflow',
-  inputSchema: { type: 'object', properties: { description: { type: 'string' }, assignee: { type: 'string' } }, required: ['description'] },
+  inputSchema: {
+    type: 'object',
+    properties: {
+      description: { type: 'string', description: 'Task description/title' },
+      assignee: { type: 'string', description: 'Agent ID to assign the task to (defaults to current agent)' },
+      priority: { type: 'string', description: 'Priority: low, medium, high, or urgent (default: medium)' },
+    },
+    required: ['description'],
+  },
   riskLevel: 'write',
-  execute: stubExecute('TaskCreateTool'),
+  execute: async (_input: unknown, _context: ToolContext): Promise<ToolResult> => ({
+    success: false,
+    output: null,
+    error: 'TaskCreateTool requires dependency injection — use registerBuiltInTools()',
+  }),
 };
 
 export const TaskUpdateTool: ExecutableToolDefinition = {
   id: 'task-update',
   name: 'TaskUpdateTool',
   description: 'Update the status of an existing task',
-  inputSchema: { type: 'object', properties: { taskId: { type: 'string' }, status: { type: 'string' } }, required: ['taskId', 'status'] },
+  inputSchema: {
+    type: 'object',
+    properties: {
+      taskId: { type: 'string', description: 'ID of the task to update' },
+      status: { type: 'string', description: 'New status: queued, claimed, in_progress, completed, failed, blocked' },
+    },
+    required: ['taskId', 'status'],
+  },
   riskLevel: 'write',
-  execute: stubExecute('TaskUpdateTool'),
+  execute: async (_input: unknown, _context: ToolContext): Promise<ToolResult> => ({
+    success: false,
+    output: null,
+    error: 'TaskUpdateTool requires dependency injection — use registerBuiltInTools()',
+  }),
 };
 
 export const ToolSearchTool: ExecutableToolDefinition = {
   id: 'tool-search',
   name: 'ToolSearchTool',
   description: 'Search for available tools by name or description',
-  inputSchema: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] },
+  inputSchema: {
+    type: 'object',
+    properties: {
+      query: { type: 'string', description: 'Search keyword or phrase' },
+    },
+    required: ['query'],
+  },
   riskLevel: 'read-only',
-  execute: stubExecute('ToolSearchTool'),
+  execute: async (_input: unknown, _context: ToolContext): Promise<ToolResult> => ({
+    success: false,
+    output: null,
+    error: 'ToolSearchTool requires dependency injection — use registerBuiltInTools()',
+  }),
 };
 
 // ─── All built-in tools as an array ─────────────────────────────
@@ -721,3 +842,60 @@ export const builtInTools: ExecutableToolDefinition[] = [
   TaskUpdateTool,
   ToolSearchTool,
 ];
+
+// ─── Registration Function ──────────────────────────────────────
+
+/**
+ * Registers all built-in tools with the ToolSystem, injecting dependencies
+ * for factory-based tools (Agent, SendMessage, TaskCreate, TaskUpdate, ToolSearch).
+ *
+ * Static tools (WebFetch, WebSearch, Bash, FileRead, FileWrite, FileEdit, Glob, Grep)
+ * are registered directly with their execute functions.
+ *
+ * Factory tools are instantiated with the provided dependencies before registration.
+ *
+ * @param deps - ToolDependencies containing db, eventBus, toolSystem, agentRegistry, resolveLLMClient
+ * @param toolSystem - The ToolSystem instance to register tools with
+ */
+export function registerBuiltInTools(deps: ToolDependencies, toolSystem: ToolSystem): void {
+  // Instantiate factory-based execute functions with dependencies
+  const agentExecute = createAgentExecute({
+    agentRegistry: deps.agentRegistry,
+    resolveLLMClient: deps.resolveLLMClient,
+  });
+  const sendMessageExecute = createSendMessageExecute({
+    eventBus: deps.eventBus,
+  });
+  const taskCreateExecute = createTaskCreateExecute({
+    db: deps.db,
+  });
+  const taskUpdateExecute = createTaskUpdateExecute({
+    db: deps.db,
+  });
+  const toolSearchExecute = createToolSearchExecute({
+    toolSystem: deps.toolSystem,
+  });
+
+  // Register static tools (no factory dependencies)
+  const staticTools: ExecutableToolDefinition[] = [
+    BashTool,
+    FileReadTool,
+    FileWriteTool,
+    FileEditTool,
+    GlobTool,
+    GrepTool,
+    WebFetchTool,
+    WebSearchTool,
+  ];
+
+  for (const tool of staticTools) {
+    toolSystem.register(tool);
+  }
+
+  // Register factory-based tools with their wired execute functions
+  toolSystem.register({ ...AgentTool, execute: agentExecute });
+  toolSystem.register({ ...SendMessageTool, execute: sendMessageExecute });
+  toolSystem.register({ ...TaskCreateTool, execute: taskCreateExecute });
+  toolSystem.register({ ...TaskUpdateTool, execute: taskUpdateExecute });
+  toolSystem.register({ ...ToolSearchTool, execute: toolSearchExecute });
+}

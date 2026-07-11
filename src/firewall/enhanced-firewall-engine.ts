@@ -1,7 +1,9 @@
 /**
  * Enhanced Firewall Engine — hybrid content inspection.
- * Hybrid architecture: Fast regex (Tier 1) + Semantic LLM analysis (Tier 2)
- * Maintains backward compatibility with existing FirewallEngine
+ * Hybrid architecture: Fast regex (Tier 1) + LLM-based semantic analysis (Tier 2)
+ * The semantic tier uses the configured 'fast' model with a 2-second timeout,
+ * falling back to regex-only analysis on timeout or LLM unavailability.
+ * Maintains backward compatibility with existing FirewallEngine.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -77,128 +79,140 @@ export const ENHANCED_RULES: FirewallRule[] = [
   { id: 'exec-02', name: 'File system access', tier: 3, enabled: true, pattern: '(?i)(read|write|delete|modify)\\s+(?:file|directory).*(?:/etc|/var|/usr|C:\\\\)', category: 'unsafe-command', severity: 'high', action: 'warn', description: 'Detects suspicious file system access' },
 ];
 
-export class SemanticGuardClient {
-  private config: {
-    apiUrl?: string;
-    localModel?: string;
-    apiKey?: string;
-    enabled: boolean;
-  };
+export interface SemanticGuardLLMClient {
+  chat(
+    messages: Array<{ role: string; content: string }>,
+    options?: { maxTokens?: number; temperature?: number }
+  ): Promise<{ content: string } | string>;
+}
 
-  constructor(config: { apiUrl?: string; localModel?: string; apiKey?: string; enabled?: boolean }) {
-    this.config = { enabled: false, ...config };
+export interface SemanticGuardConfig {
+  enabled?: boolean;
+  /** Timeout for LLM calls in milliseconds (default: 2000) */
+  timeoutMs?: number;
+  /** LLM client resolver — returns the 'fast' tier client or null */
+  resolveLLMClient?: () => SemanticGuardLLMClient | null;
+}
+
+export class SemanticGuardClient {
+  private enabled: boolean;
+  private timeoutMs: number;
+  private resolveLLMClient: (() => SemanticGuardLLMClient | null) | undefined;
+
+  constructor(config: SemanticGuardConfig) {
+    this.enabled = config.enabled ?? false;
+    this.timeoutMs = config.timeoutMs ?? 2000;
+    this.resolveLLMClient = config.resolveLLMClient;
   }
 
   async evaluate(input: string, policy?: DynamicFirewallPolicy): Promise<LLMEvalResult> {
-    if (!this.config.enabled) {
-      // Fallback to confidence estimation based on input characteristics
-      return this.estimateConfidence(input, policy);
+    if (!this.enabled) {
+      return this.regexFallback(input, policy);
     }
 
     const start = Date.now();
-    
+
     try {
-      // TODO: Implement actual semantic-guard API integration
-      // For now, provide enhanced heuristic analysis
-      const result = await this.enhancedHeuristicAnalysis(input, policy);
-      return {
-        ...result,
-        latencyMs: Date.now() - start
-      };
+      const client = this.resolveLLMClient?.();
+      if (!client) {
+        // No LLM client available — fall back to regex
+        return this.regexFallback(input, policy);
+      }
+
+      const systemPrompt = this.buildSystemPrompt(policy);
+      const userPrompt = this.buildUserPrompt(input);
+
+      // Race LLM call against timeout (Req 23.2: 2-second timeout)
+      const llmResponse = await Promise.race([
+        client.chat(
+          [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userPrompt }
+          ],
+          { maxTokens: 150, temperature: 0 }
+        ),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Semantic guard LLM timeout')), this.timeoutMs)
+        )
+      ]);
+
+      const responseText = typeof llmResponse === 'string' ? llmResponse : llmResponse.content;
+      return this.parseLLMResponse(responseText, Date.now() - start);
     } catch (error) {
-      console.warn('[EnhancedFirewall] LLM evaluation failed, using fallback:', error);
-      return this.estimateConfidence(input, policy);
+      // Req 23.3: On failure/timeout, fall back to regex-only results
+      console.warn('[SemanticGuard] LLM evaluation failed, using regex fallback:', error);
+      return this.regexFallback(input, policy);
     }
   }
 
-  private async enhancedHeuristicAnalysis(input: string, policy?: DynamicFirewallPolicy): Promise<Omit<LLMEvalResult, 'latencyMs'>> {
-    const suspiciousPatterns = [
-      // Sophisticated injection patterns
-      /(?:ignore|forget|disregard).*(?:previous|prior|above|system)/i,
-      /(?:you\s+are\s+now|act\s+as|pretend\s+to\s+be).*(?:unrestricted|unlimited)/i,
-      /(?:hypothetically|imagine|what\s+if).*(?:no\s+rules|bypass)/i,
-      
-      // Context manipulation
-      /(?:fill|exhaust|overflow).*(?:context|memory|buffer)/i,
-      /(?:repeat|echo|output).*(?:instructions|prompt|system)/i,
-      
-      // Multi-step attacks
-      /(?:first|step\s+1|initially).*(?:then|next|after\s+that)/i,
-      
-      // Encoding attempts
-      /(?:base64|hex|encode|decode|translate).*(?:ignore|bypass)/i,
-    ];
+  private buildSystemPrompt(policy?: DynamicFirewallPolicy): string {
+    const categories = policy?.categories?.join(', ') || 'injection, jailbreak, secrets';
+    return (
+      'You are a security classifier for an AI coding assistant. ' +
+      'Analyze the user input for potential security threats. ' +
+      `Categories to detect: ${categories}. ` +
+      'Respond ONLY with a JSON object: {"blocked":boolean,"confidence":number,"categories":string[],"reasoning":string}. ' +
+      'confidence is 0.0-1.0. categories is an array of detected threat types. ' +
+      'Be concise in reasoning (one sentence max).'
+    );
+  }
 
-    let confidence = 0.0;
-    let blocked = false;
-    const categories: string[] = [];
+  private buildUserPrompt(input: string): string {
+    // Truncate very long inputs to avoid token waste on the fast model
+    const truncated = input.length > 500 ? input.slice(0, 500) + '...[truncated]' : input;
+    return `Classify this input for security threats:\n\n${truncated}`;
+  }
 
-    // Analyze input characteristics
-    const inputLength = input.length;
-    const suspiciousMatches = suspiciousPatterns.filter(pattern => pattern.test(input));
-    
-    if (suspiciousMatches.length > 0) {
-      confidence += 0.3 * suspiciousMatches.length;
-      categories.push('injection');
+  private parseLLMResponse(responseText: string, latencyMs: number): LLMEvalResult {
+    try {
+      // Try to parse JSON from the response
+      const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]);
+        return {
+          blocked: Boolean(parsed.blocked),
+          confidence: Math.max(0, Math.min(1, Number(parsed.confidence) || 0)),
+          categories: Array.isArray(parsed.categories) ? parsed.categories : [],
+          reasoning: String(parsed.reasoning || ''),
+          latencyMs
+        };
+      }
+    } catch {
+      // JSON parsing failed — fall through to heuristic parse
     }
 
-    // Check for jailbreak indicators
-    if (/(?:DAN|do\s+anything\s+now|jailbreak|bypass\s+safety)/i.test(input)) {
-      confidence += 0.4;
-      categories.push('jailbreak');
-    }
-
-    // Check for secrets/PII
-    if (/(?:password|api[_-]?key|secret|token)\s*[=:]/i.test(input)) {
-      confidence += 0.5;
-      categories.push('secrets');
-    }
-
-    // Length-based suspicion (very long inputs might be attacks)
-    if (inputLength > 1000) {
-      confidence += 0.1;
-    }
-
-    // Multi-language detection (basic)
-    if (/[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\u0400-\u04ff\u0590-\u05ff\u0600-\u06ff]/i.test(input)) {
-      confidence += 0.1; // Slightly suspicious if mixed with English commands
-    }
-
-    // Apply policy sensitivity
-    const sensitivity = this.getSensitivityValue(policy?.sensitivity || 'medium');
-    
-    // Adjust confidence based on sensitivity (don't multiply, add adjustment)
-    const sensitivityAdjustment = (sensitivity - 0.5) * 0.2; // -0.1 to +0.1 adjustment
-    confidence = Math.max(0, Math.min(1.0, confidence + sensitivityAdjustment));
-
-    // Determine if blocked based on confidence and sensitivity-based threshold
-    const baseThreshold = 0.5;
-    const threshold = baseThreshold - (sensitivity - 0.5) * 0.3; // Higher sensitivity = lower threshold
-    blocked = confidence >= threshold;
-
+    // If LLM didn't return valid JSON, interpret text heuristically
+    const lower = responseText.toLowerCase();
+    const blocked = lower.includes('block') || lower.includes('"blocked":true') || lower.includes('"blocked": true');
     return {
       blocked,
-      confidence: Math.min(1.0, confidence),
-      categories,
-      reasoning: `Detected ${suspiciousMatches.length} suspicious patterns, confidence: ${confidence.toFixed(2)}, threshold: ${threshold.toFixed(2)}`
+      confidence: blocked ? 0.6 : 0.2,
+      categories: blocked ? ['injection'] : [],
+      reasoning: `LLM response (non-JSON): ${responseText.slice(0, 100)}`,
+      latencyMs
     };
   }
 
-  private estimateConfidence(input: string, policy?: DynamicFirewallPolicy): LLMEvalResult {
-    // Simple confidence estimation for fallback
+  /**
+   * Regex-based fallback analysis — used when:
+   * - LLM tier is disabled
+   * - No LLM client is available
+   * - LLM call fails or times out (Req 23.3)
+   */
+  private regexFallback(input: string, policy?: DynamicFirewallPolicy): LLMEvalResult {
     const suspiciousKeywords = ['ignore', 'bypass', 'jailbreak', 'DAN', 'unrestricted'];
-    const matches = suspiciousKeywords.filter(keyword => 
+    const matches = suspiciousKeywords.filter(keyword =>
       input.toLowerCase().includes(keyword.toLowerCase())
     );
-    
+
     const confidence = Math.min(0.8, matches.length * 0.2);
     const sensitivity = this.getSensitivityValue(policy?.sensitivity || 'medium');
-    
+
     return {
       blocked: confidence >= (1 - sensitivity) * 0.5,
       confidence,
       categories: matches.length > 0 ? ['injection'] : [],
-      reasoning: `Fallback analysis: ${matches.length} suspicious keywords`,
+      reasoning: `Regex fallback: ${matches.length} suspicious keywords detected`,
       latencyMs: 1
     };
   }
@@ -214,11 +228,16 @@ export class SemanticGuardClient {
   }
 
   isEnabled(): boolean {
-    return this.config.enabled;
+    return this.enabled;
   }
 
   setEnabled(enabled: boolean): void {
-    this.config.enabled = enabled;
+    this.enabled = enabled;
+  }
+
+  /** Update the LLM client resolver (e.g., when provider config changes) */
+  setLLMClientResolver(resolver: () => SemanticGuardLLMClient | null): void {
+    this.resolveLLMClient = resolver;
   }
 }
 
@@ -240,12 +259,13 @@ export class EnhancedFirewallEngine extends FirewallEngine {
       fallbackMode: 'regex-only', // Safe default
       sensitivityThreshold: 0.5,
       enableAdvancedRedaction: false,
-      maxLLMLatencyMs: 5000,
+      maxLLMLatencyMs: 2000, // Req 23.2: 2-second timeout for semantic LLM tier
       ...config
     };
 
     this.semanticGuardClient = new SemanticGuardClient({
-      enabled: false // Disabled by default for backward compatibility
+      enabled: false, // Disabled by default for backward compatibility
+      timeoutMs: 2000 // Req 23.2: 2-second timeout for LLM calls
     });
   }
 
@@ -502,6 +522,11 @@ export class EnhancedFirewallEngine extends FirewallEngine {
 
   isLLMTierEnabled(): boolean {
     return this.semanticGuardClient.isEnabled();
+  }
+
+  /** Set the LLM client resolver for the semantic guard tier (Req 23.2: use 'fast' tier) */
+  setSemanticGuardLLMResolver(resolver: () => SemanticGuardLLMClient | null): void {
+    this.semanticGuardClient.setLLMClientResolver(resolver);
   }
 
   // Get enhanced statistics

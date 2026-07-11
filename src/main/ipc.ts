@@ -766,6 +766,20 @@ async function initDeferredModules(): Promise<void> {
     channelManager = new ChannelManager();
     firewallEngine = new FirewallEngine();
     enhancedFirewallEngine = new EnhancedFirewallEngine();
+    // Wire LLM client resolver for the semantic guard tier (Req 23.2: 'fast' tier, 2s timeout)
+    enhancedFirewallEngine.setSemanticGuardLLMResolver(() => {
+      const client = resolveActiveLLMClient();
+      if (!client) return null;
+      return {
+        chat: async (messages, options) => {
+          const result = await client.chat(
+            messages.map(m => ({ role: m.role as 'system' | 'user' | 'assistant', content: m.content })),
+            options
+          );
+          return { content: result.content };
+        }
+      };
+    });
     firewallConfigManager = new FirewallConfigManager();
     graphManager = new GraphManager(db);
     runtimeManager = new RuntimeManager();
@@ -1206,6 +1220,20 @@ function ensureInit() {
         channelManager = new ChannelManager();
         firewallEngine = new FirewallEngine();
         enhancedFirewallEngine = new EnhancedFirewallEngine();
+        // Wire LLM client resolver for the semantic guard tier (Req 23.2)
+        enhancedFirewallEngine.setSemanticGuardLLMResolver(() => {
+          const client = resolveActiveLLMClient();
+          if (!client) return null;
+          return {
+            chat: async (messages, options) => {
+              const result = await client.chat(
+                messages.map(m => ({ role: m.role as 'system' | 'user' | 'assistant', content: m.content })),
+                options
+              );
+              return { content: result.content };
+            }
+          };
+        });
         firewallConfigManager = new FirewallConfigManager();
         graphManager = new GraphManager(db);
         runtimeManager = new RuntimeManager();

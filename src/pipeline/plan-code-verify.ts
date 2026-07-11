@@ -6,7 +6,15 @@
  * Verify: Run tests/checks, loop back if failed
  *
  * This is the core workflow that makes agents reliable.
+ *
+ * Integrates ProductionReadinessGate (Requirement 16.1, 16.2, 16.4):
+ * Before any task is marked as completed, the gate verifies all production
+ * readiness conditions are met. On failure, routes to self-healing loop.
  */
+
+import type { ProductionReadinessGate, ProductionReadinessResult } from './production-readiness-gate';
+import type { AgentEdit, ProjectContext } from './verification-gate/types';
+import type { RepairAgent, VerificationRunner, SelfHealingResult } from './self-healing-loop';
 
 export interface PlanStep {
   id: string;
@@ -29,6 +37,39 @@ export interface ExecutionPlan {
   currentStep: number;
   createdAt: number;
   completedAt?: number;
+}
+
+/**
+ * Context required for production readiness gate integration.
+ * When provided to completeStepWithGate, the gate runs before task completion.
+ */
+export interface GateContext {
+  /** The production readiness gate instance */
+  gate: ProductionReadinessGate;
+  /** The agent edit associated with the current step */
+  edit: AgentEdit;
+  /** Project context for verification */
+  projectContext: ProjectContext;
+  /** Session ID for querying security findings */
+  sessionId: string;
+  /** Repair agent for self-healing loop (required for auto-remediation) */
+  repairAgent: RepairAgent;
+  /** Verification runner for self-healing loop */
+  verifier: VerificationRunner;
+}
+
+/**
+ * Result of attempting task completion with production readiness gate.
+ */
+export interface GatedCompletionResult {
+  /** The updated execution plan */
+  plan: ExecutionPlan;
+  /** Whether the gate passed (task marked as done) */
+  gatePassed: boolean;
+  /** The gate check result details */
+  gateResult?: ProductionReadinessResult | undefined;
+  /** Self-healing loop result if remediation was attempted */
+  repairResult?: SelfHealingResult | undefined;
 }
 
 export class PlanCodeVerify {
@@ -93,6 +134,78 @@ export class PlanCodeVerify {
     }
 
     return plan;
+  }
+
+  /**
+   * Mark current step as completed with production readiness gate check.
+   *
+   * Before marking the task as done, runs ProductionReadinessGate.checkAndRemediate().
+   * If the gate fails after self-healing remediation, the step is marked as failed
+   * instead of done, with the failure summary as the error.
+   *
+   * This gate is non-bypassable — no configuration can skip it (Requirement 16.3).
+   * Integrates with existing readiness/SRE services via the gate's dependency
+   * scanner, coverage checker, and verification pipeline (Requirement 16.4).
+   *
+   * Requirements: 16.1, 16.2, 16.4
+   */
+  async completeStepWithGate(
+    planId: string,
+    gateContext: GateContext,
+    output?: string,
+  ): Promise<GatedCompletionResult | null> {
+    const plan = this.plans.get(planId);
+    if (!plan) return null;
+
+    const step = plan.steps[plan.currentStep];
+    if (!step) return null;
+
+    // Run production readiness gate with auto-remediation (Requirement 16.1, 16.2)
+    const { gate, edit, projectContext, sessionId, repairAgent, verifier } = gateContext;
+
+    const { gateResult, repairResult } = await gate.checkAndRemediate(
+      step.id,
+      edit,
+      projectContext,
+      sessionId,
+      repairAgent,
+      verifier,
+    );
+
+    if (gateResult.passed) {
+      // Gate passed — mark step as done and advance
+      step.status = 'done';
+      if (output !== undefined) {
+        step.output = output;
+      }
+
+      plan.currentStep++;
+      if (plan.currentStep >= plan.steps.length) {
+        plan.status = 'completed';
+        plan.completedAt = Date.now();
+      } else {
+        const nextStep = plan.steps[plan.currentStep];
+        if (nextStep) nextStep.status = 'in_progress';
+      }
+
+      return { plan, gatePassed: true, gateResult, repairResult };
+    }
+
+    // Gate failed even after remediation — block completion (Requirement 16.2, 16.5)
+    step.attempts++;
+    step.error = gateResult.failureSummary
+      || 'Production readiness gate failed. Resolve all conditions before marking task complete.';
+
+    if (step.attempts < step.maxAttempts) {
+      // Allow retry — keep step in_progress
+      step.status = 'in_progress';
+    } else {
+      // Max attempts reached — mark as failed
+      step.status = 'failed';
+      plan.status = 'failed';
+    }
+
+    return { plan, gatePassed: false, gateResult, repairResult };
   }
 
   /**

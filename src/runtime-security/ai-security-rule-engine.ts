@@ -40,6 +40,8 @@ export interface AISecurityRule {
   description: string;
   remediation: string;
   enabled: boolean;
+  /** Confidence score 0.0–1.0 for findings from this rule. Defaults based on severity if absent. */
+  confidence?: number;
 }
 
 /** A single finding produced by rule evaluation */
@@ -48,6 +50,8 @@ export interface AISecurityFinding {
   ruleName: string;
   category: string;
   severity: ThreatSeverity;
+  /** Confidence score 0.0–1.0. High-confidence issues route to auto-fix; ambiguous ones prompt user. */
+  confidence: number;
   file: string;
   line: number;
   match: string;
@@ -293,6 +297,23 @@ function validateRules(rules: unknown[]): AISecurityRule[] {
   return rules.map((rule, index) => validateRule(rule, index));
 }
 
+// ─── Confidence Derivation ──────────────────────────────────────
+
+/**
+ * Derive a default confidence score from the finding severity.
+ * Used when the rule does not specify an explicit confidence value.
+ * Critical rules are high-confidence (0.85), high (0.75), medium (0.6), low (0.4).
+ */
+function deriveConfidenceFromSeverity(severity: ThreatSeverity): number {
+  switch (severity) {
+    case 'critical': return 0.85;
+    case 'high': return 0.75;
+    case 'medium': return 0.6;
+    case 'low': return 0.4;
+    default: return 0.5;
+  }
+}
+
 // ─── CallbackEngine / FirewallEngine Interfaces ─────────────────
 
 /** Minimal interface for CallbackEngine dependency */
@@ -382,6 +403,7 @@ export class AISecurityRuleEngine {
                   ruleName: rule.name,
                   category: rule.category,
                   severity: rule.severity,
+                  confidence: rule.confidence ?? deriveConfidenceFromSeverity(rule.severity),
                   file: filePath,
                   line: i + 1,
                   match: lineMatch[0],
@@ -404,6 +426,7 @@ export class AISecurityRuleEngine {
               ruleName: rule.name,
               category: rule.category,
               severity: rule.severity,
+              confidence: rule.confidence ?? deriveConfidenceFromSeverity(rule.severity),
               file: filePath,
               line: i + 1,
               match: lineMatch[0],

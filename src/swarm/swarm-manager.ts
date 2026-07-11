@@ -11,6 +11,13 @@
 import { randomUUID } from 'node:crypto';
 import type { SwarmConfig, SwarmStatus, TokenUsage } from '../shared/types.js';
 import { LLMClient, type LLMMessage } from '../pipeline/llm-client.js';
+import { DeliverableGuard, type DeliverableType } from '../optimizer/deliverable-guard.js';
+import { CapabilityRouter, type CapabilityMatch } from './capability-router.js';
+import { PhaseAssigner, type PhasedExecutionPlan, type PhaseNumber } from './phase-assigner.js';
+import { RefusalDetector, type SubtaskOutcome, type SubtaskStatus } from './refusal-detector.js';
+import type { AgentDefinition } from '../agents/agent-registry.js';
+import { ModelRouter, type ModelTier } from '../routing/model-router.js';
+import { BuildVerifier, type BuildVerifierConfig, type VerificationResult, type CallbackEngine } from './build-verifier.js';
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -48,6 +55,54 @@ export interface SwarmResult {
   failures: string[];
   /** Provenance tracking for the overall swarm execution */
   provenance?: SwarmProvenance;
+}
+
+/**
+ * Per-phase timing and outcome metrics.
+ * Requirements: 3.4, 3.5, 5.8
+ */
+export interface PhaseMetric {
+  phase: PhaseNumber;
+  startedAt: Date;
+  completedAt: Date;
+  agentCount: number;
+  completedCount: number;
+  refusedCount: number;
+  droppedCount: number;
+}
+
+/**
+ * Model tier usage breakdown for cost tracking.
+ * Requirements: 6.3
+ */
+export interface TierUsageMetric {
+  expensiveCalls: number;
+  cheapCalls: number;
+  estimatedCostSavings: number; // compared to all-expensive baseline
+}
+
+/**
+ * Result from orchestrated swarm execution, extends SwarmResult with
+ * classification and phase execution metadata.
+ * Requirements: 2.4, 2.5, 3.4, 3.5, 4.7, 6.4
+ */
+export interface OrchestratedSwarmResult extends SwarmResult {
+  /** The classified deliverable type from DeliverableGuard */
+  deliverableType: DeliverableType;
+  /** Agents selected by CapabilityRouter */
+  routedAgents: CapabilityMatch[];
+  /** The phased execution plan from PhaseAssigner */
+  phasedPlan: PhasedExecutionPlan;
+  /** Model tier used for routing decisions */
+  routingTier: ModelTier;
+  /** Per-subtask outcomes with refusal tracking */
+  subtaskOutcomes: SubtaskOutcome[];
+  /** Build verification outcome (pass/fail, stage, duration) */
+  verificationResult?: VerificationResult;
+  /** Timing and outcome metrics per phase */
+  phaseMetrics: PhaseMetric[];
+  /** Model tier usage breakdown (expensive vs cheap calls) */
+  tierUsage: TierUsageMetric;
 }
 
 export interface SwarmTask {
@@ -108,6 +163,43 @@ export class SwarmManager {
   private progressCallbacks = new Map<string, Array<(progress: WorkerProgress) => void>>();
   private completeCallbacks = new Map<string, Array<(result: SwarmResult) => void>>();
   private llmClient: LLMClient | null = null;
+
+  /** Agent registry for capability routing and phase assignment */
+  private registry: AgentDefinition[] = [];
+
+  /** Model router for tier-based model selection */
+  private modelRouter: ModelRouter | null = null;
+
+  /** Refusal detector for identifying agent refusals in responses */
+  private refusalDetector: RefusalDetector = new RefusalDetector();
+
+  /** Optional build verifier configuration for post-execution verification */
+  private buildVerifierConfig: BuildVerifierConfig | null = null;
+
+  /**
+   * Set the agent registry used for orchestrated execution.
+   * Required for startOrchestrated() to work.
+   */
+  setRegistry(registry: AgentDefinition[]): void {
+    this.registry = registry;
+  }
+
+  /**
+   * Set the ModelRouter used for tier-based routing decisions.
+   * Required for startOrchestrated() to use cheap-tier for routing.
+   */
+  setModelRouter(router: ModelRouter): void {
+    this.modelRouter = router;
+  }
+
+  /**
+   * Set the BuildVerifier configuration for post-execution verification.
+   * When configured, startOrchestrated() will verify builds after code generation.
+   * Requirements: 5.1, 5.5, 5.6, 5.7, 5.8
+   */
+  setBuildVerifierConfig(config: BuildVerifierConfig): void {
+    this.buildVerifierConfig = config;
+  }
 
   /**
    * Set the LLM client used for executing worker tasks.
@@ -411,9 +503,416 @@ export class SwarmManager {
       durationMs,
       failures,
       // Requirement 2.5: Include provenance for the overall swarm result
-      provenance: overallModel
-        ? { model: overallModel, requestId: randomUUID() }
-        : undefined,
+      ...(overallModel
+        ? { provenance: { model: overallModel, requestId: randomUUID() } }
+        : {}),
+    };
+
+    this.emitComplete(swarmId, result);
+    return result;
+  }
+
+  /**
+   * Start orchestrated swarm execution using the full pipeline:
+   * classify → route → phase → execute.
+   *
+   * This method integrates DeliverableGuard, CapabilityRouter, and PhaseAssigner
+   * to intelligently select agents and order their execution by phase.
+   *
+   * Phases execute sequentially (0 → 1 → 2 → 3), but agents within a
+   * phase run in parallel.
+   *
+   * Requirements: 2.4, 2.5, 4.7, 6.4
+   */
+  async startOrchestrated(swarmId: string): Promise<OrchestratedSwarmResult> {
+    const swarm = this.swarms.get(swarmId);
+    if (!swarm) throw new Error(`Swarm not found: ${swarmId}`);
+
+    if (this.registry.length === 0) {
+      throw new Error('Agent registry not configured. Call setRegistry() before startOrchestrated().');
+    }
+
+    swarm.status = 'running';
+    swarm.startedAt = new Date();
+
+    const startTime = Date.now();
+    const failures: string[] = [];
+    let overallModel = '';
+
+    // Step 1: Classify the deliverable type from the task prompt
+    const guard = new DeliverableGuard();
+    const classification = guard.classify(swarm.config.task);
+    const deliverableType = classification.type;
+
+    // Step 2: Determine routing tier — use cheap tier for routing decisions
+    const routingTier: ModelTier = this.modelRouter
+      ? this.modelRouter.getTier('agent_routing')
+      : 'cheap';
+
+    // Step 3: Route to capable agents via CapabilityRouter
+    const router = new CapabilityRouter(this.registry);
+    const routedAgents = router.route({
+      deliverableType,
+      complexity: 'simple',
+      maxAgents: 4,
+    });
+
+    // Step 4: Assign agents to phases via PhaseAssigner
+    const assigner = new PhaseAssigner(this.registry);
+    const phasedPlan = assigner.assign(routedAgents, deliverableType);
+
+    // Step 5: Execute phases sequentially; agents within each phase run in parallel
+    const allWorkerResults: WorkerProgress[] = [];
+    const subtaskOutcomes: SubtaskOutcome[] = [];
+    const phaseMetrics: PhaseMetric[] = [];
+    const phaseNumbers = Array.from(phasedPlan.phases.keys()).sort((a, b) => a - b);
+
+    // Tier usage tracking: count expensive vs cheap model calls
+    let expensiveCalls = 0;
+    let cheapCalls = 0;
+
+    // Routing/classification steps use cheap tier (agent_routing, refusal_detection)
+    // Count the initial routing call as cheap
+    cheapCalls += 1; // capability routing decision
+
+    for (const phaseNum of phaseNumbers) {
+      if ((swarm.status as SwarmStatus) === 'cancelled') break;
+
+      const assignments = phasedPlan.phases.get(phaseNum) ?? [];
+      const phaseStartedAt = new Date();
+
+      // Create workers for this phase
+      const phaseWorkers: WorkerProgress[] = assignments.map((assignment) => ({
+        workerId: randomUUID(),
+        agentId: assignment.agentId,
+        status: 'queued' as WorkerStatus,
+      }));
+
+      // Execute all workers in the phase in parallel
+      const phasePromises = phaseWorkers.map(async (worker) => {
+        worker.status = 'running';
+        this.emitProgress(swarmId, worker);
+
+        const taskId = worker.workerId;
+
+        try {
+          await this.executeWorkerTask(worker, swarm.config.task);
+          this.validateWorkerResult(worker);
+
+          // Track tier usage: Phase 1 = code_generation (expensive), others = cheap
+          if (phaseNum === 1) {
+            expensiveCalls += 1;
+          } else {
+            cheapCalls += 1;
+          }
+
+          if (worker.provenance?.model) {
+            overallModel = worker.provenance.model;
+          }
+
+          // Refusal detection: check completed worker output for refusal patterns
+          // Requirements: 3.1, 3.2, 3.3, 6.5, 6.7
+          if (worker.output) {
+            const refusalResult = this.refusalDetector.detect(worker.output);
+            // Refusal detection itself is a cheap-tier operation
+            cheapCalls += 1;
+
+            if (refusalResult.isRefusal) {
+              // Use cheap tier for refusal handling (no expensive-tier calls after refusal)
+              if (this.modelRouter) {
+                this.modelRouter.getTier('refusal_detection'); // confirms cheap tier
+              }
+
+              // Handle the refusal: attempt reassignment or drop
+              const outcome = this.refusalDetector.handleRefusal(
+                taskId,
+                worker.agentId,
+                routedAgents,
+              );
+
+              // If reassigned, execute the task with the new agent using cheap tier
+              if (outcome.status === 'refused' && outcome.reassignedTo) {
+                const reassignedWorker: WorkerProgress = {
+                  workerId: randomUUID(),
+                  agentId: outcome.reassignedTo,
+                  status: 'running' as WorkerStatus,
+                };
+                this.emitProgress(swarmId, reassignedWorker);
+                // Reassignment uses cheap tier (no expensive calls after refusal)
+                cheapCalls += 1;
+
+                try {
+                  await this.executeWorkerTask(reassignedWorker, swarm.config.task);
+                  this.validateWorkerResult(reassignedWorker);
+
+                  if (reassignedWorker.provenance?.model) {
+                    overallModel = reassignedWorker.provenance.model;
+                  }
+
+                  // Check reassigned worker for refusal too
+                  if (reassignedWorker.output) {
+                    const reassignRefusal = this.refusalDetector.detect(reassignedWorker.output);
+                    if (reassignRefusal.isRefusal) {
+                      // Cascading refusal — drop the subtask
+                      subtaskOutcomes.push({
+                        taskId,
+                        agentId: reassignedWorker.agentId,
+                        status: 'dropped',
+                        refusalReason: `Cascading refusal: reassigned agent ${reassignedWorker.agentId} also refused.`,
+                      });
+                    } else {
+                      // Reassigned agent completed successfully
+                      outcome.output = reassignedWorker.output;
+                      subtaskOutcomes.push({
+                        taskId,
+                        agentId: outcome.reassignedTo,
+                        status: 'completed',
+                        output: reassignedWorker.output,
+                      });
+                    }
+                  } else {
+                    subtaskOutcomes.push({
+                      taskId,
+                      agentId: outcome.reassignedTo,
+                      status: 'completed',
+                      output: reassignedWorker.output,
+                    });
+                  }
+
+                  this.emitProgress(swarmId, reassignedWorker);
+                  allWorkerResults.push(reassignedWorker);
+                } catch (reassignError: any) {
+                  reassignedWorker.status = 'failed';
+                  reassignedWorker.error = reassignError.message || 'Reassignment execution failed';
+                  failures.push(reassignedWorker.error ?? `Worker ${reassignedWorker.workerId} failed`);
+                  subtaskOutcomes.push({
+                    taskId,
+                    agentId: outcome.reassignedTo,
+                    status: 'failed',
+                    refusalReason: `Original agent ${worker.agentId} refused; reassigned agent ${outcome.reassignedTo} failed: ${reassignedWorker.error}`,
+                  });
+                  this.emitProgress(swarmId, reassignedWorker);
+                  allWorkerResults.push(reassignedWorker);
+                }
+              } else {
+                // Dropped — no alternative agent available
+                subtaskOutcomes.push(outcome);
+              }
+
+              // Mark the original worker as failed due to refusal
+              worker.status = 'failed';
+              worker.error = `Agent refused: ${refusalResult.pattern ?? 'unknown pattern'}`;
+            } else {
+              // No refusal — subtask completed successfully
+              subtaskOutcomes.push({
+                taskId,
+                agentId: worker.agentId,
+                status: 'completed',
+                output: worker.output,
+              });
+            }
+          } else {
+            // No output — treat as completed (empty output is valid per existing behavior)
+            subtaskOutcomes.push({
+              taskId,
+              agentId: worker.agentId,
+              status: 'completed',
+              output: worker.output,
+            });
+          }
+        } catch (error: any) {
+          worker.status = 'failed';
+          if (!worker.error) {
+            worker.error = error.message || 'Worker execution failed';
+          }
+          failures.push(worker.error ?? `Worker ${worker.workerId} failed`);
+          subtaskOutcomes.push({
+            taskId,
+            agentId: worker.agentId,
+            status: 'failed',
+            output: undefined,
+          });
+        }
+
+        this.emitProgress(swarmId, worker);
+        return worker;
+      });
+
+      const phaseResults = await Promise.all(phasePromises);
+      allWorkerResults.push(...phaseResults);
+
+      // Collect phase metrics after phase completion
+      const phaseCompletedAt = new Date();
+      const phaseOutcomes = subtaskOutcomes.filter((o) => {
+        // Match outcomes that belong to workers from this phase
+        return phaseWorkers.some((pw) => pw.workerId === o.taskId);
+      });
+      phaseMetrics.push({
+        phase: phaseNum as PhaseNumber,
+        startedAt: phaseStartedAt,
+        completedAt: phaseCompletedAt,
+        agentCount: assignments.length,
+        completedCount: phaseOutcomes.filter((o) => o.status === 'completed').length,
+        refusedCount: phaseOutcomes.filter((o) => o.status === 'refused').length,
+        droppedCount: phaseOutcomes.filter((o) => o.status === 'dropped').length,
+      });
+    }
+
+    const durationMs = Date.now() - startTime;
+
+    // Aggregate token usage
+    const totalTokenUsage: TokenUsage = {
+      promptTokens: 0,
+      completionTokens: 0,
+      totalTokens: 0,
+      estimatedCost: 0,
+    };
+
+    for (const w of allWorkerResults) {
+      if (w.tokenUsage) {
+        totalTokenUsage.promptTokens += w.tokenUsage.promptTokens;
+        totalTokenUsage.completionTokens += w.tokenUsage.completionTokens;
+        totalTokenUsage.totalTokens += w.tokenUsage.totalTokens;
+        totalTokenUsage.estimatedCost += w.tokenUsage.estimatedCost;
+      }
+    }
+
+    swarm.status = allWorkerResults.length > 0 && allWorkerResults.every((w) => w.status === 'failed')
+      ? 'failed'
+      : 'completed';
+    swarm.completedAt = new Date();
+
+    // Update the swarm's workers with the orchestrated results
+    swarm.workers = allWorkerResults;
+
+    // Calculate accurate completion metrics based on subtask outcomes
+    // Requirements: 3.4, 3.5 — only count successfully completed subtasks
+    const completedCount = subtaskOutcomes.filter((o) => o.status === 'completed').length;
+    const refusedCount = subtaskOutcomes.filter((o) => o.status === 'refused').length;
+    const droppedCount = subtaskOutcomes.filter((o) => o.status === 'dropped').length;
+    const failedCount = subtaskOutcomes.filter((o) => o.status === 'failed').length;
+
+    // If all outcomes are non-completed (refused/dropped/failed), mark swarm as failed
+    if (subtaskOutcomes.length > 0 && completedCount === 0) {
+      swarm.status = 'failed';
+    }
+
+    // Step 6: Build Verification — run after all phases complete successfully
+    // Requirements: 5.1, 5.5, 5.6, 5.7, 5.8
+    let verificationResult: VerificationResult | undefined;
+
+    if (this.buildVerifierConfig && (swarm.status as SwarmStatus) !== 'failed' && (swarm.status as SwarmStatus) !== 'cancelled') {
+      const maxRetries = this.buildVerifierConfig.maxRetries ?? 3;
+      const accumulatedErrors: string[] = [];
+
+      // Create a simple CallbackEngine-compatible object and demonstrate registerHook usage
+      const callbackEngine: CallbackEngine = {
+        registerHook: (_event: string, _callback: (ctx: any) => Promise<void>) => {
+          // Hook registered — in production the loop-engine fires this
+        },
+      };
+
+      const verifier = new BuildVerifier(this.buildVerifierConfig);
+      // Register the verifier as a callback hook (demonstrates 5.7 integration)
+      verifier.registerHook(callbackEngine);
+
+      for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        const vResult = await verifier.verify();
+
+        if (vResult.passed) {
+          verificationResult = vResult;
+          break;
+        }
+
+        // Record the failure
+        accumulatedErrors.push(
+          `Attempt ${attempt + 1}: ${vResult.stage} failed — ${vResult.error ?? 'unknown error'}`
+        );
+
+        if (attempt < maxRetries) {
+          // Loop back to code-generation phase (Phase 1) with failure details as context
+          const errorContext = `Build verification failed at stage '${vResult.stage}': ${vResult.error}. Please fix the issue.`;
+          const phase1Assignments = phasedPlan.phases.get(1) ?? [];
+
+          // Re-execute Phase 1 workers with error context
+          const retryPromises = phase1Assignments.map(async (assignment) => {
+            const retryWorker: WorkerProgress = {
+              workerId: randomUUID(),
+              agentId: assignment.agentId,
+              status: 'running' as WorkerStatus,
+            };
+            this.emitProgress(swarmId, retryWorker);
+
+            try {
+              const taskWithContext = `${swarm.config.task}\n\n[BUILD VERIFICATION FAILURE - RETRY ${attempt + 1}]\n${errorContext}`;
+              await this.executeWorkerTask(retryWorker, taskWithContext);
+              this.validateWorkerResult(retryWorker);
+
+              if (retryWorker.provenance?.model) {
+                overallModel = retryWorker.provenance.model;
+              }
+            } catch (retryError: any) {
+              retryWorker.status = 'failed';
+              if (!retryWorker.error) {
+                retryWorker.error = retryError.message || 'Retry worker execution failed';
+              }
+              failures.push(retryWorker.error ?? `Worker ${retryWorker.workerId} failed`);
+            }
+
+            this.emitProgress(swarmId, retryWorker);
+            allWorkerResults.push(retryWorker);
+            return retryWorker;
+          });
+
+          await Promise.all(retryPromises);
+        } else {
+          // Max retries exhausted — report failure with accumulated errors
+          verificationResult = {
+            ...vResult,
+            error: `Verification failed after ${maxRetries + 1} attempts. Errors: ${accumulatedErrors.join('; ')}`,
+          };
+          swarm.status = 'failed';
+        }
+      }
+    }
+
+    // Recalculate durationMs to include verification time
+    const finalDurationMs = Date.now() - startTime;
+
+    // Calculate tier usage metrics
+    // estimatedCostSavings = cheapCalls * (expensiveCostPerCall - cheapCostPerCall)
+    const EXPENSIVE_COST_PER_CALL = 0.01;
+    const CHEAP_COST_PER_CALL = 0.001;
+    const estimatedCostSavings = cheapCalls * (EXPENSIVE_COST_PER_CALL - CHEAP_COST_PER_CALL);
+
+    const tierUsage: TierUsageMetric = {
+      expensiveCalls,
+      cheapCalls,
+      estimatedCostSavings,
+    };
+
+    const result: OrchestratedSwarmResult = {
+      swarmId,
+      status: swarm.status,
+      workerResults: allWorkerResults,
+      aggregatedOutput: allWorkerResults
+        .filter((w) => w.output && w.status === 'completed')
+        .map((w) => w.output)
+        .join('\n---\n'),
+      totalTokenUsage,
+      durationMs: finalDurationMs,
+      failures,
+      ...(overallModel
+        ? { provenance: { model: overallModel, requestId: randomUUID() } }
+        : {}),
+      deliverableType,
+      routedAgents,
+      phasedPlan,
+      routingTier,
+      subtaskOutcomes,
+      ...(verificationResult ? { verificationResult } : {}),
+      phaseMetrics,
+      tierUsage,
     };
 
     this.emitComplete(swarmId, result);

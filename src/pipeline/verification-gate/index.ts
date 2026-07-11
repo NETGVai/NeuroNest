@@ -44,3 +44,6 @@ export type { TestRunner, TestRunResult, FailedTest } from './stages/test-stage'
 
 export { SmokeStage, DefaultSandboxRunner } from './stages/smoke-stage';
 export type { SandboxRunner, SandboxConfig, SandboxRunResult } from './stages/smoke-stage';
+
+export { SecurityStage } from './stages/security-stage';
+export type { SecurityStageDeps, SecurityStageCallbackEngine, SecurityStageFirewallEngine } from './stages/security-stage';

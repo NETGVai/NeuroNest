@@ -5,7 +5,7 @@
 
 // ─── Core Types ─────────────────────────────────────────────────
 
-export type StageName = 'syntax' | 'typecheck' | 'lint' | 'test' | 'smoke';
+export type StageName = 'syntax' | 'typecheck' | 'lint' | 'security' | 'test' | 'smoke';
 
 export interface Diagnostic {
   file: string;
@@ -24,7 +24,7 @@ export interface StageResult {
 
 export interface VerificationResult {
   totalScore: number;
-  maxScore: number; // always 15
+  maxScore: number; // always 18
   stages: StageResult[];
   accepted: boolean;
   failedAt?: StageName;
@@ -92,10 +92,11 @@ export const STAGE_SCORES: Record<StageName, number> = {
   syntax: 1,
   typecheck: 2,
   lint: 3,
+  security: 3,
   test: 4,
   smoke: 5,
 };
 
-export const STAGE_ORDER: StageName[] = ['syntax', 'typecheck', 'lint', 'test', 'smoke'];
+export const STAGE_ORDER: StageName[] = ['syntax', 'typecheck', 'lint', 'security', 'test', 'smoke'];
 
-export const MAX_SCORE = 15; // 1 + 2 + 3 + 4 + 5
+export const MAX_SCORE = 18; // 1 + 2 + 3 + 3 + 4 + 5

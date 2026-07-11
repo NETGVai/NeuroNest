@@ -178,10 +178,7 @@ var _errorListener = null;
 //   // Integration settings
 //   semanticGuardConfig: {
 //     enabled: boolean;
-//     apiUrl?: string;
-//     apiKey?: string;
-//     localModel?: string;
-//     maxLatencyMs: number;
+//     timeoutMs: number;
 //   };
 // }
 //
@@ -286,7 +283,7 @@ var enhancedFirewallUIState = {
     projectPolicies: {},
     semanticGuardConfig: {
       enabled: false,
-      maxLatencyMs: 5000
+      timeoutMs: 2000
     }
   },
   currentPreset: 'balanced',
@@ -840,13 +837,38 @@ function _nnDetectPrompt(text) {
     }
   }
 
-  // 2. Binary approval: question ending with ? containing approval keywords
+  // 1.5. Yes/No confirmation patterns: follow-up confirmation phrasings
+  var yesNoPatterns = [
+    /confirm\s+by\s+saying\s+['"]?(yes|no)['"]?\s*(or\s+['"]?(yes|no)['"]?)?/gi,
+    /say\s+['"]?(yes)['"]?\s+to\s+(proceed|continue|confirm)/gi,
+    /respond\s+(['"]?yes['"]?\s+or\s+['"]?no['"]?)/gi,
+    /type\s+(yes|no)\s+(or\s+(yes|no)\s+)?to\s/gi,
+    /\b(yes)\s*\/\s*(no)\b/gi
+  ];
+
+  var lastYesNo = null;
+  for (var yi = 0; yi < yesNoPatterns.length; yi++) {
+    var yp = yesNoPatterns[yi];
+    yp.lastIndex = 0;
+    var ym;
+    while ((ym = yp.exec(text)) !== null) {
+      lastYesNo = { offset: ym.index };
+    }
+  }
+
+  // 2. Binary approval: sentences containing approval keywords
   var approvalKeywords = /\b(proceed|continue|confirm|approve)\b/i;
-  var sentencePattern = /[^.!?\n]*\?/g;
+  var sentencePattern = /[^.!?\n]*[.?]/g;
+  var confirmationIntent = /\b(you|please|kindly|confirm|say|type|respond)\b/i;
   var lastApproval = null;
   var sm;
   while ((sm = sentencePattern.exec(text)) !== null) {
     if (approvalKeywords.test(sm[0])) {
+      // For sentences ending with '.', require confirmation intent to avoid false positives
+      var endsWithDot = sm[0].trimEnd().endsWith('.');
+      if (endsWithDot && !confirmationIntent.test(sm[0])) {
+        continue;
+      }
       lastApproval = { offset: sm.index };
     }
   }
@@ -865,6 +887,17 @@ function _nnDetectPrompt(text) {
       responseText: word,
       confirmLabel: label,
       cancelLabel: 'Cancel',
+      isDestructive: isDestructive,
+      options: null
+    };
+  }
+
+  if (lastYesNo) {
+    return {
+      type: isDestructive ? 'destructive-confirmation' : 'binary-approval',
+      responseText: 'yes',
+      confirmLabel: 'Yes',
+      cancelLabel: 'No',
       isDestructive: isDestructive,
       options: null
     };
@@ -3845,7 +3878,7 @@ function loadEnhancedFirewallConfig() {
       projectPolicies: {},
       semanticGuardConfig: {
         enabled: false,
-        maxLatencyMs: 5000
+        timeoutMs: 2000
       }
     };
     
