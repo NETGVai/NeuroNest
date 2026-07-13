@@ -1,5 +1,6 @@
 // NeuroNest Agent Registry
-// Complete registry of 117 specialized AI agents across 14 departments
+// Complete registry of specialized AI agents across 14 departments
+// Agent count is derived at runtime — see AGENT_COUNT export below.
 
 export interface AgentDefinition {
   id: string;
@@ -863,7 +864,20 @@ export interface PermissionCheckResult {
   message?: string;
 }
 
+/**
+ * Default-deny permission profile applied to any agent that does not have
+ * an explicit entry in AGENT_TOOL_PERMISSIONS. This ensures no agent can
+ * silently perform any tool operation by absence of configuration.
+ */
+const DEFAULT_DENY_PROFILE: ToolPermission = {
+  read: false,
+  edit: false,
+  command: false,
+  mcp: false,
+};
+
 export const AGENT_TOOL_PERMISSIONS: Record<string, ToolPermission> = {
+  // ─── Roo-Inspired Agents (explicit entries) ───
   'architect-planner': { read: true, edit: '*.md', command: false, mcp: false },
   'debug-investigator': { read: true, edit: true, command: true, mcp: true },
   'orchestrator-delegator': { read: false, edit: false, command: false, mcp: false },
@@ -871,69 +885,225 @@ export const AGENT_TOOL_PERMISSIONS: Record<string, ToolPermission> = {
   'codebase-indexer': { read: true, edit: true, command: true, mcp: false },
   'checkpoint-manager': { read: true, edit: true, command: true, mcp: false },
   'legacy-refactorer': { read: true, edit: true, command: true, mcp: false },
-  'security-reviewer': { read: true, edit: false, command: true, mcp: false },
+  'security-reviewer': { read: true, edit: false, command: false, mcp: false },
+
+  // ─── Engineering ───
+  'frontend-developer': { read: true, edit: true, command: true, mcp: false },
+  'backend-architect': { read: true, edit: true, command: true, mcp: false },
+  'ai-engineer': { read: true, edit: true, command: true, mcp: false },
+  'rapid-prototyper': { read: true, edit: true, command: true, mcp: false },
+  'security-engineer': { read: true, edit: true, command: true, mcp: false },
+  'senior-developer': { read: true, edit: true, command: true, mcp: false },
+  'mobile-app-builder': { read: true, edit: true, command: true, mcp: false },
+  'devops-automator': { read: true, edit: true, command: true, mcp: false },
+  'blockchain-developer': { read: true, edit: true, command: true, mcp: false },
+  'systems-architect': { read: true, edit: true, command: true, mcp: false },
+  'database-engineer': { read: true, edit: true, command: true, mcp: false },
+  'performance-engineer': { read: true, edit: true, command: true, mcp: false },
+  'cloud-architect': { read: true, edit: true, command: true, mcp: false },
+  'mlops-engineer': { read: true, edit: true, command: true, mcp: false },
+  'embedded-systems-developer': { read: true, edit: true, command: true, mcp: false },
+  'game-developer': { read: true, edit: true, command: true, mcp: false },
+
+  // ─── Design ───
+  'ui-designer': { read: true, edit: true, command: false, mcp: false },
+  'ux-architect': { read: true, edit: true, command: false, mcp: false },
+  'ux-researcher': { read: true, edit: false, command: false, mcp: false },
+  'accessibility-specialist': { read: true, edit: true, command: false, mcp: false },
+  'motion-designer': { read: true, edit: true, command: false, mcp: false },
+  'brand-designer': { read: true, edit: true, command: false, mcp: false },
+  'information-architect': { read: true, edit: true, command: false, mcp: false },
+
+  // ─── Marketing ───
+  'content-creator': { read: true, edit: true, command: false, mcp: false },
+  'growth-hacker': { read: true, edit: false, command: false, mcp: false },
+  'seo-specialist': { read: true, edit: true, command: false, mcp: false },
+  'social-media-strategist': { read: true, edit: false, command: false, mcp: false },
+  'email-marketing-specialist': { read: true, edit: false, command: false, mcp: false },
+
+  // ─── Product ───
+  'sprint-prioritizer': { read: true, edit: false, command: false, mcp: false },
+  'product-strategist': { read: true, edit: false, command: false, mcp: false },
+  'product-analyst': { read: true, edit: false, command: false, mcp: false },
+  'technical-writer': { read: true, edit: true, command: false, mcp: false },
+  'business-analyst': { read: true, edit: true, command: false, mcp: false },
+  'pricing-strategist': { read: true, edit: false, command: false, mcp: false },
+
+  // ─── Project Management ───
+  'senior-project-manager': { read: true, edit: true, command: false, mcp: false },
+
+  // ─── Testing ───
+  'api-tester': { read: true, edit: true, command: true, mcp: false },
+  'reality-checker': { read: true, edit: false, command: false, mcp: false },
+  'qa-automation-engineer': { read: true, edit: true, command: true, mcp: false },
+  'load-testing-specialist': { read: true, edit: true, command: true, mcp: false },
+  'security-auditor': { read: true, edit: false, command: false, mcp: false },
+
+  // ─── Support ───
+  'support-responder': { read: true, edit: false, command: false, mcp: false },
+  'technical-recruiter': { read: true, edit: false, command: false, mcp: false },
+  'developer-advocate': { read: true, edit: true, command: false, mcp: false },
+  'localization-specialist': { read: true, edit: true, command: false, mcp: false },
+
+  // ─── Specialized ───
+  'data-analytics-reporter': { read: true, edit: false, command: false, mcp: false },
+  'compliance-officer': { read: true, edit: false, command: false, mcp: false },
+  'cryptography-specialist': { read: true, edit: true, command: false, mcp: false },
+  'identity-architect': { read: true, edit: true, command: false, mcp: false },
+  'nlp-engineer': { read: true, edit: true, command: true, mcp: false },
+  'computer-vision-engineer': { read: true, edit: true, command: true, mcp: false },
+  'data-engineer': { read: true, edit: true, command: true, mcp: false },
+  'site-reliability-engineer': { read: true, edit: true, command: true, mcp: false },
+
+  // ─── Consensus ───
+  'queen-coordinator': { read: true, edit: false, command: false, mcp: false },
+  'gossip-coordinator': { read: true, edit: false, command: false, mcp: false },
+  'byzantine-fault-handler': { read: true, edit: false, command: false, mcp: false },
+  'consensus-verifier': { read: true, edit: false, command: false, mcp: false },
+  'crdt-synchronizer': { read: true, edit: false, command: false, mcp: false },
+  'threat-modeler': { read: true, edit: false, command: false, mcp: false },
+
+  // ─── Infrastructure ───
+  'load-balancer': { read: true, edit: true, command: true, mcp: false },
+  'mesh-coordinator': { read: true, edit: true, command: true, mcp: false },
+  'memory-coordinator': { read: true, edit: false, command: false, mcp: false },
+  'swarm-monitor': { read: true, edit: false, command: false, mcp: false },
+  'resource-scheduler': { read: true, edit: false, command: false, mcp: false },
+
+  // ─── Optimization ───
+  'matrix-optimizer': { read: true, edit: true, command: true, mcp: false },
+  'performance-benchmarker': { read: true, edit: true, command: true, mcp: false },
+  'neural-network-specialist': { read: true, edit: true, command: true, mcp: false },
+  'pagerank-analyzer': { read: true, edit: false, command: false, mcp: false },
+  'cache-strategist': { read: true, edit: true, command: false, mcp: false },
+  'prompt-optimizer': { read: true, edit: false, command: false, mcp: false },
+
+  // ─── Research ───
+  'goal-planner': { read: true, edit: true, command: false, mcp: false },
+  'code-analyzer': { read: true, edit: false, command: false, mcp: false },
+  'adaptive-coordinator': { read: true, edit: false, command: false, mcp: false },
+  'migration-planner': { read: true, edit: true, command: false, mcp: false },
+  'hypothesis-tester': { read: true, edit: true, command: true, mcp: false },
+
+  // ─── Software Delivery ───
+  'requirements-agent': { read: true, edit: true, command: false, mcp: false },
+  'solutions-architect': { read: true, edit: true, command: false, mcp: false },
+  'qa-agent': { read: true, edit: true, command: true, mcp: false },
+  'sdlc-security-auditor': { read: true, edit: false, command: false, mcp: false },
+  'deploy-agent': { read: true, edit: true, command: true, mcp: false },
+  'gdpr-compliance-agent': { read: true, edit: false, command: false, mcp: false },
+  'pipeline-gatekeeper': { read: true, edit: true, command: true, mcp: false },
+  'context-curator': { read: true, edit: false, command: false, mcp: false },
+
+  // ─── NeuroNest Orchestration ───
+  'neuronest-swarm-queen': { read: true, edit: false, command: false, mcp: false },
+  'neuronest-router': { read: true, edit: false, command: false, mcp: false },
+  'neuronest-memory-mgr': { read: true, edit: true, command: false, mcp: false },
+  'neuronest-consensus': { read: true, edit: false, command: false, mcp: false },
+  'neuronest-learning': { read: true, edit: false, command: false, mcp: false },
+  'neuronest-hooks': { read: true, edit: false, command: true, mcp: false },
+  'neuronest-cost-opt': { read: true, edit: false, command: false, mcp: false },
+  'neuronest-spec': { read: true, edit: true, command: false, mcp: false },
+  'neuronest-context': { read: true, edit: true, command: false, mcp: false },
+  'neuronest-booster': { read: true, edit: true, command: true, mcp: false },
+  'neuronest-antidrift': { read: true, edit: false, command: false, mcp: false },
+  'neuronest-architect': { read: true, edit: true, command: false, mcp: false },
+  'neuronest-coder': { read: true, edit: true, command: true, mcp: false },
+  'neuronest-reviewer': { read: true, edit: false, command: false, mcp: false },
+  'neuronest-tester': { read: true, edit: true, command: true, mcp: false },
+  'neuronest-security': { read: true, edit: false, command: false, mcp: false },
+  'neuronest-docs': { read: true, edit: true, command: false, mcp: false },
+  'neuronest-refactor': { read: true, edit: true, command: false, mcp: false },
+  'neuronest-devops': { read: true, edit: true, command: true, mcp: false },
+  'neuronest-threat': { read: true, edit: false, command: false, mcp: false },
+  'neuronest-pii': { read: true, edit: false, command: false, mcp: false },
+  'neuronest-compliance': { read: true, edit: false, command: false, mcp: false },
+  'neuronest-deps': { read: true, edit: false, command: false, mcp: false },
+  'neuronest-pipeline': { read: true, edit: true, command: true, mcp: false },
+  'neuronest-infra': { read: true, edit: true, command: true, mcp: false },
+  'neuronest-monitor': { read: true, edit: true, command: true, mcp: false },
+  'neuronest-incident': { read: true, edit: false, command: false, mcp: false },
+  'neuronest-critic': { read: true, edit: false, command: false, mcp: false },
 };
 
 /**
+ * Authoritative agent count derived from the AGENT_TOOL_PERMISSIONS registry.
+ * Used by README, CHANGELOG, badges, and CI drift guards — never hardcoded.
+ */
+export const AGENT_COUNT = Object.keys(AGENT_TOOL_PERMISSIONS).length;
+
+/**
+ * Authoritative total agent count derived from the AGENT_REGISTRY array.
+ * This should equal AGENT_COUNT when all registry agents have permission entries.
+ */
+export const REGISTRY_AGENT_COUNT = AGENT_REGISTRY.length;
+
+/**
  * Checks whether an agent is permitted to perform a given tool operation.
- * Returns { allowed: true } if the agent is not in the permission map (no restrictions).
- * For edit operations with a glob pattern, matches the filePath against the pattern.
+ *
+ * DEFAULT-DENY: Returns { allowed: false } when:
+ * - The agent has no entry in AGENT_TOOL_PERMISSIONS (R24.1)
+ * - The operation has no defined value for the agent (R24.2)
+ * - The permission type is mismatched (e.g. string for non-edit op) (R24.5)
+ * - The result is indeterminate (R24.5)
+ * - An edit glob is specified but no filePath is supplied or it doesn't match (R24.7)
+ *
+ * Returns { allowed: true } ONLY for:
+ * - Boolean `true` permission value (R24.6)
+ * - Edit glob pattern that matches the supplied filePath (R24.6)
  */
 export function checkToolPermission(
   agentId: string,
   operation: string,
   filePath?: string,
 ): PermissionCheckResult {
-  const permissions = AGENT_TOOL_PERMISSIONS[agentId];
-  if (!permissions) {
-    return { allowed: true };
-  }
+  // R24.1: Deny when agent has no entry (use default-deny profile)
+  const permissions = AGENT_TOOL_PERMISSIONS[agentId] ?? DEFAULT_DENY_PROFILE;
 
-  // Orchestrator Delegator: block everything with a specific message
-  if (agentId === 'orchestrator-delegator') {
-    return { allowed: false, message: 'Orchestrator Delegator: delegates all operations to other agents' };
-  }
-
+  // R24.2/R24.5: Validate operation is a recognized permission key
+  const validOperations: ReadonlyArray<keyof ToolPermission> = ['read', 'edit', 'command', 'mcp'];
   const op = operation as keyof ToolPermission;
+  if (!validOperations.includes(op)) {
+    return { allowed: false, message: `Agent '${agentId}': unrecognized operation '${operation}' (denied)` };
+  }
+
   const permValue = permissions[op];
 
+  // R24.2: Deny when the operation value is undefined
   if (permValue === undefined) {
-    return { allowed: true };
+    return { allowed: false, message: `Agent '${agentId}': no permission defined for '${operation}' (denied)` };
   }
 
-  // Boolean permission: true = allowed, false = blocked
-  if (typeof permValue === 'boolean') {
-    if (permValue) {
-      return { allowed: true };
+  // R24.5: If the permission value is a string (glob), it only applies to 'edit'.
+  // A string value on a non-edit operation is a type mismatch → deny.
+  if (typeof permValue === 'string') {
+    if (op !== 'edit') {
+      return { allowed: false, message: `Agent '${agentId}': permission type mismatch for '${operation}' (denied)` };
     }
-    // Provide agent-specific error messages for blocked operations
-    if (agentId === 'security-reviewer' && op === 'edit') {
-      return { allowed: false, message: 'Security Reviewer: produces reports without modifying code' };
-    }
-    if (agentId === 'prompt-enhancer' && (op === 'edit' || op === 'command')) {
-      return { allowed: false, message: 'Prompt Enhancer: has read-only access' };
-    }
-    return { allowed: false, message: `Agent '${agentId}' does not have '${operation}' permission` };
-  }
-
-  // String permission (glob pattern) — only applies to edit
-  if (typeof permValue === 'string' && op === 'edit') {
+    // R24.7: Deny when no file path is supplied for a glob pattern
     if (!filePath) {
-      return { allowed: false, message: `Agent '${agentId}' edit permission requires a file path for glob matching` };
+      return { allowed: false, message: `Agent '${agentId}': edit permission requires a file path for glob matching (denied)` };
     }
-    // Match glob pattern (e.g. "*.md") against the file path's extension
-    const pattern = permValue; // e.g. "*.md"
+    // R24.6: Match glob pattern (e.g. "*.md") against the file path
+    const pattern = permValue;
     const globSuffix = pattern.startsWith('*') ? pattern.slice(1) : pattern;
     if (filePath.endsWith(globSuffix)) {
       return { allowed: true };
     }
-    if (agentId === 'architect-planner') {
-      return { allowed: false, message: 'Architect Planner: edit restricted to markdown files (*.md)' };
-    }
-    return { allowed: false, message: `Agent '${agentId}' edit restricted to files matching '${pattern}'` };
+    // R24.7: Deny when the supplied file path does not match the glob pattern
+    return { allowed: false, message: `Agent '${agentId}': edit restricted to files matching '${pattern}' (denied)` };
   }
 
-  return { allowed: true };
+  // Boolean permission: true = allowed, false = denied
+  if (typeof permValue === 'boolean') {
+    if (permValue === true) {
+      return { allowed: true };
+    }
+    return { allowed: false, message: `Agent '${agentId}' does not have '${operation}' permission (denied)` };
+  }
+
+  // R24.5: Any indeterminate/unrecognized permission value type → deny
+  return { allowed: false, message: `Agent '${agentId}': indeterminate permission for '${operation}' (denied)` };
 }
 
 // ─────────────────────────────────────────────

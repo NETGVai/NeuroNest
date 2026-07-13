@@ -2,7 +2,7 @@
  * Unified Security Gate Interface — a single contract for all security gates.
  *
  * Both FirewallEngine (content inspection) and ActionAnalyzer (action risk classification)
- * implement this interface so that the loop-engine and interactive pipeline have a
+ * implement this interface so that the interactive pipeline has a
  * consistent, swap-safe contract. Concrete method name changes in underlying engines
  * cannot break enforcement when consumers depend only on this interface.
  *
@@ -64,9 +64,8 @@ export interface SecurityFinding {
  * - FirewallEngine: maps evaluate() → inspect()
  * - ActionAnalyzer (EnsembleSecurityAnalyzer): maps analyze() → classify()
  *
- * Consumers (loop-engine security-enforcement.ts) depend on this interface,
- * not on concrete class methods, ensuring enforcement cannot silently fail
- * open due to method renames or refactors.
+ * Consumers depend on this interface, not on concrete class methods, ensuring
+ * enforcement cannot silently fail open due to method renames or refactors.
  */
 export interface SecurityGate {
   /**

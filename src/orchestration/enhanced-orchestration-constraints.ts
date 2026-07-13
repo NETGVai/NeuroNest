@@ -169,13 +169,14 @@ export function isFeatureEnabled(feature: OrchestrationFeature): boolean {
     case 'phased_execution':
       return PERF_FLAGS.PHASED_EXECUTION;
     case 'gui_acceptance':
-      // GUI acceptance is activated selectively but requires phased execution
-      return PERF_FLAGS.PHASED_EXECUTION;
+      // GUI acceptance is gated by EXTERNAL_BROWSER_MCP — the documented GUI-agent toggle (R19.7)
+      return PERF_FLAGS.EXTERNAL_BROWSER_MCP;
     case 'e2e_scripts':
-      // E2E scripts are generated when GUI acceptance succeeds
-      return PERF_FLAGS.PHASED_EXECUTION;
+      // E2E scripts depend on GUI acceptance, so same flag applies (R19.7)
+      return PERF_FLAGS.EXTERNAL_BROWSER_MCP;
     case 'test_gap_detection':
-      return true; // Active when its stage is in the pipeline (always installed)
+      // Reconciled to `true` — consistent with DefaultFeatureFlagChecker default (R19.6)
+      return true;
     case 'quality_workers':
       return true; // Controlled by quality_workers config
     case 'trajectory_memory':

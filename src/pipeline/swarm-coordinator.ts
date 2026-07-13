@@ -10,6 +10,8 @@ import { PERF_FLAGS } from '../main/performance/feature-flags';
 import { logger } from '../utils/logger';
 import type { FeatureGateSystem } from '../feature-gate/feature-gate-system';
 import { isGcfExpandedActive } from './gcf-gate';
+import { resolveSkillForInjection, buildSkillPromptBlock } from './swarm-skill-injection';
+import type Database from 'better-sqlite3';
 import {
   type DelegationEnvelope,
   type ResultEnvelope,
@@ -156,6 +158,7 @@ export type SwarmEventType =
   | 'agent_complete'
   | 'handoff'
   | 'consensus_result'
+  | 'skill_applied'
   | 'swarm_complete';
 
 export interface SwarmEvent {
@@ -172,6 +175,7 @@ export interface SwarmEvent {
   msgId?: string;
   done?: boolean;
   error?: boolean;
+  skillId?: string;
 }
 
 export type SwarmEventCallback = (event: SwarmEvent) => void;
@@ -189,6 +193,8 @@ export interface SwarmResult {
   consensusResults: ConsensusEntry[];
   totalPhases: number;
   topology: string;
+  /** Skill ids actually injected into an agent's system prompt during this run. */
+  skillsUsed?: string[];
 }
 
 // ── SwarmMemoryPool ─────────────────────────────────────────────────────
@@ -447,16 +453,24 @@ export class SwarmCoordinator {
   private _activeClients: LLMClient[] = [];
   private metricsSink: MetricsSink | null;
   private featureGate: FeatureGateSystem | null;
+  /** DB handle used for skill-injection lookups. Named distinctly from any
+   * subclass's own `db` field (e.g. `EnhancedSwarmCoordinator`) to avoid a
+   * TS2415 private-member collision across the class hierarchy. */
+  private skillsDb: Database.Database | null;
+  /** Skill IDs actually injected into an agent's prompt during the current run. */
+  private baseAppliedSkillIds: Set<string> = new Set();
 
   constructor(
     private memoryPool: SwarmMemoryPool,
     llmClient?: LLMClient | null,
     metricsSink?: MetricsSink | null,
     featureGate?: FeatureGateSystem | null,
+    db?: Database.Database | null,
   ) {
     this.llmClient = llmClient || null;
     this.metricsSink = metricsSink || null;
     this.featureGate = featureGate || null;
+    this.skillsDb = db || null;
   }
 
   /**
@@ -487,6 +501,7 @@ export class SwarmCoordinator {
    */
   async execute(plan: ExecutionPlan, onEvent?: SwarmEventCallback, agentLLMConfigs?: Map<string, LLMClient>): Promise<SwarmResult> {
     this._aborted = false;
+    this.baseAppliedSkillIds = new Set();
     const outputs = new Map<string, string>();
     const phases = assignPhases(plan.agents);
 
@@ -494,7 +509,13 @@ export class SwarmCoordinator {
       // ── Check abort before each phase ──
       if (this._aborted) {
         onEvent?.({ type: 'swarm_complete', content: 'Swarm aborted by user' });
-        return { outputs, consensusResults: [], totalPhases: phases.length, topology: plan.topology };
+        return {
+          outputs,
+          consensusResults: [],
+          totalPhases: phases.length,
+          topology: plan.topology,
+          skillsUsed: [...this.baseAppliedSkillIds],
+        };
       }
 
       // ── Phase start ──
@@ -631,6 +652,26 @@ export class SwarmCoordinator {
               : PRODUCTION_OUTPUT_FORMAT;
 
             let agentSystemPrompt = (agentDef?.systemPrompt || 'You are a helpful AI assistant.') + outputFormat;
+
+            // ── Skill injection: resolve the assigned skill most relevant to
+            // this task (real keyword-overlap matching, never a forced/first
+            // match) and append its content as reference material. Skills are
+            // an enhancement — a missing db or no match proceeds skill-less.
+            if (this.skillsDb) {
+              const applicableSkill = resolveSkillForInjection(this.skillsDb, agentTask.id, fullTask || agentTask.task || '');
+              if (applicableSkill) {
+                this.baseAppliedSkillIds.add(applicableSkill.skillId);
+                onEvent?.({
+                  type: 'skill_applied',
+                  agentId: agentTask.id,
+                  agentName,
+                  phase,
+                  skillId: applicableSkill.skillId,
+                  content: `Applying skill: ${applicableSkill.skillName}`,
+                });
+                agentSystemPrompt += buildSkillPromptBlock(applicableSkill);
+              }
+            }
 
             // ── F10 GCF primer injection ──
             // Prepend the GCF comprehension primer when the wire format is active.
@@ -825,6 +866,7 @@ ${troubleshootingSteps.join('\n')}
       consensusResults,
       totalPhases: phases.length,
       topology: plan.topology,
+      skillsUsed: [...this.baseAppliedSkillIds],
     };
   }
 }

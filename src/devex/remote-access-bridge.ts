@@ -19,6 +19,12 @@
 import { EventEmitter } from 'node:events';
 import * as http from 'node:http';
 import * as crypto from 'node:crypto';
+import {
+  type ListenerConfig,
+  REMOTE_ACCESS_BRIDGE_DEFAULT_PORT,
+  validatePort,
+  resolveBindHost,
+} from '../channels/listener-config';
 
 // ─── Interfaces ─────────────────────────────────────────────────
 
@@ -26,6 +32,16 @@ import * as crypto from 'node:crypto';
 export interface RemoteAccessConfig {
   /** Port to bind the HTTP API server on */
   port: number;
+  /**
+   * Host/interface to bind to. Defaults to '127.0.0.1' (loopback).
+   * Only set to a non-loopback address when remote access is explicitly configured (R22.6, R22.10).
+   */
+  host?: string;
+  /**
+   * Whether remote access is explicitly configured to expose beyond loopback.
+   * When true, the configured host is used as-is. When false/absent, 0.0.0.0 is rejected.
+   */
+  remoteAccessExplicit?: boolean;
   /** Authentication token for API access */
   authToken: string;
   /** Token expiry in seconds (how long a token remains valid from issuance) */
@@ -100,7 +116,7 @@ export interface MessagingBridge {
 
 // ─── Constants ──────────────────────────────────────────────────
 
-const DEFAULT_PORT = 9876;
+const DEFAULT_PORT = REMOTE_ACCESS_BRIDGE_DEFAULT_PORT;
 const DEFAULT_DENY_TIMEOUT_SECONDS = 60;
 const DEFAULT_TOKEN_EXPIRY_SECONDS = 3600; // 1 hour
 
@@ -227,6 +243,15 @@ export class RemoteAccessBridge extends EventEmitter {
     return this.actualPort || this.config.port;
   }
 
+  /** Get the resolved listener config for external conflict checks. */
+  getListenerConfig(): ListenerConfig {
+    return {
+      port: this.config.port,
+      host: resolveBindHost(this.config.host, this.config.remoteAccessExplicit ?? false),
+      enabled: this.running,
+    };
+  }
+
   /**
    * Start the Remote Access Bridge.
    *
@@ -239,6 +264,15 @@ export class RemoteAccessBridge extends EventEmitter {
     if (this.running) {
       throw new Error('RemoteAccessBridge is already running');
     }
+
+    // Validate port (R22.9) — reject out-of-range ports before binding
+    validatePort(this.config.port, 'Remote Access Bridge');
+
+    // Resolve bind host: loopback by default, never 0.0.0.0 unless explicit (R22.6, R22.10)
+    const bindHost = resolveBindHost(
+      this.config.host,
+      this.config.remoteAccessExplicit ?? false,
+    );
 
     // Initialize auth session
     this.authSession = this.createAuthSession(this.config.authToken);
@@ -254,7 +288,7 @@ export class RemoteAccessBridge extends EventEmitter {
 
     await new Promise<void>((resolve, reject) => {
       this.server!.on('error', reject);
-      this.server!.listen(this.config.port, () => {
+      this.server!.listen(this.config.port, bindHost, () => {
         // Record the actual port (important when config.port is 0)
         const addr = this.server!.address();
         if (addr && typeof addr === 'object') {

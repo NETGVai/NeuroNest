@@ -21,6 +21,8 @@
 import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import type { FeatureGateSystem } from '../feature-gate/feature-gate-system.js';
+import { type Role } from '../orchestration/role-vocabulary.js';
+import { checkSandboxIsolation } from '../pipeline/sandbox-environment';
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -69,6 +71,8 @@ export interface EditLockChecker {
 
 /** Interface for Docker sandbox execution (interface-based, mock for now) */
 export interface DockerSandbox {
+  /** Identifies whether this sandbox provides real Docker isolation or is a no-op (R5.1) */
+  readonly isolationKind: 'docker' | 'noop';
   execute(workerType: WorkerType, projectDir: string): Promise<WorkerFinding[]>;
 }
 
@@ -79,17 +83,21 @@ export interface SubagentSpawner {
 
 // ─── Worker Role Mappings ───────────────────────────────────────
 
-const WORKER_ROLES: Record<WorkerType, string> = {
-  testgaps: 'qa-specialist',
-  'e2e-replay': 'qa-specialist',
-  audit: 'security-specialist',
-  bloat: 'neuronest-reviewer',
-  'docs-drift': 'documentation-specialist',
+/**
+ * Maps each worker type to a canonical role from the shared Role_Vocabulary.
+ * Every role name here MUST be an exact-string member of ROLE_VOCABULARY (R19.2).
+ */
+const WORKER_ROLES: Record<WorkerType, Role> = {
+  testgaps: 'tester',
+  'e2e-replay': 'tester',
+  audit: 'reviewer',
+  bloat: 'reviewer',
+  'docs-drift': 'reviewer',
 };
 
 const WORKER_SKILLS: Record<WorkerType, string[]> = {
-  testgaps: ['test-generation', 'lean-minimalism'],
-  'e2e-replay': ['e2e-testing', 'lean-minimalism'],
+  testgaps: ['test-generation'],
+  'e2e-replay': ['e2e-testing'],
   audit: ['security-audit', 'supply-chain'],
   bloat: ['lean-minimalism', 'over-engineering-review'],
   'docs-drift': ['documentation', 'lean-minimalism'],
@@ -279,6 +287,12 @@ export class QualityWorkersService {
     try {
       // Check Edit Lock before starting
       if (!this.canStart()) {
+        return [];
+      }
+
+      // R5.3, R5.4: In production with a no-op sandbox, refuse execution
+      const refusal = checkSandboxIsolation(this.dockerSandbox.isolationKind);
+      if (refusal) {
         return [];
       }
 

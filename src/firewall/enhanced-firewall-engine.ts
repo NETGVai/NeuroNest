@@ -1,5 +1,13 @@
 /**
  * Enhanced Firewall Engine — hybrid content inspection.
+ *
+ * NOTE: The canonical firewall engine is `src/firewall/firewall-engine.ts`.
+ * This enhanced variant extends it with LLM-based semantic analysis (Tier 2)
+ * and is retained because it has live callers in `src/main/ipc.ts`.
+ * All security-critical fixes to pattern matching, counter semantics, and
+ * error surfacing MUST be applied to the canonical `firewall-engine.ts` first.
+ * See: audit-remediation design — P13 module-tree consolidation (Requirement 25).
+ *
  * Hybrid architecture: Fast regex (Tier 1) + LLM-based semantic analysis (Tier 2)
  * The semantic tier uses the configured 'fast' model with a 2-second timeout,
  * falling back to regex-only analysis on timeout or LLM unavailability.
@@ -280,6 +288,7 @@ export class EnhancedFirewallEngine extends FirewallEngine {
         blocked: false,
         sanitized: '',
         events: [],
+        errors: [],
         tier: 0,
         latencyMs: Date.now() - start,
         method: 'regex',
@@ -443,6 +452,7 @@ export class EnhancedFirewallEngine extends FirewallEngine {
       blocked: llmResult.blocked,
       sanitized: processedInput,
       events: combinedEvents,
+      errors: regexResult.errors || [],
       tier: Math.max(regexResult.tier, 2),
       latencyMs: regexResult.latencyMs + llmResult.latencyMs,
       method: 'hybrid',

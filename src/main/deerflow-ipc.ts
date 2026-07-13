@@ -54,10 +54,94 @@ function getExecutionModeRouter() {
   if (!_executionModeRouter) {
     const { ExecutionModeRouter } = require('../pipeline/execution-mode-router.js');
     const { AGENT_REGISTRY } = require('../agents/agent-registry.js');
-    // Minimal stubs for dependencies — real wiring happens in pipeline integration
-    const stubSwarm = { execute: async () => ({ output: '', agentsUsed: [], tokensUsed: 0 }) };
-    const stubLLM = { chat: async () => ({ content: '', tokensUsed: 0 }) };
-    _executionModeRouter = new ExecutionModeRouter(stubSwarm, stubLLM, AGENT_REGISTRY || []);
+    const { SwarmCoordinator, SwarmMemoryPool } = require('../pipeline/swarm-coordinator.js');
+    const { createLLMClient } = require('../pipeline/llm-client.js');
+    const { getDefaultDbPath } = require('../storage/database.js');
+
+    // ─── Production LLM client ──────────────────────────────────────
+    // Resolve the active LLM provider from the persisted config database.
+    // If no provider is configured yet (first launch), the router is still
+    // instantiated with a null-safe wrapper — real calls will surface a clear
+    // error instead of returning a silent empty response.
+    let llmClient: any = null;
+    try {
+      const dbPath = getDefaultDbPath();
+      const fs = require('node:fs');
+      if (fs.existsSync(dbPath)) {
+        const Database = require('better-sqlite3');
+        const db = new Database(dbPath, { readonly: true });
+        try {
+          const provRow = db.prepare("SELECT value FROM config WHERE key = 'providers'").get() as any;
+          const defRow = db.prepare("SELECT value FROM config WHERE key = 'default-provider'").get() as any;
+          if (provRow?.value) {
+            const providers = JSON.parse(provRow.value);
+            let prov = providers[0]; // default: first configured provider
+            if (defRow?.value) {
+              try {
+                const dp = JSON.parse(defRow.value);
+                const found = providers.find((p: any) => p.id === dp.id || p.name === dp.id || p.type === dp.id);
+                if (found) prov = dp.model ? { ...found, model: dp.model } : found;
+              } catch { /* use first provider */ }
+            }
+            if (prov) llmClient = createLLMClient(prov);
+          }
+        } finally {
+          db.close();
+        }
+      }
+    } catch { /* config not available yet — llmClient stays null */ }
+
+    // Null-safe LLM wrapper satisfying LLMClientLike: errors clearly if no
+    // provider is configured rather than returning a silent empty response.
+    const safeLLM = llmClient ?? {
+      chat: async () => { throw new Error('No LLM provider configured — cannot execute router LLM call'); },
+    };
+
+    // ─── Skill-injection db handle ───────────────────────────────────
+    // A separate long-lived readonly connection so SwarmCoordinator can look
+    // up assigned skills for agents. Skills are an enhancement — if the db
+    // can't be opened, the coordinator proceeds skill-less (never throws).
+    let skillDb: any = null;
+    try {
+      const dbPath = getDefaultDbPath();
+      const fs = require('node:fs');
+      if (fs.existsSync(dbPath)) {
+        const Database = require('better-sqlite3');
+        skillDb = new Database(dbPath, { readonly: true });
+      }
+    } catch { /* skill lookups stay unavailable — coordinator proceeds skill-less */ }
+
+    // ─── Production SwarmCoordinator adapter ────────────────────────
+    // The SwarmCoordinator.execute() takes an ExecutionPlan (with AgentTask[])
+    // and returns a SwarmResult. The ExecutionModeRouter uses SwarmCoordinatorLike
+    // which expects a simpler { task, sessionId, mode, agents: string[] } shape
+    // and returns { output, agentsUsed, tokensUsed }. This adapter bridges them.
+    const realSwarm = new SwarmCoordinator(new SwarmMemoryPool(), llmClient, null, null, skillDb);
+    const swarmAdapter = {
+      execute: async (plan: { task: string; sessionId: string; mode: string; agents: string[] }) => {
+        const topology = plan.mode === 'parallel' ? 'star' : 'sequential';
+        const executionPlan = {
+          plan: plan.task,
+          agents: plan.agents.map((id: string) => ({ id, task: plan.task, dependsOn: [] })),
+          topology,
+        };
+        const result = await realSwarm.execute(executionPlan);
+        // Collapse SwarmResult.outputs map into a single output string
+        const outputParts: string[] = [];
+        if (result.outputs) {
+          for (const [, value] of result.outputs) {
+            if (value) outputParts.push(value);
+          }
+        }
+        return {
+          output: outputParts.join('\n'),
+          agentsUsed: plan.agents,
+          tokensUsed: 0,
+        };
+      },
+    };
+
+    _executionModeRouter = new ExecutionModeRouter(swarmAdapter, safeLLM, AGENT_REGISTRY || []);
   }
   return _executionModeRouter!;
 }
@@ -100,6 +184,17 @@ function getMCPServerManager() {
       _mcpServerManager!.registerBuiltInServers();
     } catch {
       // Defensive: a built-in registration failure must not block IPC setup.
+    }
+    // ─── Lean Minimalism MCP Wiring (R12.1, R12.3, R12.6) ───────────
+    // Wire lean-mcp-registration (PRODUCTION_UX_MINIMALISM) and
+    // gui-agent-mcp-server (EXTERNAL_BROWSER_MCP) onto the live MCP path.
+    // Both are no-ops when their respective flags are off (default: false).
+    try {
+      const { wireLeanMCPRegistration, wireGuiAgentMCPServer } = require('../orchestration/lean-minimalism-wiring.js');
+      wireLeanMCPRegistration(_mcpServerManager);
+      wireGuiAgentMCPServer(_mcpServerManager);
+    } catch {
+      // Defensive: wiring failure must not block MCP setup.
     }
   }
   return _mcpServerManager!;

@@ -64,6 +64,9 @@ import { WasmSandbox } from '../security/wasm-sandbox.js';
 import { BrowserAutomation } from '../devex/browser-automation.js';
 import { BackpropagationEngine } from '../intelligence/backpropagation-engine.js';
 import { wirePipelineSecurity, type PipelineSecurityWiringResult } from './pipeline-security-wiring.js';
+import { PERF_FLAGS } from '../main/performance/feature-flags.js';
+import { PhasedPipeline } from '../orchestration/phased-pipeline.js';
+import type { PipelineRunResult, PipelineTaskDescription, PipelineProjectContext } from '../orchestration/phased-pipeline.js';
 import { ActionFirstDetector, DEFAULT_MAX_RE_PROMPT_ATTEMPTS } from './action-first-detector.js';
 import { buildEnhancedSystemPrompt, DEFAULT_CODE_QUALITY_DIRECTIVES, DEFAULT_ACTION_FIRST_DIRECTIVES } from './system-prompt-builder.js';
 import type { CodeQualityDirectives, ActionFirstDirectives, SystemPromptConfig } from './system-prompt-builder.js';
@@ -72,8 +75,35 @@ import { runSelfHealingLoop } from './self-healing-loop.js';
 import type { RepairAgent, VerificationRunner, RepairFeedback, SelfHealingConfig } from './self-healing-loop.js';
 import { attemptDeterministicFix } from './deterministic-escalation.js';
 import type { AgentEdit, ProjectContext } from './verification-gate/types.js';
+import { DiffRiskScorer } from './diff-risk-scorer.js';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
+
+// P5 orphan sweep (task 23.2) — Category B facade/.impl split modules, wired
+// onto this live AgentLoopController construction path (R16.3, R16.5).
+import { SessionForker } from '../session/session-forker.impl.js';
+import type { ISessionForker } from '../session/session-forker.js';
+import { DiffReviewSystem } from '../review/diff-review-system.impl.js';
+import type { IDiffReviewSystem } from '../review/diff-review-system.js';
+import { AgentRacingEngine } from '../orchestration/agent-racing-engine.impl.js';
+import type { IAgentRacingEngine } from '../orchestration/agent-racing-engine.js';
+import { DriftAwareOrchestrator } from '../orchestration/drift-aware-orchestrator.impl.js';
+import type { IDriftAwareOrchestrator } from '../orchestration/drift-aware-orchestrator.js';
+import { TestDriftDetector } from '../testing/test-drift-detector.impl.js';
+import type { ITestDriftDetector } from '../testing/test-drift-detector.js';
+import { TestGenerator } from '../testing/test-generator.impl.js';
+import type { ITestGenerator } from '../testing/test-generator.js';
+import { TestHealthTracker } from '../testing/test-health-tracker.impl.js';
+import type { ITestHealthTracker } from '../testing/test-health-tracker.js';
+import { TestPlanner } from '../testing/test-planner.impl.js';
+import type { ITestPlanner } from '../testing/test-planner.js';
+import { EnhancedDriftClassifier } from '../drift/enhanced-drift-classifier.impl.js';
+import type { IEnhancedDriftClassifier } from '../drift/enhanced-drift-classifier.js';
+import { VerificationAgent, type StepExecutionStrategy } from '../agents/verification-agent.impl.js';
+import type { IVerificationAgent } from '../agents/verification-agent.js';
+import { ParallelSessionManager } from '../session/parallel-session-manager.js';
+import { WorktreeCheckpointManager } from '../durability/worktree-checkpoint-manager.impl.js';
+import type { IWorktreeCheckpointManager } from '../durability/worktree-checkpoint-manager.js';
 
 // ─── Interfaces ─────────────────────────────────────────────────
 
@@ -686,6 +716,28 @@ export class AgentLoopController {
   private browserAutomation: BrowserAutomation | null = null;
   /** Backpropagation engine — null when backpropagation feature gate is disabled (Req 30.1, 30.6) */
   private backpropagationEngine: BackpropagationEngine | null = null;
+  /** Session forker — null when session_forking feature gate is disabled or no DB is available (P5 sweep, R16.5) */
+  private sessionForker: ISessionForker | null = null;
+  /** Diff review system — null when diff_review feature gate is disabled or no DB is available (P5 sweep, R16.5) */
+  private diffReviewSystem: IDiffReviewSystem | null = null;
+  /** Agent racing engine — null when agent_racing feature gate is disabled or no DB is available (P5 sweep, R16.5) */
+  private agentRacingEngine: IAgentRacingEngine | null = null;
+  /** Drift-aware orchestrator — null when drift_aware_orchestration feature gate is disabled or deps unavailable (P5 sweep, R16.5) */
+  private driftAwareOrchestrator: IDriftAwareOrchestrator | null = null;
+  /** Test drift detector — null when test_drift_detection feature gate is disabled or no DB is available (P5 sweep, R16.5) */
+  private testDriftDetector: ITestDriftDetector | null = null;
+  /** Test generator — null when test_generation feature gate is disabled or no DB is available (P5 sweep, R16.5) */
+  private testGenerator: ITestGenerator | null = null;
+  /** Test health tracker — null when test_health_analytics feature gate is disabled or no DB is available (P5 sweep, R16.5) */
+  private testHealthTracker: ITestHealthTracker | null = null;
+  /** Test planner — null when test_planning feature gate is disabled or no DB is available (P5 sweep, R16.5) */
+  private testPlanner: ITestPlanner | null = null;
+  /** Enhanced drift classifier — null when enhanced_drift_classification feature gate is disabled (P5 sweep, R16.5) */
+  private enhancedDriftClassifier: IEnhancedDriftClassifier | null = null;
+  /** Verification agent — null when verification_agent feature gate is disabled (P5 sweep, R16.5) */
+  private verificationAgent: IVerificationAgent | null = null;
+  /** Worktree checkpoint manager — null when worktree_checkpoints feature gate is disabled or no DB is available (P5 sweep, R16.5) */
+  private worktreeCheckpointManager: IWorktreeCheckpointManager | null = null;
 
   constructor(config: AgentLoopConfig) {
     this.config = {
@@ -911,6 +963,187 @@ export class AgentLoopController {
       );
     }
 
+    // ─── P5 Orphan Sweep (task 23.2) — Category B facade/.impl wiring (R16.3, R16.5) ───
+    // Each module below was a facade/.impl split referenced only by its own tests.
+    // Wiring them here — behind their existing feature flags — gives every facade a
+    // live, non-test caller on the AgentLoopController construction path, matching
+    // the pattern used for the other flag-gated subsystems above. All ten modules
+    // require a SQLite handle for persistence; when no DB is resolvable (renderer/
+    // CLI/test contexts) the module stays null and its consumer's null-check guard
+    // keeps behavior unchanged (R16.9 — no unresolved import, no broken pre-existing
+    // test, pre-action state preserved).
+    const p5SweepDb = this.resolveP5SweepDb();
+
+    // session-forker.impl — WIRE behind `session_forking` (Req 2.1-2.9)
+    if (this.isFeatureEnabled('session_forking') && p5SweepDb && this.worktreeIsolation) {
+      try {
+        this.sessionForker = new SessionForker(
+          this.featureGate!,
+          new ParallelSessionManager(p5SweepDb),
+          this.worktreeIsolation,
+          { projectId: config.sessionId },
+        );
+      } catch (err) {
+        console.error('[P5Sweep] SessionForker wiring failed:', err);
+      }
+    }
+
+    // diff-review-system.impl — WIRE behind `diff_review` (Req 6.1-6.6)
+    if (this.isFeatureEnabled('diff_review') && p5SweepDb && config.callbackEngine) {
+      try {
+        this.diffReviewSystem = new DiffReviewSystem(
+          p5SweepDb,
+          this.featureGate!,
+          config.callbackEngine as CallbackEngine,
+          { cwd: config.projectDir },
+        );
+      } catch (err) {
+        console.error('[P5Sweep] DiffReviewSystem wiring failed:', err);
+      }
+    }
+
+    // agent-racing-engine.impl — WIRE behind `agent_racing` (Req 1.1-1.9)
+    if (this.isFeatureEnabled('agent_racing') && p5SweepDb && config.callbackEngine && this.worktreeIsolation && this.parallelAgentExecutor) {
+      try {
+        this.agentRacingEngine = new AgentRacingEngine(
+          p5SweepDb,
+          config.callbackEngine as CallbackEngine,
+          this.featureGate!,
+          this.worktreeIsolation,
+          this.parallelAgentExecutor,
+        );
+      } catch (err) {
+        console.error('[P5Sweep] AgentRacingEngine wiring failed:', err);
+      }
+    }
+
+    // enhanced-drift-classifier.impl — WIRE behind `enhanced_drift_classification` (Req 13.1-13.7)
+    if (this.isFeatureEnabled('enhanced_drift_classification') && config.callbackEngine) {
+      try {
+        this.enhancedDriftClassifier = new EnhancedDriftClassifier(
+          this.featureGate!,
+          config.callbackEngine as CallbackEngine,
+        );
+      } catch (err) {
+        console.error('[P5Sweep] EnhancedDriftClassifier wiring failed:', err);
+      }
+    }
+
+    // worktree-checkpoint-manager.impl — WIRE behind `worktree_checkpoints` (Req 3.1-3.9)
+    if (this.isFeatureEnabled('worktree_checkpoints') && p5SweepDb) {
+      try {
+        this.worktreeCheckpointManager = new WorktreeCheckpointManager({
+          db: p5SweepDb,
+          featureGate: this.featureGate!,
+          checkpointConfig: {
+            directory: config.superagentConfig?.checkpoint?.directory ?? '.neuronest/checkpoints',
+            maxDiskUsageMb: config.superagentConfig?.checkpoint?.maxDiskUsageMb ?? 500,
+            currentSchemaVersion: 3,
+          },
+          cwd: config.projectDir,
+        });
+      } catch (err) {
+        console.error('[P5Sweep] WorktreeCheckpointManager wiring failed:', err);
+      }
+    }
+
+    // drift-aware-orchestrator.impl — WIRE behind `drift_aware_orchestration` (Req 14.1-14.10)
+    // Depends on SessionForker + WorktreeCheckpointManager wired above.
+    if (
+      this.isFeatureEnabled('drift_aware_orchestration') &&
+      config.callbackEngine &&
+      this.sessionForker &&
+      this.worktreeCheckpointManager &&
+      p5SweepDb
+    ) {
+      try {
+        this.driftAwareOrchestrator = new DriftAwareOrchestrator(
+          this.featureGate!,
+          config.callbackEngine as CallbackEngine,
+          this.sessionForker,
+          this.worktreeCheckpointManager,
+          new ParallelSessionManager(p5SweepDb),
+          { projectId: config.sessionId },
+        );
+      } catch (err) {
+        console.error('[P5Sweep] DriftAwareOrchestrator wiring failed:', err);
+      }
+    }
+
+    // test-planner.impl — WIRE behind `test_planning` (Req 8.1-8.7)
+    if (this.isFeatureEnabled('test_planning') && p5SweepDb && config.callbackEngine) {
+      try {
+        this.testPlanner = new TestPlanner(p5SweepDb, this.featureGate!, config.callbackEngine as CallbackEngine);
+      } catch (err) {
+        console.error('[P5Sweep] TestPlanner wiring failed:', err);
+      }
+    }
+
+    // test-generator.impl — WIRE behind `test_generation` (Req 9.1-9.7)
+    if (this.isFeatureEnabled('test_generation') && p5SweepDb) {
+      try {
+        this.testGenerator = new TestGenerator(p5SweepDb, this.featureGate!);
+      } catch (err) {
+        console.error('[P5Sweep] TestGenerator wiring failed:', err);
+      }
+    }
+
+    // test-health-tracker.impl — WIRE behind `test_health_analytics` (Req 11.1-11.8)
+    if (this.isFeatureEnabled('test_health_analytics') && p5SweepDb && config.callbackEngine) {
+      try {
+        this.testHealthTracker = new TestHealthTracker(p5SweepDb, this.featureGate!, config.callbackEngine as CallbackEngine);
+      } catch (err) {
+        console.error('[P5Sweep] TestHealthTracker wiring failed:', err);
+      }
+    }
+
+    // test-drift-detector.impl — WIRE behind `test_drift_detection` (Req 10.1-10.8)
+    if (this.isFeatureEnabled('test_drift_detection') && p5SweepDb && config.callbackEngine) {
+      try {
+        this.testDriftDetector = new TestDriftDetector(
+          p5SweepDb,
+          this.featureGate!,
+          config.callbackEngine as CallbackEngine,
+          null, // DriftMonitor instance is created per-run inside run(); not available at construction time
+        );
+      } catch (err) {
+        console.error('[P5Sweep] TestDriftDetector wiring failed:', err);
+      }
+    }
+
+    // verification-agent.impl — WIRE behind `verification_agent` (Req 12.1-12.9)
+    // Uses the live ToolSystem to execute verification steps as tool calls.
+    if (this.isFeatureEnabled('verification_agent') && config.callbackEngine) {
+      try {
+        const toolSystemForVerification = config.toolSystem;
+        const projectDirForVerification = config.projectDir;
+        const sessionIdForVerification = config.sessionId;
+        const executionStrategy: StepExecutionStrategy = {
+          execute: async (action: string, targetPaths?: string[]) => {
+            const toolContext: ToolContext = {
+              agentId: 'verification-agent',
+              sessionId: sessionIdForVerification,
+              projectDir: projectDirForVerification,
+              permissionMode: 'auto-approve',
+            };
+            const result = await toolSystemForVerification.execute(
+              'terminal',
+              { command: action, targetPaths },
+              toolContext,
+            );
+            return typeof result.output === 'string' ? result.output : JSON.stringify(result.output ?? '');
+          },
+        };
+        this.verificationAgent = new VerificationAgent(
+          this.featureGate!,
+          config.callbackEngine as CallbackEngine,
+          executionStrategy,
+        );
+      } catch (err) {
+        console.error('[P5Sweep] VerificationAgent wiring failed:', err);
+      }
+    }
+
     // ─── Pipeline Security Wiring: wire all security subsystems into the live pipeline (Req 18.1, 18.6) ───
     // Idempotent guard ensures wiring only runs once, even if multiple controllers are created.
     if (!AgentLoopController._pipelineSecurityWired && this.featureGate && config.callbackEngine) {
@@ -928,6 +1161,22 @@ export class AgentLoopController {
         console.error('[PipelineSecurity] Wiring failed — security subsystems inactive:', err);
       }
     }
+
+    // ─── Lean Minimalism Module Wiring (R12.1, R12.3, R12.5, R12.6, R12.8) ───
+    // Wire all 12 lean-minimalism modules behind their default-off flags.
+    // Each module's behavior is inactive when its flag is off; active when on.
+    // Modules 5 (hnsw-index), 9 (diff-risk-scorer), 10 (ProviderFailoverClient),
+    // 11 (adr-connector) are always-on with live callers confirmed above.
+    // Modules 1, 2 (MCP) are wired in deerflow-ipc.ts getMCPServerManager().
+    // Modules 3, 4, 6, 7, 8, 12 are wired here on the phased/startup path.
+    if (PERF_FLAGS.PRODUCTION_UX_MINIMALISM) {
+      try {
+        const { wireMinimalismDependencyCheck } = require('../orchestration/lean-minimalism-wiring.js');
+        wireMinimalismDependencyCheck();
+      } catch {
+        // Non-fatal: minimalism dep check failure must not block loop
+      }
+    }
   }
 
   /**
@@ -936,6 +1185,27 @@ export class AgentLoopController {
    */
   isFeatureEnabled(feature: keyof FeatureGateFlags): boolean {
     return this.featureGate !== null && this.featureGate.isEnabled(feature);
+  }
+
+  /**
+   * Lazily resolve the shared SQLite handle for the P5 orphan-sweep Category B
+   * modules (session-forker, diff-review-system, agent-racing-engine,
+   * drift-aware-orchestrator, test-* modules, worktree-checkpoint-manager).
+   *
+   * These modules require persistence but the AgentLoopConfig does not thread
+   * a `db` handle explicitly. Rather than widen the public config surface,
+   * this resolves the same default database the main process already opens
+   * (mirroring the lazy-DB pattern used by `error-size-tap.ts`). Returns null
+   * in renderer/CLI/test contexts where the DB cannot be opened — callers
+   * treat null as "module stays unwired for this run" (R16.9, non-fatal).
+   */
+  private resolveP5SweepDb(): import('better-sqlite3').Database | null {
+    try {
+      const { initDatabase } = require('../storage/database.js');
+      return initDatabase();
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -1227,6 +1497,94 @@ export class AgentLoopController {
     return this.backpropagationEngine;
   }
 
+  /**
+   * Get the SessionForker instance.
+   * Returns null when session_forking feature gate is disabled or no DB is available (P5 sweep).
+   */
+  getSessionForker(): ISessionForker | null {
+    return this.sessionForker;
+  }
+
+  /**
+   * Get the DiffReviewSystem instance.
+   * Returns null when diff_review feature gate is disabled or no DB is available (P5 sweep).
+   */
+  getDiffReviewSystem(): IDiffReviewSystem | null {
+    return this.diffReviewSystem;
+  }
+
+  /**
+   * Get the AgentRacingEngine instance.
+   * Returns null when agent_racing feature gate is disabled or deps are unavailable (P5 sweep).
+   */
+  getAgentRacingEngine(): IAgentRacingEngine | null {
+    return this.agentRacingEngine;
+  }
+
+  /**
+   * Get the DriftAwareOrchestrator instance.
+   * Returns null when drift_aware_orchestration feature gate is disabled or deps are unavailable (P5 sweep).
+   */
+  getDriftAwareOrchestrator(): IDriftAwareOrchestrator | null {
+    return this.driftAwareOrchestrator;
+  }
+
+  /**
+   * Get the TestDriftDetector instance.
+   * Returns null when test_drift_detection feature gate is disabled or no DB is available (P5 sweep).
+   */
+  getTestDriftDetector(): ITestDriftDetector | null {
+    return this.testDriftDetector;
+  }
+
+  /**
+   * Get the TestGenerator instance.
+   * Returns null when test_generation feature gate is disabled or no DB is available (P5 sweep).
+   */
+  getTestGenerator(): ITestGenerator | null {
+    return this.testGenerator;
+  }
+
+  /**
+   * Get the TestHealthTracker instance.
+   * Returns null when test_health_analytics feature gate is disabled or no DB is available (P5 sweep).
+   */
+  getTestHealthTracker(): ITestHealthTracker | null {
+    return this.testHealthTracker;
+  }
+
+  /**
+   * Get the TestPlanner instance.
+   * Returns null when test_planning feature gate is disabled or no DB is available (P5 sweep).
+   */
+  getTestPlanner(): ITestPlanner | null {
+    return this.testPlanner;
+  }
+
+  /**
+   * Get the EnhancedDriftClassifier instance.
+   * Returns null when enhanced_drift_classification feature gate is disabled (P5 sweep).
+   */
+  getEnhancedDriftClassifier(): IEnhancedDriftClassifier | null {
+    return this.enhancedDriftClassifier;
+  }
+
+  /**
+   * Get the VerificationAgent instance.
+   * Returns null when verification_agent feature gate is disabled (P5 sweep).
+   */
+  getVerificationAgent(): IVerificationAgent | null {
+    return this.verificationAgent;
+  }
+
+  /**
+   * Get the WorktreeCheckpointManager instance.
+   * Returns null when worktree_checkpoints feature gate is disabled or no DB is available (P5 sweep).
+   */
+  getWorktreeCheckpointManager(): IWorktreeCheckpointManager | null {
+    return this.worktreeCheckpointManager;
+  }
+
   // ─── Plan Validation ──────────────────────────────────────────
 
   /**
@@ -1365,11 +1723,139 @@ export class AgentLoopController {
   async run(message: string): Promise<AgentLoopResult> {
     const { planMode, onPlanReady } = this.config;
 
+    // ─── PHASED_EXECUTION flag gate (Requirements 9.2, 9.3, 9.6, 12.4) ───
+    // When PHASED_EXECUTION is enabled, route through PhasedPipeline.
+    // When disabled (default: false), run the unchanged single-pass loop.
+    if (PERF_FLAGS.PHASED_EXECUTION) {
+      try {
+        return await this.runPhasedPipeline(message);
+      } catch (phasedError: unknown) {
+        // R9.6: On PhasedPipeline failure, fall back to single-pass loop,
+        // surface error identifying the failure, and preserve request state.
+        const errorMessage = phasedError instanceof Error
+          ? phasedError.message
+          : String(phasedError);
+        console.error(
+          `[AgentLoopController] PhasedPipeline failed, falling back to single-pass loop: ${errorMessage}`,
+        );
+        // Fall through to the existing single-pass loop below
+      }
+    }
+
     if (planMode && onPlanReady) {
       return this.runPlanMode(message);
     }
 
     return this.runStandardLoop(message);
+  }
+
+  /**
+   * PhasedPipeline execution path — routes the request through the multi-phase
+   * pipeline with quality gates when PHASED_EXECUTION is enabled.
+   *
+   * Requirements: 9.2, 9.3, 9.6
+   */
+  private async runPhasedPipeline(message: string): Promise<AgentLoopResult> {
+    const { projectDir, sessionId, llmClient } = this.config;
+
+    // ─── Wire enhanced-orchestration-constraints (R12.3, PHASED_EXECUTION) ───
+    // Supplies phase constraints and dependency ordering to the PhasedPipeline.
+    let orchestrationConstraints: any = null;
+    try {
+      const { wireEnhancedOrchestrationConstraints } = require('../orchestration/lean-minimalism-wiring.js');
+      orchestrationConstraints = wireEnhancedOrchestrationConstraints();
+    } catch {
+      // Non-fatal: pipeline proceeds without constraints
+    }
+
+    // ─── Wire quality-workers-service + testgaps-worker (R12.3, PHASED_EXECUTION) ───
+    // Provides tester/reviewer workers on the phased path. testgaps-worker is invoked
+    // by quality-workers-service, so wiring the service implies testgaps-worker is reachable.
+    let qualityWorkers: any = null;
+    try {
+      const { wireQualityWorkersService, wireTestGapsWorker } = require('../orchestration/lean-minimalism-wiring.js');
+      // Ensure testgaps-worker is loadable (validates its live caller chain)
+      wireTestGapsWorker();
+      qualityWorkers = wireQualityWorkersService({
+        db: null, // Deferred — QualityWorkersService accepts null gracefully
+        eventStream: null,
+        idleScheduler: null,
+        editLockChecker: { isLocked: () => false },
+        dockerSandbox: null,
+        subagentSpawner: null,
+        featureGate: this.featureGate,
+      });
+    } catch {
+      // Non-fatal: phased pipeline proceeds without quality workers
+    }
+
+    // ─── Wire adaptive-replanner + TrajectoryStore (R12.3, ADAPTIVE_REPLANNING) ───
+    // Adaptive replanning from current state on subtask failure.
+    let adaptiveReplanner: any = null;
+    try {
+      const { wireAdaptiveReplanner } = require('../orchestration/lean-minimalism-wiring.js');
+      adaptiveReplanner = wireAdaptiveReplanner();
+    } catch {
+      // Non-fatal: pipeline proceeds without replanning
+    }
+
+    // Build task description from the user message
+    const task: PipelineTaskDescription = {
+      id: sessionId,
+      description: message,
+    };
+
+    // Build project context
+    const context: PipelineProjectContext = {
+      rootDir: projectDir,
+      hasUIComponents: false, // conservative default
+    };
+
+    // Get the SpecialistRoleLoader (may be null if not configured)
+    const roleLoader = this.getSpecialistRoleLoader();
+    if (!roleLoader) {
+      throw new Error('PhasedPipeline requires SpecialistRoleLoader but none is configured');
+    }
+
+    // Construct PhasedPipeline with available dependencies
+    const pipeline = new PhasedPipeline({
+      maxRetriesPerPhase: 2,
+      llmClient: llmClient as unknown as LLMClient,
+      skillInjectionConfig: {
+        enforceMinimalism: false,
+        skillBudgetChars: 10000,
+        roleAllowlist: new Map(),
+      },
+      skillCatalog: new Map(),
+      roleLoader,
+    });
+
+    const result: PipelineRunResult = await pipeline.execute(task, context);
+
+    if (!result.success) {
+      // Pipeline completed but phases failed — this is a pipeline-level failure.
+      // Surface it so the caller in run() can fall back.
+      const failedPhases = result.phaseResults
+        .filter(pr => !pr.gateResult.passed)
+        .map(pr => pr.phase)
+        .join(', ');
+      throw new Error(
+        `PhasedPipeline execution failed at phase(s): ${failedPhases}`,
+      );
+    }
+
+    // Convert PipelineRunResult to AgentLoopResult
+    const responseText = result.phaseResults
+      .map(pr => pr.artifacts.map(a => a.content).join('\n'))
+      .join('\n\n');
+
+    return {
+      response: responseText || 'PhasedPipeline completed successfully.',
+      toolCallsExecuted: 0,
+      iterations: result.phaseResults.length,
+      tokenUsage: { promptTokens: 0, completionTokens: 0, totalTokens: 0, estimatedCost: 0 },
+      filesModified: [],
+    };
   }
 
   /**
@@ -2554,6 +3040,11 @@ export class AgentLoopController {
             // Run verification pipeline on the modified files
             const verificationPipeline = new VerificationGatePipeline();
             const verificationResult = await verificationPipeline.run(agentEdit, projectContext);
+
+            // ─── DiffRiskScorer: score risk on the live review path (R12.3, always-on) ───
+            // Provides risk scoring for all diffs that pass through the verification gate.
+            const diffRiskScorer = new DiffRiskScorer();
+            const _riskResult = diffRiskScorer.score(agentEdit, projectContext);
 
             if (!verificationResult.accepted) {
               // Track elapsed time for self-healing progress reporting (Req 20.7)

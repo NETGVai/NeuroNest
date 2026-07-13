@@ -56,7 +56,9 @@ export interface SwarmCoordinatorLike {
 
 /**
  * Minimal interface for the Loop_Runner used in loop mode.
- * The actual LoopRunner implementation will be provided by the loop-engine subsystem.
+ * A concrete LoopRunner implementation must be injected by the caller.
+ * (The former loop-engine subsystem was removed — spec orphaned-code-remediation
+ *  task 14.2, R10 REMOVE disposition.)
  *
  * Requirements: 6.2, 6.5
  */

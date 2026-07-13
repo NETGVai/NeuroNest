@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 import path from 'node:path';
-import os from 'node:os';
 import fs from 'node:fs';
+import { getDataDirectory } from './data-directory.js';
 import * as initialSchema from './migrations/001-initial-schema.js';
 import * as skillsSchema from './migrations/002-skills-schema.js';
 import * as multicaIntegration from './migrations/003-multica-integration.js';
@@ -43,6 +43,7 @@ import * as neuronestEnhanced from './migrations/038-neuronest-enhanced.js';
 import * as productionUxAudit from './migrations/039-production-ux-audit.js';
 import * as unifiedIntentGate from './migrations/040-unified-intent-gate.js';
 import * as loopStorage from './migrations/041-loop-storage.js';
+import * as accessibilityFriction from './migrations/042-accessibility-friction.js';
 
 export interface Migration {
   version: number;
@@ -50,14 +51,78 @@ export interface Migration {
   up: (db: Database.Database) => void;
 }
 
-const migrations: Migration[] = [initialSchema, skillsSchema, multicaIntegration, agentSkillsIntegration, costRecords, securityScans, longTermMemory, sandboxSessions, mcpServers, memoryFts, diffReview, multiSession, extensions, newFeatures, plandexFeatures, advancedFeatures, remainingFeatures, gooseFeatures, sentruxFeatures, sreFeatures, helmorFeatures, factoryFeatures, coderFeatures, groundingAudit, incrementalIndexing, chatMessagesOverflow, runtimeSandboxGuardrails, errorSizeSamples, pipelineEvents, metricSamples, errorSizeSamplesBackfill, specMessageMode, secretsV2, multiChatSessions, agentLoopMetrics, featureIntegration, traceProvenanceColumns, neuronestEnhanced, productionUxAudit, unifiedIntentGate, loopStorage];
+const migrations: Migration[] = [initialSchema, skillsSchema, multicaIntegration, agentSkillsIntegration, costRecords, securityScans, longTermMemory, sandboxSessions, mcpServers, memoryFts, diffReview, multiSession, extensions, newFeatures, plandexFeatures, advancedFeatures, remainingFeatures, gooseFeatures, sentruxFeatures, sreFeatures, helmorFeatures, factoryFeatures, coderFeatures, groundingAudit, incrementalIndexing, chatMessagesOverflow, runtimeSandboxGuardrails, errorSizeSamples, pipelineEvents, metricSamples, errorSizeSamplesBackfill, specMessageMode, secretsV2, multiChatSessions, agentLoopMetrics, featureIntegration, traceProvenanceColumns, neuronestEnhanced, productionUxAudit, unifiedIntentGate, loopStorage, accessibilityFriction];
 
 /**
- * Returns the default database path: ~/.ai-superagent/data.db
+ * Validates the migration registry is contiguous (versions 1..N) and the
+ * registered count matches the number of migration files in the migrations directory.
+ *
+ * Throws an error identifying the drift if:
+ * - Registered versions are not a contiguous sequence from 1 to N
+ * - The registered count does not equal the migration file count
+ *
+ * Requirements: 21.3, 21.4
+ */
+export function validateMigrationRegistry(
+  migrationsDir?: string
+): void {
+  const resolvedDir = migrationsDir ?? path.join(__dirname, 'migrations');
+
+  // Validate contiguity: versions must be exactly 1, 2, 3, ..., N
+  const registeredVersions = migrations.map((m) => m.version).sort((a, b) => a - b);
+  const expectedCount = registeredVersions.length;
+
+  for (let i = 0; i < expectedCount; i++) {
+    const expected = i + 1;
+    const actual = registeredVersions[i];
+    if (actual !== expected) {
+      const missing: number[] = [];
+      const expectedSet = new Set(Array.from({ length: expectedCount }, (_, idx) => idx + 1));
+      for (const v of expectedSet) {
+        if (!registeredVersions.includes(v)) missing.push(v);
+      }
+      const extra = registeredVersions.filter((v) => v > expectedCount || v < 1);
+      throw new Error(
+        `Migration registry drift: versions are not contiguous 1..${expectedCount}. ` +
+        `Missing versions: [${missing.join(', ')}]. ` +
+        `Unexpected versions: [${extra.join(', ')}]. ` +
+        `Registered: [${registeredVersions.join(', ')}]`
+      );
+    }
+  }
+
+  // Validate file count matches registered count
+  if (fs.existsSync(resolvedDir)) {
+    const migrationFiles = fs.readdirSync(resolvedDir).filter(
+      (f) => /^\d{3}-.*\.ts$/.test(f)
+    );
+    const fileCount = migrationFiles.length;
+
+    if (fileCount !== expectedCount) {
+      const registeredSet = new Set(registeredVersions);
+      const fileVersions = migrationFiles
+        .map((f) => parseInt(f.slice(0, 3), 10))
+        .filter((v) => !isNaN(v));
+      const unregistered = fileVersions.filter((v) => !registeredSet.has(v));
+
+      throw new Error(
+        `Migration registry drift: registered ${expectedCount} migrations but found ${fileCount} migration files in ${resolvedDir}. ` +
+        `Unregistered file versions: [${unregistered.join(', ')}]`
+      );
+    }
+  }
+}
+
+/**
+ * Returns the default database path: ~/.neuronest/data.db
+ *
+ * Uses the Data_Directory_Accessor as the single source of truth for the
+ * data directory path.
+ *
+ * @see Requirements 21.5, 21.6, 21.7
  */
 export function getDefaultDbPath(): string {
-  const dir = path.join(os.homedir(), '.ai-superagent');
-  fs.mkdirSync(dir, { recursive: true });
+  const dir = getDataDirectory();
   return path.join(dir, 'data.db');
 }
 

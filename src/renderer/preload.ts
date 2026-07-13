@@ -34,6 +34,9 @@ const INVOKE_CHANNELS = [
   'enhanced-firewall-get-config', 'enhanced-firewall-update-policy', 'enhanced-firewall-update-redaction-config', 'enhanced-firewall-set-agent-policy', 'enhanced-firewall-set-project-policy', 'enhanced-firewall-apply-preset', 'enhanced-firewall-enable-llm', 'enhanced-firewall-get-stats', 'enhanced-firewall-test-input', 'enhanced-firewall-export-config', 'enhanced-firewall-import-config', 'enhanced-firewall-reset-config', 'enhanced-firewall-test-llm-connection',
   // Graph management
   'graph-has-graph', 'graph-generate', 'graph-load', 'graph-query', 'graph-stats',
+  // Codebase analysis
+  'codebase-analyze', 'codebase-blast-radius', 'codebase-health-score', 'codebase-patterns',
+  'codebase-layers', 'codebase-communities', 'codebase-path-trace', 'codebase-query', 'codebase-heatmap',
   // Multica integration
   'multica-get-tasks', 'multica-get-task-stats', 'multica-get-agent-tasks', 'multica-add-task-comment', 'multica-get-agent-skills', 'multica-assign-skill', 'multica-get-runtimes', 'multica-register-runtime',
   'skills:list', 'skills:get', 'skills:update', 'skills:install', 'skills:remove',
@@ -120,6 +123,18 @@ const INVOKE_CHANNELS = [
   'metrics:get-config',
   // Pipeline Trace
   'trace:list', 'trace:get',
+  // P5 orphan sweep (task 23.2) — Category A IPC handlers wired onto the live
+  // path in registerIPCHandlers (src/main/ipc.ts); allowlisted here so their
+  // renderer-side callers (visual-diff-panel, artifact-panel, sandbox preview,
+  // benchmark-panel, plugin-registry-panel, drift-dashboard-panel,
+  // pipeline-panel, security stats) can actually reach them.
+  'vision:analyze', 'vision:compare', 'vision:diagram',
+  'artifact:list', 'artifact:get', 'artifact:delete', 'artifact:history', 'artifact:diff',
+  'sandbox:boot', 'sandbox:write', 'sandbox:run', 'sandbox:preview-url', 'sandbox:terminate',
+  'bench:list-profiles', 'bench:create-profile', 'bench:run', 'bench:results', 'bench:trends',
+  'plugin:catalog', 'plugin:install', 'plugin:uninstall', 'plugin:enable', 'plugin:disable', 'plugin:permissions', 'plugin:list',
+  'pipeline:define', 'pipeline:execute', 'pipeline:cancel', 'pipeline:list', 'quickaction:execute', 'quickaction:list',
+  'drift:get-state', 'security:remediation-stats', 'get-session-metrics', 'get-cumulative-metrics',
   // Kanban Board
   'kanban:get-board', 'kanban:add-column', 'kanban:delete-column', 'kanban:add-card', 'kanban:update-card', 'kanban:move-card', 'kanban:delete-card',
   // Embedded Browser
@@ -269,6 +284,8 @@ const RECEIVE_CHANNELS = [
   'provider-health-update', 'autonomy-action', 'agentmemory-status',
   // Agent Loop progress
   'agent-progress',
+  // Codebase analysis progress
+  'codebase-progress',
   // Agent Skills real-time updates
   'agent-skills:real-time-update',
   // Runtime environment

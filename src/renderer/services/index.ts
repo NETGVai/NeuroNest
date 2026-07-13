@@ -18,3 +18,5 @@ export {
   renderHistoricalActionButtons,
 } from './message-action-store';
 export { SpecUIController } from './spec-ui-integration';
+export { UserInputBridge } from './user-input-bridge';
+export type { RendererUserInputRequest } from './user-input-bridge';

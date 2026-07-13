@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  117 specialized AI agents. 14 departments. One desktop app.<br/>
+  118 specialized AI agents. 14 departments. One desktop app.<br/>
   Ship software faster with swarm intelligence, not just autocomplete.
 </p>
 
@@ -17,8 +17,8 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-000?style=flat-square&logo=electron" alt="Platforms" />
-  <img src="https://img.shields.io/badge/version-0.1.573-blue?style=flat-square" alt="Version" />
-  <img src="https://img.shields.io/badge/agents-117-purple?style=flat-square" alt="Agents" />
+  <img src="https://img.shields.io/badge/version-0.1.586-blue?style=flat-square" alt="Version" />
+  <img src="https://img.shields.io/badge/agents-118-purple?style=flat-square" alt="Agents" />
   <img src="https://img.shields.io/badge/providers-11-green?style=flat-square" alt="Providers" />
   <a href="./LICENSE"><img src="https://img.shields.io/badge/License-BUSL--1.1-yellow?style=flat-square" alt="License: BUSL-1.1" /></a>
 </p>
@@ -27,7 +27,7 @@
 
 ## What is NeuroNest?
 
-NeuroNest is a desktop AI development environment that goes beyond code completion. Instead of a single copilot, you get an entire engineering organization — 117 specialist agents across 14 departments — that collaborates through swarm orchestration to tackle complex software tasks.
+NeuroNest is a desktop AI development environment that goes beyond code completion. Instead of a single copilot, you get an entire engineering organization — 118 specialist agents across 14 departments — that collaborates through swarm orchestration to tackle complex software tasks.
 
 Ask it to build a feature. It plans the architecture, assigns specialists, selects the optimal execution mode, runs agents in parallel, verifies results with an adversarial reviewer, and delivers tested code with an immutable receipt.
 
@@ -35,7 +35,7 @@ Ask it to build a feature. It plans the architecture, assigns specialists, selec
 
 ## Key Features
 
-### 117 Specialized AI Agents
+### 118 Specialized AI Agents
 
 A full engineering team across 14 departments: Engineering, Design, Marketing, Product, Project Management, Testing, Support, Specialized, Consensus, Infrastructure, Optimization, Research, Software Delivery, and NeuroNest Orchestration. Each agent has focused expertise, domain-specific system prompts, and scoped tool permissions.
 
@@ -189,7 +189,7 @@ Policy presets: Standard, Strict, Enterprise. Per-agent and per-project policy o
 │                                                                      │
 │  ┌──────────────────────────────────────────────────────────────-┐   │
 │  │ Infrastructure                                                │   │
-│  │ SQLite (WAL, 41 migrations) · Event Bus · Checkpoint Service  │   │
+│  │ SQLite (WAL, 42 migrations) · Event Bus · Checkpoint Service  │   │
 │  │ Cost Tracking · Feature Gate System · Cron Scheduler          │   │
 │  │ Firewall · Action Analyzer · Credential Vault · Graph Manager │   │
 │  └─────────────────────────────────────────────────────────────-─┘   │
@@ -201,7 +201,7 @@ Policy presets: Standard, Strict, Enterprise. Per-agent and per-project policy o
 - Loop mode: LoopSpec → Runner state machine → Pass execution → Verification → Feedback → Receipt
 - Provider resolution: Registry lookup → Priority selection → Rate-limit fallback → Failover chain
 
-**Persistence:** SQLite with 41 migrations covering sessions, messages, skills, agent tasks, cost records, security scans, long-term memory, loop specs, loop runs, loop passes, condensation logs, and more.
+**Persistence:** SQLite with 42 migrations covering sessions, messages, skills, agent tasks, cost records, security scans, long-term memory, loop specs, loop runs, loop passes, condensation logs, and more.
 
 ---
 
@@ -236,7 +236,7 @@ Policy presets: Standard, Strict, Enterprise. Per-agent and per-project policy o
 | | Community | Professional | Enterprise |
 |---|-----------|-------------|-----------|
 | Price | Free | $29/month | Contact Sales |
-| AI Agents | 117 | 117 | 117 |
+| AI Agents | 118 | 118 | 118 |
 | Swarm Orchestration | ✓ | ✓ | ✓ |
 | Loop Engine | ✓ | ✓ | ✓ |
 | Multi-Model Support | ✓ | ✓ | ✓ |
@@ -266,9 +266,9 @@ Policy presets: Standard, Strict, Enterprise. Per-agent and per-project policy o
 
 ## Tech Stack
 
-- **Runtime:** Electron 33, Node.js 20+
+- **Runtime:** Electron 43, Node.js 22+
 - **Language:** TypeScript (main process), Vanilla JS (renderer)
-- **Database:** SQLite via better-sqlite3 (WAL mode, 41 migrations)
+- **Database:** SQLite via better-sqlite3 (WAL mode, 42 migrations)
 - **Editor:** Monaco Editor
 - **Graphs:** Cytoscape.js
 - **Voice:** ONNX Runtime (Supertonic TTS, on-device)

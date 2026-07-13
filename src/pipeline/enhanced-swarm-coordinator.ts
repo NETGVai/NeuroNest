@@ -10,6 +10,7 @@ import { LLMClient } from './llm-client';
 import { AGENT_REGISTRY } from '../agents/agent-registry';
 import { PERF_FLAGS } from '../main/performance/feature-flags';
 import { GCF_PRIMER } from '../serializers/gcf-encoder';
+import { resolveSkillForInjection, buildSkillPromptBlock, type MatchedSkill } from './swarm-skill-injection';
 import type Database from 'better-sqlite3';
 
 // ── Enhanced Event Types ──
@@ -61,6 +62,8 @@ export class EnhancedSwarmCoordinator extends SwarmCoordinator {
   private sessionId: string | null = null;
   private enhancedMemoryPool: SwarmMemoryPool;
   private enhancedLLMClient: LLMClient | null;
+  /** Skill IDs actually injected into an agent's prompt during the current run (Requirement: accurate "Skills Used" reporting). */
+  private appliedSkillIds: Set<string> = new Set();
 
   constructor(llmClient: LLMClient | null, db: Database.Database) {
     // Create memory pool for parent constructor
@@ -93,7 +96,8 @@ export class EnhancedSwarmCoordinator extends SwarmCoordinator {
   ): Promise<EnhancedSwarmResult> {
     this.sessionId = sessionId;
     const startTime = Date.now();
-    
+    this.appliedSkillIds = new Set();
+
     // Create tasks from orchestrator plan
     const tasks = await this.createTasksFromPlan(plan, sessionId);
     
@@ -319,22 +323,25 @@ export class EnhancedSwarmCoordinator extends SwarmCoordinator {
       // Start task
       await this.enhancedAgentManager.startTask(task.id, agentTask.id);
 
-      // Check for applicable skills
-      const skills = await this.enhancedAgentManager.getAgentSkills(agentTask.id);
-      const applicableSkill = await this.findApplicableSkill(skills, task.description || '');
-      
+      // Resolve the skill most relevant to this task's description (real
+      // keyword-overlap matching against the agent's assigned skills, not
+      // just "first expert-level skill") and load its content for injection.
+      const applicableSkill = resolveSkillForInjection(this.db, agentTask.id, task.description || agentTask.task || '');
+
       if (applicableSkill) {
+        this.appliedSkillIds.add(applicableSkill.skillId);
         onEvent?.({
           type: 'skill_applied',
           taskId: task.id,
           agentId: agentTask.id,
           skillId: applicableSkill.skillId,
-          content: `Applying skill: ${applicableSkill.skillId}`
+          content: `Applying skill: ${applicableSkill.skillName}`
         });
       }
 
-      // Execute with progress tracking
-      const response = await this.executeAgentTask(agentTask, task, onEvent, agentLLMConfigs);
+      // Execute with progress tracking — the matched skill's content (if any)
+      // is injected into the agent's system prompt inside executeAgentTask.
+      const response = await this.executeAgentTask(agentTask, task, onEvent, agentLLMConfigs, applicableSkill);
 
       // Complete task
       await this.enhancedAgentManager.completeTask(task.id, agentTask.id, response);
@@ -405,7 +412,8 @@ export class EnhancedSwarmCoordinator extends SwarmCoordinator {
     agentTask: OrchestratorAgentTask,
     task: AgentTask,
     onEvent?: EnhancedSwarmEventCallback,
-    agentLLMConfigs?: Map<string, LLMClient>
+    agentLLMConfigs?: Map<string, LLMClient>,
+    applicableSkill?: MatchedSkill | null
   ): Promise<string> {
     const agentDef = AGENT_REGISTRY.find(a => a.id === agentTask.id);
     
@@ -480,6 +488,13 @@ export class EnhancedSwarmCoordinator extends SwarmCoordinator {
       '=== END FORMAT ===';
 
     let systemPrompt = (agentDef?.systemPrompt || 'You are a helpful AI assistant.') + outputFormat;
+
+    // ── Skill injection: append the matched skill's content as reference
+    // material for the agent (Requirement: agents actually use assigned
+    // skills, not just report a "skill_applied" event with no effect). ──
+    if (applicableSkill) {
+      systemPrompt += buildSkillPromptBlock(applicableSkill);
+    }
 
     // ── F10 GCF primer injection ──
     if (PERF_FLAGS.GCF_WIRE_FORMAT) {
@@ -603,16 +618,6 @@ export class EnhancedSwarmCoordinator extends SwarmCoordinator {
     return 'medium';
   }
 
-  private async findApplicableSkill(skills: any[], taskDescription: string): Promise<{ skillId: string } | null> {
-    // Simple skill matching - in a real implementation, this would use semantic similarity
-    for (const skill of skills) {
-      if (skill.proficiencyLevel === 'expert' || skill.proficiencyLevel === 'advanced') {
-        return { skillId: skill.skillId };
-      }
-    }
-    return null;
-  }
-
   private isBlocker(errorMessage: string): boolean {
     // Determine if an error is a blocker vs a failure using expanded keyword matching
     const blockerKeywords = [
@@ -647,9 +652,10 @@ export class EnhancedSwarmCoordinator extends SwarmCoordinator {
     return this.isBlocker(errorMessage);
   }
 
-  private async getSkillsUsedInTasks(taskIds: string[]): Promise<string[]> {
-    // Query skills used in tasks - placeholder implementation
-    return [];
+  private async getSkillsUsedInTasks(_taskIds: string[]): Promise<string[]> {
+    // Reports skill ids actually injected into an agent's system prompt
+    // during this run (populated in executeAgentTask via resolveSkillForInjection).
+    return [...this.appliedSkillIds];
   }
 
   private async getBlockerCountForTasks(taskIds: string[]): Promise<number> {

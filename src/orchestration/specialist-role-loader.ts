@@ -8,14 +8,16 @@
  *
  * Tags outputs with originating role for provenance tracking.
  *
- * Requirements: 15.1, 15.2, 15.3, 15.4, 15.5, 15.6
+ * Requirements: 15.1, 15.2, 15.3, 15.4, 15.5, 15.6, 10.1
  */
+
+import { type Role } from './role-vocabulary.js';
 
 // ─── Types ──────────────────────────────────────────────────────
 
 export interface SpecialistRole {
   id: string;
-  name: 'architect' | 'implementer' | 'reviewer' | 'tester' | string;
+  name: Role | string;
   systemPrompt: string;
   allowedTools: string[];       // tool IDs this role can use
   filePermissions: string[];    // glob patterns for allowed file access

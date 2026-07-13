@@ -35,6 +35,7 @@ import { stopOpenMythos } from './openmythos-manager';
 import { shutdownAgentSkillsService } from '../agent-skills/main-process-integration.js';
 import type { WindowState } from '../shared/types';
 import { hardenWindow, installCSP, getSecureWebPreferences, DEFAULT_SECURITY_POLICY } from './security/window-hardener';
+import { migrateLegacyData } from '../storage/data-directory';
 
 // Auth system imports
 import { CertificateManager } from './auth/certificate-manager';
@@ -290,6 +291,21 @@ if (!gotTheLock) {
 }
 
 app.whenReady().then(async () => {
+  // One-time migration of legacy data (~/.ai-superagent) into the canonical
+  // data directory (~/.neuronest) — must run before any DB access so that
+  // existing licenses, provider configs, and other user data carry over
+  // from pre-rebrand installs. Idempotent: no-ops once the marker is written.
+  try {
+    const migrationResult = migrateLegacyData();
+    if (migrationResult.status === 'completed') {
+      console.log(`[Startup] Legacy data migration completed: ${migrationResult.message}`);
+    } else if (migrationResult.status === 'failed') {
+      console.error(`[Startup] Legacy data migration failed (will retry next launch): ${migrationResult.message}`);
+    }
+  } catch (migrationErr: unknown) {
+    console.error('[Startup] Legacy data migration threw unexpectedly:', migrationErr);
+  }
+
   const mode = getLaunchMode();
 
   if (mode === 'cli') {

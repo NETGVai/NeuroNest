@@ -127,6 +127,22 @@ jobs:
         if: github.event_name == 'pull_request' && !contains(github.head_ref, 'maintenance') && !contains(github.head_ref, 'deps/') && !contains(github.head_ref, 'chore/')
         run: npx changeset status --since=origin/main
 
+      # ── CI drift guards (fail build on drift) ──
+      - name: Drift guard — agent count matches registry
+        run: npm run check:agent-count
+
+      - name: Drift guard — migration contiguity
+        run: npm run check:migrations
+
+      - name: Drift guard — IPC allowlist/handler parity
+        run: npm run check:ipc
+
+      - name: Drift guard — referenced file existence
+        run: npm run check:refs
+
+      - name: Drift guard — orphan detection
+        run: npm run check:orphans
+
       # ── Security & hygiene checks ──
       - name: Verify NeuroNest ↔ llm-proxy repo separation and secret hygiene
         run: node scripts/check-proxy-separation.mjs

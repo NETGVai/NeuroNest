@@ -38,10 +38,9 @@ export const INTEGRATIONS: Integration[] = [
     name: 'WhatsApp',
     emoji: '💬',
     category: 'Chat Providers',
-    description: 'WhatsApp Business Cloud API or Baileys (Web protocol)',
+    description: 'WhatsApp Business Cloud API (official, Cloud API only)',
     actions: ['send message', 'receive message', 'send media'],
     configFields: [
-      { key: 'mode', label: 'Connection Mode', type: 'select', options: ['baileys', 'cloud'] },
       { key: 'accessToken', label: 'Access Token (Cloud API)', type: 'password', placeholder: 'EAAx...' },
       { key: 'phoneNumberId', label: 'Phone Number ID (Cloud API)', type: 'text', placeholder: '1234567890' },
     ],
@@ -428,8 +427,8 @@ export const INTEGRATIONS: Integration[] = [
     name: 'Email',
     emoji: '✉️',
     category: 'Social',
-    description: 'Email communication',
-    actions: ['send email', 'read inbox', 'search', 'draft'],
+    description: 'Email communication (send-only via SMTP — receiving requires IMAP which is not currently implemented)',
+    actions: ['send email'],
     configFields: [{ key: 'enabled', label: 'Enabled', type: 'toggle' }, { key: 'smtpHost', label: 'SMTP Host', type: 'text', placeholder: 'smtp.gmail.com' }, { key: 'smtpPort', label: 'SMTP Port', type: 'text', placeholder: '587' }, { key: 'username', label: 'Username', type: 'text' }, { key: 'password', label: 'Password', type: 'password' }],
   },
 ];

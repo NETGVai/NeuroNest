@@ -15,6 +15,48 @@ import { encodeGeneric } from '../serializers/gcf-encoder';
 import { PERF_FLAGS } from '../main/performance/feature-flags';
 import { logger } from '../utils/logger';
 
+// ─── P0 Sanitized Environment (Requirement 2) ──────────────────────────────
+// Names copied from process.env ONLY if present. Never the whole process.env.
+
+/** Environment variable names allowed on all platforms. */
+export const ENV_ALLOWLIST_COMMON = ['PATH', 'HOME', 'LANG', 'LC_ALL', 'TZ', 'TERM'] as const;
+
+/** Additional environment variable names allowed on Windows. */
+export const ENV_ALLOWLIST_WINDOWS = ['Path', 'SystemRoot', 'COMSPEC', 'USERPROFILE', 'TEMP'] as const;
+
+/**
+ * Build a sanitized environment for spawned commands. Includes only allowlisted
+ * variables (R2.1, R2.2), omits absent variables rather than empty-substituting
+ * (R2.3), sets PWD scoped to the project directory (R2.4), includes Windows-
+ * specific vars on win32 (R2.5), and falls back to a minimal PATH when the
+ * allowlist is empty or unresolvable (R2.6). Never passes process.env by value
+ * or reference.
+ */
+export function buildSanitizedEnv(projectDir: string): NodeJS.ProcessEnv {
+  const names: readonly string[] = process.platform === 'win32'
+    ? [...ENV_ALLOWLIST_COMMON, ...ENV_ALLOWLIST_WINDOWS]
+    : ENV_ALLOWLIST_COMMON;
+
+  const env: NodeJS.ProcessEnv = {};
+  for (const name of names) {
+    const v = process.env[name];
+    if (v !== undefined) {
+      env[name] = v;
+    }
+  }
+
+  // Working dir scoped to project (R2.4)
+  env.PWD = projectDir;
+
+  // R2.6: if no allowlisted variable was resolved, still provide minimal PATH/shell.
+  // Check keys length === 1 because PWD is always set above.
+  if (Object.keys(env).length === 1) {
+    env.PATH = process.env.PATH ?? (process.platform === 'win32' ? '' : '/usr/bin:/bin');
+  }
+
+  return env;
+}
+
 export type ToolType = 'terminal' | 'file_read' | 'file_write' | 'file_list' | 'file_delete';
 
 export interface ToolExecRequest {
@@ -84,7 +126,7 @@ export function executeTerminal(request: ToolExecRequest): ToolExecResult {
       encoding: 'utf-8',
       timeout,
       maxBuffer: 1024 * 1024, // 1MB
-      env: { ...process.env, HOME: os.homedir() },
+      env: buildSanitizedEnv(projectDir),
     });
 
     return { success: true, tool: 'terminal', output: output.slice(0, 50000), durationMs: Date.now() - start, exitCode: 0 };

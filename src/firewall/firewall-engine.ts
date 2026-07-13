@@ -41,11 +41,18 @@ export interface FirewallEvent {
   projectId?: string;
 }
 
+export interface FirewallError {
+  ruleId: string;
+  message: string;
+  timestamp: number;
+}
+
 export interface EvalResult {
   passed: boolean;
   blocked: boolean;
   sanitized: string;
   events: FirewallEvent[];
+  errors: FirewallError[];
   tier: number;
   latencyMs: number;
 }
@@ -60,7 +67,7 @@ export const DEFAULT_RULES: FirewallRule[] = [
   { id: 'inj-01', name: 'System prompt override', tier: 1, enabled: true, pattern: '(?i)(ignore|forget|disregard)\\s+(all\\s+)?(previous|prior|above|earlier)\\s+(instructions|prompts|rules)', category: 'injection', severity: 'critical', action: 'block', description: 'Detects attempts to override system instructions' },
   { id: 'inj-02', name: 'Role hijacking', tier: 1, enabled: true, pattern: '(?i)(you\\s+are\\s+now|act\\s+as|pretend\\s+to\\s+be|roleplay\\s+as)\\s+(a\\s+)?(hacker|admin|root|unrestricted)', category: 'injection', severity: 'high', action: 'block', description: 'Detects role hijacking attempts' },
   { id: 'inj-03', name: 'Instruction injection', tier: 1, enabled: true, pattern: '(?i)(\\[SYSTEM\\]|\\[INST\\]|<\\|im_start\\|>|<\\|system\\|>)', category: 'injection', severity: 'critical', action: 'block', description: 'Detects raw instruction format injection' },
-  { id: 'inj-04', name: 'Jailbreak keywords', tier: 1, enabled: true, pattern: '(?i)(DAN|do\\s+anything\\s+now|jailbreak|bypass\\s+safety|ignore\\s+safety)', category: 'jailbreak', severity: 'high', action: 'block', description: 'Detects common jailbreak patterns' },
+  { id: 'inj-04', name: 'Jailbreak keywords', tier: 1, enabled: true, pattern: '(?i)(?<![A-Za-z0-9_])(?:DAN|do\\s+anything\\s+now|jailbreak|bypass\\s+safety|ignore\\s+safety)(?![A-Za-z0-9_])', category: 'jailbreak', severity: 'high', action: 'block', description: 'Detects common jailbreak patterns' },
   { id: 'inj-05', name: 'Prompt leaking', tier: 1, enabled: true, pattern: '(?i)(show|reveal|print|output|display)\\s+(your|the|system)\\s+(prompt|instructions|rules|config)', category: 'injection', severity: 'medium', action: 'warn', description: 'Detects attempts to extract system prompts' },
 
   // Tier 2: Secrets detection
@@ -72,7 +79,7 @@ export const DEFAULT_RULES: FirewallRule[] = [
   { id: 'sec-06', name: 'JWT token', tier: 2, enabled: true, pattern: 'eyJ[A-Za-z0-9_-]{10,}\\.eyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}', category: 'secrets', severity: 'high', action: 'block', description: 'Blocks JWT tokens in output' },
 
   // Tier 3: Policy enforcement
-  { id: 'pol-01', name: 'Unsafe shell commands', tier: 3, enabled: true, pattern: '(?i)(rm\\s+-rf\\s+/|sudo\\s+rm|mkfs|dd\\s+if=|:(){ :|fork\\s+bomb)', category: 'unsafe-command', severity: 'critical', action: 'block', description: 'Blocks destructive system commands' },
+  { id: 'pol-01', name: 'Unsafe shell commands', tier: 3, enabled: true, pattern: '(?i)(rm\\s+-rf\\s+/|sudo\\s+rm|mkfs|dd\\s+if=|:[\\t ]*\\([\\t ]*\\)[\\t ]*\\{[\\t ]*:[\\t ]*\\|[\\t ]*:[\\t ]*&[\\t ]*\\}[\\t ]*;[\\t ]*:)', category: 'unsafe-command', severity: 'critical', action: 'block', description: 'Blocks destructive system commands' },
   { id: 'pol-02', name: 'Network exfiltration', tier: 3, enabled: true, pattern: '(?i)(curl|wget|nc|ncat)\\s+.*\\s+(\\d{1,3}\\.){3}\\d{1,3}', category: 'unsafe-command', severity: 'high', action: 'warn', description: 'Detects potential data exfiltration via network tools' },
   { id: 'pol-03', name: 'Eval/exec injection', tier: 3, enabled: true, pattern: '(?i)(eval|exec|Function)\\s*\\(\\s*["\']', category: 'unsafe-command', severity: 'high', action: 'warn', description: 'Detects dynamic code execution patterns' },
   { id: 'pol-04', name: 'External API limit', tier: 3, enabled: true, pattern: '(?i)fetch\\s*\\(\\s*["\']https?://', category: 'policy', severity: 'low', action: 'log', description: 'Logs external API calls by agents' },
@@ -81,6 +88,7 @@ export const DEFAULT_RULES: FirewallRule[] = [
 export class FirewallEngine implements SecurityGate {
   private rules: FirewallRule[];
   private events: FirewallEvent[] = [];
+  private errors: FirewallError[] = [];
   private stats = { total: 0, blocked: 0, warned: 0, passed: 0 };
   // Pre-compiled regex cache — avoids recompiling on every evaluate() call
   private compiledPatterns = new Map<string, RegExp>();
@@ -98,7 +106,15 @@ export class FirewallEngine implements SecurityGate {
         const flags = rule.pattern.startsWith('(?i)') ? 'gi' : 'g';
         const cleanPattern = rule.pattern.replace(/^\(\?i\)/, '');
         this.compiledPatterns.set(rule.id, new RegExp(cleanPattern, flags));
-      } catch {}
+      } catch (err) {
+        const error: FirewallError = {
+          ruleId: rule.id,
+          message: `Failed to compile pattern for rule '${rule.id}': ${err instanceof Error ? err.message : String(err)}`,
+          timestamp: Date.now(),
+        };
+        this.errors.push(error);
+        console.error(`[FirewallEngine] ${error.message}`);
+      }
     }
   }
 
@@ -106,9 +122,13 @@ export class FirewallEngine implements SecurityGate {
   evaluate(input: string, opts?: { agentId?: string; projectId?: string }): EvalResult {
     const start = Date.now();
     const events: FirewallEvent[] = [];
+    const errors: FirewallError[] = [];
     let sanitized = input;
-    let blocked = false;
     let maxTier = 0;
+
+    // Track the highest-severity per-input action: block > warn > log
+    // This determines which counter to increment (at most once per input).
+    let highestAction: 'block' | 'warn' | 'log' = 'log';
 
     for (const rule of this.rules) {
       if (!rule.enabled) continue;
@@ -147,18 +167,37 @@ export class FirewallEngine implements SecurityGate {
             regex.lastIndex = 0;
             sanitized = sanitized.replace(regex, '');
           }
+
+          // Compute highest-severity action for this input (block > warn > log)
           if (rule.action === 'block') {
-            blocked = true;
-            this.stats.blocked++;
-          } else if (rule.action === 'warn') {
-            this.stats.warned++;
+            highestAction = 'block';
+          } else if (rule.action === 'warn' && highestAction !== 'block') {
+            highestAction = 'warn';
           }
         }
-      } catch {}
+      } catch (err) {
+        const error: FirewallError = {
+          ruleId: rule.id,
+          message: `Error evaluating rule '${rule.id}': ${err instanceof Error ? err.message : String(err)}`,
+          timestamp: Date.now(),
+        };
+        errors.push(error);
+        this.errors.push(error);
+        console.error(`[FirewallEngine] ${error.message}`);
+        // Continue evaluating remaining rules (R23.8)
+      }
     }
 
+    // Per-input counter semantics: increment at most once per input (R23.6, R23.7)
+    const blocked = highestAction === 'block';
     this.stats.total++;
-    if (!blocked) this.stats.passed++;
+    if (blocked) {
+      this.stats.blocked++;
+    } else if (highestAction === 'warn') {
+      this.stats.warned++;
+    } else {
+      this.stats.passed++;
+    }
     this.trimEvents();
 
     return {
@@ -166,6 +205,7 @@ export class FirewallEngine implements SecurityGate {
       blocked,
       sanitized,
       events,
+      errors,
       tier: maxTier,
       latencyMs: Date.now() - start,
     };
@@ -173,6 +213,7 @@ export class FirewallEngine implements SecurityGate {
 
   getRules(): FirewallRule[] { return this.rules; }
   getEvents(limit?: number): FirewallEvent[] { return limit ? this.events.slice(-limit) : this.events; }
+  getErrors(): FirewallError[] { return [...this.errors]; }
   getStats() { return { ...this.stats }; }
 
   /**
@@ -242,7 +283,15 @@ export class FirewallEngine implements SecurityGate {
         const flags = rule.pattern.startsWith('(?i)') ? 'gi' : 'g';
         const cleanPattern = rule.pattern.replace(/^\(\?i\)/, '');
         this.compiledPatterns.set(rule.id, new RegExp(cleanPattern, flags));
-      } catch {}
+      } catch (err) {
+        const error: FirewallError = {
+          ruleId: rule.id,
+          message: `Failed to compile pattern for rule '${rule.id}': ${err instanceof Error ? err.message : String(err)}`,
+          timestamp: Date.now(),
+        };
+        this.errors.push(error);
+        console.error(`[FirewallEngine] ${error.message}`);
+      }
     }
   }
   removeRule(ruleId: string): void {

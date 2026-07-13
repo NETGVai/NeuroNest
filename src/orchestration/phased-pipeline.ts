@@ -19,6 +19,7 @@ import type { LLMClient } from '../pipeline/llm-client.js';
 import type { SkillInjectionConfig, EnhancedSubagentTask } from '../pipeline/subagent-spawner.js';
 import { spawnSkillAwareSubagent } from '../pipeline/subagent-spawner.js';
 import { SpecialistRoleLoader } from './specialist-role-loader.js';
+import { type Role } from './role-vocabulary.js';
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -161,7 +162,7 @@ export const PHASE_ORDER: PipelinePhase[] = [
 const DEFAULT_MAX_RETRIES = 2;
 
 /** Role mappings for each phase to determine which specialists are spawned */
-const PHASE_ROLE_MAP: Record<PipelinePhase, string[]> = {
+const PHASE_ROLE_MAP: Record<PipelinePhase, Role[]> = {
   specification: ['architect', 'reviewer'],
   pseudocode: ['implementer'],
   architecture: ['architect', 'reviewer'],

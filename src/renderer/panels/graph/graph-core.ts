@@ -31,6 +31,8 @@ type CytoscapeInstance = {
   destroy: () => void;
   on: (event: string, selector: string | ((evt: unknown) => void), handler?: (evt: unknown) => void) => void;
   resize: () => void;
+  add: (elements: unknown[]) => void;
+  $id: (id: string) => { select: () => void; length: number };
 };
 
 type CytoscapeCollection = {
@@ -43,6 +45,8 @@ type CytoscapeCollection = {
   connectedEdges: () => CytoscapeCollection;
   connectedNodes: () => CytoscapeCollection;
   union: (other: CytoscapeCollection) => CytoscapeCollection;
+  remove: () => void;
+  jsons: () => Array<{ group: 'nodes' | 'edges'; data: Record<string, unknown>; classes?: string; position?: { x: number; y: number } }>;
 };
 
 type CytoscapeFactory = (options: Record<string, unknown>) => CytoscapeInstance;

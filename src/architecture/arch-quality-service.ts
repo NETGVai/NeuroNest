@@ -610,7 +610,7 @@ function discoverSourceFiles(projectDir: string): string[] {
  * Higher score = less bloat = better readiness. A project with zero findings
  * scores 100. The score decays based on the number of findings and total lines
  * removable. This function enables including bloat as a factor in any readiness
- * assessment (e.g. ProductionReadinessService, RepoReadinessScanner).
+ * assessment (e.g. AIReadinessService, RepoReadinessScanner).
  *
  * Requirement 7.4: THE repo readiness scanner SHALL include the bloat score
  * as a factor in overall readiness assessment.

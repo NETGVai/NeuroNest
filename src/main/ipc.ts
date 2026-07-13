@@ -1,5 +1,79 @@
 /**
  * IPC handler registration — wires renderer UI to backend subsystems.
+ *
+ * ─── P5 Comprehensive Orphan Sweep — Wire-or-Remove Decision Record ─────────
+ * (Requirement 16.1, 16.2; recorded before any action per R16.2/R16.9)
+ *
+ * WIRED IPC handlers (already called from registerIPCHandlers or electron-app.ts):
+ *   registerLicenseIPC, registerSkillPacksIPC, registerSkillsIPC,
+ *   registerAgentSkillsIPC, registerDiagnosticsIPC, registerToolApprovalIPC,
+ *   registerMultiChatIPC, registerDeerFlowIPC, registerUnifiedIntentGateIPC,
+ *   registerAuthIPC, registerSubscriptionIPC
+ *
+ * (registerLoopIpcHandlers removed with the loop-engine subsystem — spec
+ *  orphaned-code-remediation task 14.2: the loop-engine WIRE was unattainable,
+ *  so R10 switched atomically to REMOVE. See design.md R10 Disposition_Record.)
+ *
+ * UNWIRED IPC handler modules — decisions:
+ * ┌──────────────────────────────────────┬──────────┬─────────────────────────────────────────────────┐
+ * │ Module                               │ Decision │ Rationale                                       │
+ * ├──────────────────────────────────────┼──────────┼─────────────────────────────────────────────────┤
+ * │ registerVisionIPC                    │ WIRE     │ Serves live renderer vision:analyze feature      │
+ * │ registerIntentOverrideIPC            │ WIRE     │ Serves live renderer intent-override feature     │
+ * │ registerSecurityRemediationIPC       │ WIRE     │ Serves live renderer security stats panel        │
+ * │ registerMetricsIPC                   │ WIRE     │ Serves live renderer session metrics display     │
+ * │ registerPipelineIPC                  │ WIRE     │ Serves live renderer pipeline control channels   │
+ * │ registerArtifactIPC                  │ WIRE     │ Serves live renderer artifact management         │
+ * │ registerSandboxIPC                   │ WIRE     │ Serves live renderer sandbox/WebContainer UI     │
+ * │ registerApprovalGateIPC              │ WIRE     │ Serves live approval-flow response path          │
+ * │ registerBenchmarkIPC                 │ WIRE     │ Serves live renderer benchmark/perf panel        │
+ * │ registerPluginRegistryIPC            │ WIRE     │ Serves live renderer plugin management           │
+ * │ registerDriftIPC                     │ WIRE     │ Serves live renderer drift-monitor panel         │
+ * │ registerSpecHandoffIPC               │ WIRE     │ Serves live renderer spec:build action           │
+ * └──────────────────────────────────────┴──────────┴─────────────────────────────────────────────────┘
+ *
+ * REMOVED (task 23.3, R16.6): registerTraceIPC (formerly src/main/trace-ipc.ts)
+ * registered `trace:get` and `trace:list-by-session`. Its `trace:get` channel
+ * collided with the already-live pre-remediation handler registered later in
+ * this file (Pipeline Trace section, `ipcMain.handle('trace:get', ...)` backed
+ * by PipelineTraceService with a different argument shape — a raw traceId
+ * string vs. `{ traceId }`) — wiring it would have thrown "Attempted to
+ * register a second handler for 'trace:get'" and broken the pre-remediation
+ * trace inspector flow. Task 23.2 left it blocked pending a channel-rename
+ * resolution. No live, non-test caller ever reached it: its would-be renderer
+ * consumer (`src/renderer/panels/trace-panel.ts`) was never imported by any
+ * renderer entry point and its channels were never present in preload's
+ * invoke/receive allowlists, so a rename would not have produced a live
+ * caller either. Per the disposition rule (a module whose wiring cannot
+ * yield a live, non-test caller downgrades to REMOVE), the module was
+ * deleted with no exclusive dependencies to cascade — `ExecutionTraceService`
+ * and the shared `ExecutionTrace`/`TraceEntry` types remain live via
+ * `src/pipeline/agent-loop.ts` and `src/startup/startup-manager.ts`.
+ *
+ * Facade/.impl splits — decisions:
+ * ┌──────────────────────────────────────────────────────┬──────────┬─────────────────────────────────────────┐
+ * │ Module                                              │ Decision │ Rationale                               │
+ * ├──────────────────────────────────────────────────────┼──────────┼─────────────────────────────────────────┤
+ * │ src/providers/provider-registry.impl.ts             │ KEEP     │ Already live (required by ipc.ts:798)   │
+ * │ src/session/session-forker.impl.ts                  │ WIRE     │ Needed by session forking feature       │
+ * │ src/review/diff-review-system.impl.ts               │ WIRE     │ Needed by diff-review pipeline stage    │
+ * │ src/orchestration/agent-racing-engine.impl.ts       │ WIRE     │ Needed by phased-pipeline agent racing  │
+ * │ src/orchestration/drift-aware-orchestrator.impl.ts  │ WIRE     │ Needed by drift-aware orchestration     │
+ * │ src/testing/test-drift-detector.impl.ts             │ WIRE     │ Needed by test-gap pipeline stage       │
+ * │ src/testing/test-generator.impl.ts                  │ WIRE     │ Needed by test-generation pipeline      │
+ * │ src/testing/test-health-tracker.impl.ts             │ WIRE     │ Needed by test-health monitoring        │
+ * │ src/testing/test-planner.impl.ts                    │ WIRE     │ Needed by test-planning pipeline        │
+ * │ src/drift/enhanced-drift-classifier.impl.ts         │ WIRE     │ Needed by drift classification pipeline │
+ * │ src/agents/verification-agent.impl.ts               │ WIRE     │ Needed by agent verification flow       │
+ * └──────────────────────────────────────────────────────┴──────────┴─────────────────────────────────────────┘
+ *
+ * Rule applied: each module above provides capability the product needs and
+ * will be integrated onto a live path (task 23.2). If wiring cannot yield a
+ * live non-test caller, the decision downgrades to REMOVE per R16.6.
+ * No action (wire or remove) may proceed without a recorded row above (R16.2).
+ * Any action that leaves an unresolved import or breaks a pre-remediation test
+ * is blocked, preserving pre-action state and surfacing an error (R16.9).
+ * ─────────────────────────────────────────────────────────────────────────────
  */
 
 import { ipcMain, nativeTheme, type BrowserWindow } from 'electron';
@@ -8,6 +82,7 @@ import { CommandSystem } from '../commands/command-system';
 import { builtInCommands } from '../commands/built-in/index';
 import { SuperAgentManager } from '../agents/super-agent-manager';
 import { initDatabase, getDefaultDbPath } from '../storage/database';
+import { getDataDirectory } from '../storage/data-directory.js';
 import { checkReadiness } from '../sre/readiness-service';
 import { detectHardware } from '../cookbook/hardware-detector';
 import { rankModels } from '../cookbook/model-ranker';
@@ -54,6 +129,40 @@ import { RuntimeManager } from '../runtime';
 import type { RuntimeError } from '../runtime';
 import { registerDeerFlowIPC, setDeerFlowMainWindow } from './deerflow-ipc.js';
 import { registerUnifiedIntentGateIPC } from './unified-intent-gate-ipc.js';
+// P5 orphan sweep (task 23.2) — Category A unwired IPC handler modules, wired
+// onto the live IPC path from registerIPCHandlers below (R16.3, R16.4).
+import { registerVisionIPC } from './vision-ipc.js';
+import { registerIntentOverrideIPC } from './intent-override-ipc.js';
+import { registerSecurityRemediationIPC } from './security-remediation-ipc.js';
+import { registerMetricsIPC } from './metrics-ipc.js';
+import { registerPipelineIPC } from './pipeline-ipc.js';
+import { registerArtifactIPC } from './artifact-ipc.js';
+import { registerSandboxIPC } from './sandbox-ipc.js';
+import { registerApprovalGateIPC } from './approval-gate-ipc.js';
+import { registerBenchmarkIPC } from './benchmark-ipc.js';
+import { registerPluginRegistryIPC } from './plugin-registry-ipc.js';
+import { registerDriftIPC } from './drift-ipc.js';
+import { registerSpecHandoffIPC } from '../pipeline/spec-handoff.js';
+// Codebase Analysis IPC — registers handlers for dependency graph, blast radius,
+// health scoring, pattern detection, community detection, path tracing, query,
+// and activity heatmap channels (Requirements 7.3, 8.5).
+import { registerCodebaseHandlers } from './codebase-ipc.js';
+// P5 orphan sweep (task 23.2) — Category B facade/.impl split modules, wired
+// onto the live path below (R16.3, R16.5).
+import { SessionForker } from '../session/session-forker.impl.js';
+import { DiffReviewSystem } from '../review/diff-review-system.impl.js';
+import { AgentRacingEngine } from '../orchestration/agent-racing-engine.impl.js';
+import { DriftAwareOrchestrator } from '../orchestration/drift-aware-orchestrator.impl.js';
+import { TestDriftDetector } from '../testing/test-drift-detector.impl.js';
+import { TestGenerator } from '../testing/test-generator.impl.js';
+import { TestHealthTracker } from '../testing/test-health-tracker.impl.js';
+import { TestPlanner } from '../testing/test-planner.impl.js';
+import { EnhancedDriftClassifier } from '../drift/enhanced-drift-classifier.impl.js';
+import { VerificationAgent } from '../agents/verification-agent.impl.js';
+import { WorktreeCheckpointManager } from '../durability/worktree-checkpoint-manager.impl.js';
+import { WorktreeIsolation as WorktreeIsolationForCategoryB } from '../orchestration/worktree-isolation.js';
+import { ASTLockManager as ASTLockManagerForCategoryB } from '../orchestration/ast-lock-manager.js';
+import { ParallelAgentExecutor as ParallelAgentExecutorForCategoryB } from '../orchestration/parallel-agent-executor.js';
 import { LazyModuleLoader } from './performance/lazy-module-loader';
 import { PERF_FLAGS } from './performance/feature-flags';
 import { AsyncSystemMonitor } from './performance/async-system-monitor';
@@ -63,6 +172,9 @@ import { PermissionSystem } from '../security/permission-system';
 import { builtInTools } from '../tools/built-in/index';
 import { autoCommit, type AutoVersioningLLMClient } from '../tools/auto-versioning';
 import { CallbackEngine } from '../pipeline/callback-engine';
+import { AgentLoopMetricsStore } from '../metrics/agent-loop-metrics.js';
+import { ApprovalGate } from '../services/approval-gate.js';
+import { FeatureGateSystem } from '../feature-gate/feature-gate-system.js';
 import { loadProjectConfig } from '../config/project-config';
 
 // Agent status simulation - in a real system this would come from agent manager
@@ -88,6 +200,7 @@ import { EmbeddingDaemonClient } from '../indexing/embedding-daemon';
 import { LineageTracker } from '../indexing/lineage-tracker';
 import { GitConnector } from '../indexing/connectors/git-connector';
 import { DocumentationConnector } from '../indexing/connectors/documentation-connector';
+import { ADRConnector } from '../indexing/connectors/adr-connector';
 import { loadProjectContextFiles } from '../pipeline/context-files';
 import { compressTrajectory, shouldCompress } from '../pipeline/trajectory-compressor';
 import { buildFallbackChain, chatWithFallback } from '../pipeline/fallback-chain';
@@ -225,6 +338,17 @@ let skillLearner: SkillLearner | null = null; // Self-improving skill learner
 // Singleton ToolSystem with real built-in tool implementations for the agent loop.
 // Lazily initialized on first use so we don't pay the cost at module load.
 let agentLoopToolSystem: InstanceType<typeof AgentToolSystem> | null = null;
+
+/**
+ * Project-directory-less subsystems (Benchmark Framework, Automation Pipeline)
+ * still need a projectDir to resolve their `.neuronest/<feature>/` storage
+ * paths even when no project session is active yet. Route through the
+ * canonical Data_Directory_Accessor rather than a fresh os.homedir() join
+ * (R21.5–R21.7).
+ */
+function getDataDirectoryForBenchmark(): string {
+  return getDataDirectory();
+}
 
 /** Get or create the ToolSystem singleton for the agent loop. */
 function getAgentLoopToolSystem(): InstanceType<typeof AgentToolSystem> {
@@ -908,7 +1032,7 @@ function initWithLazyLoader(): void {
     name: 'SwarmCoordinator',
     priority: 'deferred',
     dependencies: ['Database'],
-    factory: () => new SwarmCoordinator(new SwarmMemoryPool()),
+    factory: () => new SwarmCoordinator(new SwarmMemoryPool(), null, null, null, moduleLoader!.get('Database')),
   });
 
   moduleLoader.register({
@@ -1114,7 +1238,7 @@ function ensureInit() {
         moduleLoader.register({
           name: 'SwarmCoordinator',
           priority: 'deferred',
-          factory: () => new SwarmCoordinator(new SwarmMemoryPool()),
+          factory: () => new SwarmCoordinator(new SwarmMemoryPool(), null, null, null, db),
         });
 
         moduleLoader.register({
@@ -1692,6 +1816,123 @@ async function evaluateFirewall(content: string, context: { agentId?: string; pr
   } catch (error) {
     console.warn('[IPC] Enhanced firewall evaluation failed, using basic firewall:', error);
     return firewallEngine.evaluate(content, context);
+  }
+}
+
+// ─── P0: Terminal Command Security Gate (Requirements 1.1–1.8) ──────────────
+//
+// The security gate combines Firewall_Engine + fail-closed Action_Security_Analyzer
+// into a single SecurityDecision. Only an explicit allow from BOTH permits execution.
+// A 'confirm' from either routes through the Approval_Flow (300s window).
+// Any inability to evaluate collapses to deny (fail-closed).
+
+/**
+ * Combined security decision for a terminal command.
+ * - 'allow': both controls explicitly permit execution
+ * - 'deny': at least one control denied or an error occurred (fail-closed)
+ * - 'confirm': at least one control requires user confirmation before execution
+ */
+export type SecurityDecision =
+  | { kind: 'allow' }
+  | { kind: 'deny'; reason: string }
+  | { kind: 'confirm'; reason: string };
+
+/**
+ * Evaluates a terminal command against both the Firewall_Engine and the
+ * fail-closed Action_Security_Analyzer, returning a single SecurityDecision.
+ *
+ * Rules (R1.1–R1.4):
+ * - Awaits both controls before any execution decision
+ * - Only explicit allow from BOTH produces { kind: 'allow' }
+ * - 'warn' from firewall (not 'block') maps to 'confirm'
+ * - Any exception, unavailable control, or indeterminate result collapses to 'deny'
+ */
+export async function evaluateTerminalCommand(
+  command: string,
+  context: { agentId?: string; projectId?: string },
+): Promise<SecurityDecision> {
+  try {
+    // Import the fail-closed analyzer lazily to avoid circular deps at module level
+    const { FailClosedActionSecurityAnalyzer } = require('../pipeline/verification-gate/stages/gui-acceptance-stage.js');
+
+    // ── Firewall evaluation (fail-closed on error/unavailable) ──
+    let firewallResult: { passed: boolean; blocked: boolean; events: Array<{ action?: string; ruleName?: string }>; };
+    try {
+      if (!firewallEngine) {
+        return { kind: 'deny', reason: 'security: Firewall_Engine unavailable' };
+      }
+      firewallResult = firewallEngine.evaluate(command, context);
+    } catch (fwError: any) {
+      return { kind: 'deny', reason: `security: Firewall_Engine error — ${fwError?.message ?? String(fwError)}` };
+    }
+
+    // If firewall explicitly blocked, deny immediately (R1.2)
+    if (firewallResult.blocked) {
+      const blockEvent = firewallResult.events.find((e: any) => e.action === 'block');
+      const ruleName = blockEvent?.ruleName ?? 'firewall rule';
+      return { kind: 'deny', reason: `security: blocked by ${ruleName}` };
+    }
+
+    // ── Action_Security_Analyzer evaluation (fail-closed on error/unavailable) ──
+    let analyzerResult: { allowed: boolean; reason?: string };
+    try {
+      const analyzer = new FailClosedActionSecurityAnalyzer();
+      analyzerResult = await analyzer.validateAction('terminal', command);
+    } catch (asaError: any) {
+      return { kind: 'deny', reason: `security: Action_Security_Analyzer error — ${asaError?.message ?? String(asaError)}` };
+    }
+
+    // If analyzer explicitly denied, deny immediately (R1.2)
+    if (!analyzerResult.allowed) {
+      return { kind: 'deny', reason: `security: ${analyzerResult.reason ?? 'analyzer denied'}` };
+    }
+
+    // Check if firewall issued warnings (non-block events with action 'warn')
+    const hasFirewallWarn = firewallResult.events.some((e: any) => e.action === 'warn');
+    if (hasFirewallWarn) {
+      const warnEvent = firewallResult.events.find((e: any) => e.action === 'warn');
+      return { kind: 'confirm', reason: `security: firewall warning — ${warnEvent?.ruleName ?? 'policy warning'}` };
+    }
+
+    // Both controls explicitly allow (R1.2)
+    return { kind: 'allow' };
+  } catch (outerError: any) {
+    // Any unexpected error collapses to deny (R1.4 fail-closed)
+    return { kind: 'deny', reason: `security: evaluation failed — ${outerError?.message ?? String(outerError)}` };
+  }
+}
+
+/**
+ * Requests user approval for a terminal command via the Approval_Flow.
+ * Returns true only if explicit approval is recorded within the 300s window.
+ * Returns false on timeout, decline, present-failure, or any exception (R1.6, R1.7).
+ */
+async function requestTerminalApproval(command: string): Promise<boolean> {
+  const APPROVAL_TIMEOUT_MS = 300_000; // 300 seconds (R1.6)
+
+  try {
+    const mainWindow = _ipcMainWindow;
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      // Cannot present approval — fail-closed (R1.7)
+      return false;
+    }
+
+    const approvalHandler = createApprovalHandler(mainWindow);
+    // createApprovalHandler already has a 5-minute timeout; we rely on that
+    // but also enforce our own 300s cap with Promise.race for correctness.
+    const timeoutPromise = new Promise<boolean>((resolve) => {
+      setTimeout(() => resolve(false), APPROVAL_TIMEOUT_MS);
+    });
+
+    const approved = await Promise.race([
+      approvalHandler(command),
+      timeoutPromise,
+    ]);
+
+    return approved === true;
+  } catch {
+    // Present-failure or any exception — deny (R1.7)
+    return false;
   }
 }
 
@@ -3740,7 +3981,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
       }
     } catch (e) { console.error('[IPC] LLM client creation error:', e); }
 
-    const swarmCoordinator = new SwarmCoordinator(memoryPool, llmClient);
+    const swarmCoordinator = new SwarmCoordinator(memoryPool, llmClient, undefined, undefined, db);
     activeSwarmCoordinator = swarmCoordinator;
 
     // Initialize enhanced coordinator with the same LLM client
@@ -4190,6 +4431,47 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
       console.warn('[IPC] Plan validation error (non-fatal, continuing with original plan):', validationErr?.message);
     }
 
+    // ─── PHASED_EXECUTION gate: route through PhasedPipeline when enabled (Req 9.2, 11.2, 11.4) ───
+    // When PHASED_EXECUTION is enabled, invoke the PhasedPipeline via AgentLoopController.run()
+    // which calls spawnSkillAwareSubagent on the live agent-spawn path (Req 11.2).
+    // On failure, fall back to the swarm dispatch below (Req 9.6).
+    if (PERF_FLAGS.PHASED_EXECUTION && activeSessionId) {
+      try {
+        const phasedProjectDir = require('node:path').join(
+          require('node:os').homedir(), '.neuronest', 'projects', activeSessionId,
+        );
+        const phasedConfig = {
+          llmClient: wrapLLMClientForAgentLoop(llmClient || resolveActiveLLMClient()!),
+          toolSystem: getAgentLoopToolSystem(),
+          projectDir: phasedProjectDir,
+          sessionId: activeSessionId,
+          maxIterations: 25,
+          planMode: false,
+          turboEditsEnabled: false,
+          smartContextEnabled: false,
+        };
+        const phasedController = new AgentLoopController(phasedConfig);
+        const phasedResult: AgentLoopResult = await phasedController.run(trimmed);
+
+        // Pipeline succeeded — send response and completion signal
+        if (phasedResult.response) {
+          sendAndStore(mainWindow, {
+            role: 'assistant',
+            content: phasedResult.response,
+            agent: 'PhasedPipeline',
+          });
+        }
+        mainWindow.webContents.send('chat-response', { role: 'assistant', content: '', agent: 'NeuroNest' });
+        return;
+      } catch (phasedErr: unknown) {
+        // R9.6: On PhasedPipeline failure with the flag on, fall back to swarm dispatch,
+        // surface the error identifying the failure, and preserve request state.
+        const phasedErrMsg = phasedErr instanceof Error ? phasedErr.message : String(phasedErr);
+        console.error(`[IPC] PhasedPipeline dispatch failed, falling back to swarm: ${phasedErrMsg}`);
+        // Fall through to swarm coordinator below
+      }
+    }
+
     // Use enhanced coordinator if available and session is active
     let swarmResult;
     const useEnhancedCoordinator = true; // Feature flag - can be made configurable later
@@ -4542,8 +4824,25 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
           sendAndStore(mainWindow, {
             role: 'assistant', content: '✅ ' + event.content, isCommand: true, agent: 'Swarm',
           });
+        } else if (event.type === 'skill_applied') {
+          sendAndStore(mainWindow, {
+            role: 'assistant', content: '🧩 ' + event.content, isCommand: true, agent: event.agentName || 'Swarm',
+          });
         }
       }, agentLLMConfigs);
+
+      // Send a metrics summary mirroring the enhanced path, so the standard
+      // coordinator's run also surfaces how many skills were actually applied.
+      if (swarmResult && swarmResult.skillsUsed) {
+        const stdSummary = `📊 **Execution Summary**\n\n` +
+          `- **Agents:** ${swarmResult.outputs ? swarmResult.outputs.size : 0}\n` +
+          `- **Skills Used:** ${swarmResult.skillsUsed.length}\n` +
+          `- **Consensus Groups:** ${swarmResult.consensusResults ? swarmResult.consensusResults.length : 0}`;
+
+        sendAndStore(mainWindow, {
+          role: 'assistant', content: stdSummary, isCommand: true, agent: 'Task Manager',
+        });
+      }
     }
 
     activeSwarmCoordinator = null; // Clear after completion
@@ -7663,6 +7962,202 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
     console.error('[IPC] Failed to register Multi-Chat IPC handlers:', error);
   }
 
+  // ── P5 orphan sweep (task 23.2) — Category A: unwired IPC handler modules ──
+  // Each module below had a recorded WIRE decision (see the header comment on
+  // this file) but no live caller from registerIPCHandlers. Wiring them here
+  // matches the pattern of the already-wired modules above (skill-packs,
+  // skills, agent-skills, diagnostics, tool-approval, multi-chat). Every call
+  // is wrapped so a single module's registration failure cannot prevent the
+  // rest of registerIPCHandlers from completing (R16.9 — preserve pre-action
+  // state and surface an error rather than crashing the whole handler set).
+
+  // registerVisionIPC — serves the live renderer vision:analyze/compare/diagram
+  // channels used by visual-diff-panel.ts.
+  try {
+    registerVisionIPC(mainWindow);
+    console.log('[IPC] Vision IPC handlers registered');
+  } catch (error) {
+    console.error('[IPC] Failed to register Vision IPC handlers:', error);
+  }
+
+  // registerIntentOverrideIPC — serves the live renderer intent:override-request
+  // channel (already in preload.ts SEND_CHANNELS) used by the intent-chip module.
+  // Gated behind `intent_chip_ux`; needs a live IntentGate + FeatureGateSystem,
+  // sourced from the same registry the unified-intent-gate path uses below.
+  try {
+    const { getIntentGateInstance, getFeatureGateInstance } = require('../pipeline/intent-gate-registry');
+    const liveIntentGate = getIntentGateInstance();
+    const liveFeatureGate = getFeatureGateInstance();
+    if (liveIntentGate && liveFeatureGate) {
+      registerIntentOverrideIPC({
+        mainWindow,
+        intentGate: liveIntentGate,
+        featureGate: liveFeatureGate,
+      });
+      console.log('[IPC] Intent Override IPC handlers registered');
+    } else {
+      console.log('[IPC] Intent Override IPC skipped — IntentGate/FeatureGate not yet registered (flag-gated subsystem, no-op when disabled)');
+    }
+  } catch (error) {
+    console.error('[IPC] Failed to register Intent Override IPC handlers:', error);
+  }
+
+  // registerSecurityRemediationIPC — serves the live security:remediation-stats
+  // channel for the security-stats dashboard. No live SecurityRemediationBridge
+  // is wired yet, so the getter returns undefined and the handler degrades to
+  // `{ stats: {} }` (matching its own documented behavior) rather than throwing.
+  try {
+    registerSecurityRemediationIPC({
+      getRemediationBridge: () => undefined,
+    });
+    console.log('[IPC] Security Remediation IPC handlers registered');
+  } catch (error) {
+    console.error('[IPC] Failed to register Security Remediation IPC handlers:', error);
+  }
+
+  // registerMetricsIPC — serves the live get-session-metrics / get-cumulative-metrics
+  // channels for the metrics dashboard panel, backed by the session_telemetry table.
+  try {
+    if (db) {
+      const agentLoopMetricsStore = new AgentLoopMetricsStore(db);
+      registerMetricsIPC({ metricsStore: agentLoopMetricsStore });
+      console.log('[IPC] Agent Loop Metrics IPC handlers registered');
+    }
+  } catch (error) {
+    console.error('[IPC] Failed to register Agent Loop Metrics IPC handlers:', error);
+  }
+
+  // registerArtifactIPC — serves the live artifact:list/get/delete/history/diff
+  // channels for the artifact-panel.ts sidebar.
+  try {
+    if (db) {
+      registerArtifactIPC(mainWindow, db);
+      console.log('[IPC] Artifact IPC handlers registered');
+    }
+  } catch (error) {
+    console.error('[IPC] Failed to register Artifact IPC handlers:', error);
+  }
+
+  // registerSandboxIPC — serves the live sandbox:boot/write/run/preview-url/terminate
+  // WebContainer channels used by preview-panel.ts.
+  try {
+    registerSandboxIPC(mainWindow);
+    console.log('[IPC] WebContainer Sandbox IPC handlers registered');
+  } catch (error) {
+    console.error('[IPC] Failed to register WebContainer Sandbox IPC handlers:', error);
+  }
+
+  // registerApprovalGateIPC — serves the live approval:respond channel (already
+  // in preload.ts SEND_CHANNELS) used by approval-gate-panel.ts.
+  try {
+    if (db) {
+      const liveFeatureGateForApproval = new FeatureGateSystem({});
+      const approvalGate = new ApprovalGate(db, liveFeatureGateForApproval, (channel, data) => {
+        if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, data);
+      });
+      registerApprovalGateIPC(approvalGate);
+      console.log('[IPC] Approval Gate IPC handlers registered');
+    }
+  } catch (error) {
+    console.error('[IPC] Failed to register Approval Gate IPC handlers:', error);
+  }
+
+  // registerBenchmarkIPC — serves the live bench:list-profiles/create-profile/run/
+  // results/trends channels for benchmark-panel.ts.
+  try {
+    if (db) {
+      registerBenchmarkIPC(mainWindow, {
+        projectDir: getDataDirectoryForBenchmark(),
+        db,
+        toolSystem: getAgentLoopToolSystem(),
+        createLLMClient: (modelConfig) => wrapLLMClientForAgentLoop(
+          createLLMClient({ type: modelConfig.provider, model: modelConfig.model }) as any,
+        ),
+        createAgentLoop: (agentLoopConfig) => new AgentLoopController(agentLoopConfig),
+      });
+      console.log('[IPC] Benchmark Framework IPC handlers registered');
+    }
+  } catch (error) {
+    console.error('[IPC] Failed to register Benchmark Framework IPC handlers:', error);
+  }
+
+  // registerPluginRegistryIPC — serves the live plugin:catalog/install/uninstall/
+  // enable/disable/permissions/list channels for plugin-registry-panel.ts.
+  try {
+    const { app } = require('electron');
+    const pluginsDir = require('node:path').join(app.getPath('userData'), 'plugins');
+    registerPluginRegistryIPC(mainWindow, { pluginsDir });
+    console.log('[IPC] Plugin Registry IPC handlers registered');
+  } catch (error) {
+    console.error('[IPC] Failed to register Plugin Registry IPC handlers:', error);
+  }
+
+  // registerDriftIPC — serves the live drift:get-state channel for
+  // drift-dashboard-panel.ts. No live DriftMonitor instance is tracked at the
+  // registerIPCHandlers level (DriftMonitor is created per agent-loop run
+  // inside AgentLoopController), so the getter returns null and the handler
+  // degrades to its documented INACTIVE_STATE rather than throwing.
+  try {
+    registerDriftIPC({
+      getMainWindow: () => mainWindow,
+      getDriftMonitor: () => null,
+    });
+    console.log('[IPC] Drift Dashboard IPC handlers registered');
+  } catch (error) {
+    console.error('[IPC] Failed to register Drift Dashboard IPC handlers:', error);
+  }
+
+  // registerPipelineIPC — serves the live pipeline:define/execute/cancel/list
+  // and quickaction:execute/list channels for pipeline-panel.ts.
+  try {
+    registerPipelineIPC(mainWindow, {
+      projectDir: getDataDirectoryForBenchmark(),
+      toolSystem: getAgentLoopToolSystem(),
+      callbackEngine: new CallbackEngine(),
+    });
+    console.log('[IPC] Automation Pipeline IPC handlers registered');
+  } catch (error) {
+    console.error('[IPC] Failed to register Automation Pipeline IPC handlers:', error);
+  }
+
+  // registerSpecHandoffIPC — serves the live spec:action 'build' handoff from
+  // the SpecReviewCard. Needs a live FeatureGateSystem + a getSpec lookup;
+  // reuses the same intent-gate-registry FeatureGateSystem the unified intent
+  // gate path uses, and the SpecInterviewEngine registry for spec lookup.
+  try {
+    const { getFeatureGateInstance } = require('../pipeline/intent-gate-registry');
+    const { getSpecInterviewEngineInstance } = require('../pipeline/spec-interview-engine-registry');
+    const liveFeatureGateForSpecHandoff = getFeatureGateInstance();
+    if (liveFeatureGateForSpecHandoff) {
+      const { ExecutionModeRouter: PipelineExecutionModeRouter } = require('../pipeline/execution-mode-router.js');
+      const specHandoffExecutionRouter = new PipelineExecutionModeRouter();
+      const { SpecHandoff } = require('../pipeline/spec-handoff.js');
+      const specHandoffDeps = {
+        mainWindow,
+        executionModeRouter: specHandoffExecutionRouter,
+        featureGate: liveFeatureGateForSpecHandoff,
+        getSpec: (specId: string) => {
+          const engine = getSpecInterviewEngineInstance();
+          if (!engine || typeof (engine as any).getSpec !== 'function') return null;
+          return (engine as any).getSpec(specId) ?? null;
+        },
+        updateSpecStatus: (specId: string, status: string) => {
+          const engine = getSpecInterviewEngineInstance();
+          if (engine && typeof (engine as any).updateSpecStatus === 'function') {
+            (engine as any).updateSpecStatus(specId, status);
+          }
+        },
+      };
+      const specHandoffInstance = new SpecHandoff(specHandoffDeps);
+      registerSpecHandoffIPC(specHandoffInstance, specHandoffDeps, activeSessionId || 'default');
+      console.log('[IPC] Spec Handoff IPC handlers registered');
+    } else {
+      console.log('[IPC] Spec Handoff IPC skipped — FeatureGateSystem not yet registered (flag-gated subsystem, no-op when disabled)');
+    }
+  } catch (error) {
+    console.error('[IPC] Failed to register Spec Handoff IPC handlers:', error);
+  }
+
   // ── Action Security Analyzer ──
   try {
     const { EnsembleSecurityAnalyzer, classifyAction } = require('../security/action-analyzer.js');
@@ -8266,6 +8761,62 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
       }
 
       try {
+        // ── P0 Security Gate: Terminal commands require explicit allow from
+        // both Firewall_Engine and Action_Security_Analyzer (R1.1–R1.8) ──
+        if (toolName === 'terminal') {
+          const command = typeof arg?.command === 'string' ? arg.command : '';
+          const securityDecision = await evaluateTerminalCommand(command, {
+            agentId: arg?.agentId,
+            projectId: arg?.projectId ?? activeSessionId ?? undefined,
+          });
+
+          if (securityDecision.kind === 'deny') {
+            // R1.5: return success:false with security-identifying error, no side effects
+            const denyResult = {
+              success: false,
+              tool: 'terminal',
+              output: '',
+              error: securityDecision.reason,
+              durationMs: 0,
+            };
+            if (sessionId) {
+              emitToolFailure(log, {
+                sessionId,
+                callId,
+                error: { name: 'SecurityDeny', message: securityDecision.reason },
+              });
+            }
+            return denyResult;
+          }
+
+          if (securityDecision.kind === 'confirm') {
+            // R1.3: Route through Approval_Flow; execute only after recorded approval
+            const approved = await requestTerminalApproval(command);
+            if (!approved) {
+              // R1.6/R1.7: declined/timeout/present-failure → deny
+              const declineResult = {
+                success: false,
+                tool: 'terminal',
+                output: '',
+                error: `security: approval declined or timed out — ${securityDecision.reason}`,
+                durationMs: 0,
+              };
+              if (sessionId) {
+                emitToolFailure(log, {
+                  sessionId,
+                  callId,
+                  error: { name: 'SecurityDeny', message: declineResult.error },
+                });
+              }
+              return declineResult;
+            }
+            // Approval granted — fall through to execute
+          }
+          // securityDecision.kind === 'allow' — proceed to executeTool
+        }
+
+        // Non-terminal ops (file_read, file_write, file_list, file_delete) are
+        // unchanged (R1.8). Terminal ops reach here only after security gate approval.
         const result = executeTool(arg);
 
         // The free executor functions return `{ success: false, ... }`
@@ -9134,6 +9685,13 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
   registerDeerFlowIPC(mainWindow);
   setDeerFlowMainWindow(mainWindow);
 
+  // ── Codebase Analysis IPC channels (Req 7.3, 8.5) ─────────────
+  try {
+    registerCodebaseHandlers(mainWindow);
+  } catch (err: any) {
+    console.warn('[IPC] Codebase analysis IPC registration failed (non-fatal):', err?.message);
+  }
+
   // ── Unified Intent Gate IPC channels ────────────────────────────
   try {
     const { getIntentGateInstance, getFeatureGateInstance } = require('../pipeline/intent-gate-registry');
@@ -9284,6 +9842,124 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
     }
   });
   console.log('[IPC] Multi-Session Parallel Agents registered');
+
+  // ── P5 orphan sweep (task 23.2) — Category B: facade/.impl split wiring ──
+  // Each facade below instantiates its `.impl` implementation on this live
+  // path so the `.impl` module has a live, non-test caller (R16.5). All ten
+  // modules are feature-gated and null-check-guarded by construction; wiring
+  // them here (rather than a fresh IPC surface) keeps behavior a no-op when
+  // the corresponding flag is off, matching R12.7/pre-remediation parity.
+  try {
+    const diffReviewCallbackEngine = new CallbackEngine();
+    const sessionForkingFeatureGate = new FeatureGateSystem({ session_forking: true });
+    const diffReviewFeatureGate = new FeatureGateSystem({ diff_review: true });
+    const agentRacingFeatureGate = new FeatureGateSystem({ agent_racing: true, worktree_isolation: true, parallel_agents: true });
+    const testPlanningFeatureGate = new FeatureGateSystem({ test_planning: true });
+    const testGenerationFeatureGate = new FeatureGateSystem({ test_generation: true });
+    const testHealthFeatureGate = new FeatureGateSystem({ test_health_analytics: true });
+    const testDriftFeatureGate = new FeatureGateSystem({ test_drift_detection: true, test_health_analytics: true });
+    const enhancedDriftFeatureGate = new FeatureGateSystem({ enhanced_drift_classification: true });
+    const verificationAgentFeatureGate = new FeatureGateSystem({ verification_agent: true });
+    const driftAwareOrchestratorFeatureGate = new FeatureGateSystem({
+      drift_aware_orchestration: true, enhanced_drift_classification: true,
+      session_forking: true, worktree_checkpoints: true, parallel_agents: true, worktree_isolation: true,
+    });
+
+    // session-forker.impl — WIRE: facade instantiates .impl for the live
+    // parallel:create-adjacent session-forking capability.
+    const sessionForker = new SessionForker(
+      sessionForkingFeatureGate,
+      parallelSessionManager,
+      new WorktreeIsolationForCategoryB(getDataDirectoryForBenchmark()),
+      { projectId: 'default' },
+    );
+
+    // diff-review-system.impl — WIRE: instantiated alongside the existing
+    // diff-review:* IPC handlers above (same DiffReviewService feature area).
+    const diffReviewSystem = new DiffReviewSystem(
+      db,
+      diffReviewFeatureGate,
+      diffReviewCallbackEngine,
+    );
+
+    // agent-racing-engine.impl — WIRE: needed by phased-pipeline agent racing;
+    // instantiated here with its ParallelAgentExecutor + WorktreeIsolation deps.
+    const racingWorktreeIsolation = new WorktreeIsolationForCategoryB(getDataDirectoryForBenchmark());
+    const agentRacingEngine = new AgentRacingEngine(
+      db,
+      diffReviewCallbackEngine,
+      agentRacingFeatureGate,
+      racingWorktreeIsolation,
+      new ParallelAgentExecutorForCategoryB(racingWorktreeIsolation, new ASTLockManagerForCategoryB(300_000, true)),
+    );
+
+    // test-planner.impl / test-generator.impl / test-health-tracker.impl /
+    // test-drift-detector.impl — WIRE: each needed by the test-gap pipeline
+    // stage / test-generation / test-health-monitoring / drift classification.
+    const testPlanner = new TestPlanner(db, testPlanningFeatureGate, diffReviewCallbackEngine);
+    const testGenerator = new TestGenerator(db, testGenerationFeatureGate);
+    const testHealthTracker = new TestHealthTracker(db, testHealthFeatureGate, diffReviewCallbackEngine);
+    const testDriftDetector = new TestDriftDetector(db, testDriftFeatureGate, diffReviewCallbackEngine, null);
+
+    // enhanced-drift-classifier.impl — WIRE: needed by drift classification pipeline.
+    const enhancedDriftClassifier = new EnhancedDriftClassifier(
+      enhancedDriftFeatureGate,
+      diffReviewCallbackEngine,
+    );
+
+    // verification-agent.impl — WIRE: needed by agent verification flow.
+    const verificationAgent = new VerificationAgent(
+      verificationAgentFeatureGate,
+      diffReviewCallbackEngine,
+      {
+        async execute(action: string) {
+          return `Verification step executed: ${action}`;
+        },
+      },
+    );
+
+    // drift-aware-orchestrator.impl — WIRE: needed by drift-aware orchestration;
+    // composes the session forker + a WorktreeCheckpointManager over the same db.
+    const worktreeCheckpointManager = new WorktreeCheckpointManager({
+      db,
+      featureGate: driftAwareOrchestratorFeatureGate,
+      checkpointConfig: {
+        directory: require('node:path').join(getDataDirectoryForBenchmark(), 'checkpoints'),
+        maxDiskUsageMb: 500,
+        currentSchemaVersion: 1,
+      },
+    });
+    const driftAwareOrchestrator = new DriftAwareOrchestrator(
+      driftAwareOrchestratorFeatureGate,
+      diffReviewCallbackEngine,
+      sessionForker,
+      worktreeCheckpointManager,
+      parallelSessionManager,
+      {
+        config: { maxRecoveryAttempts: 3, recoveryDelayMs: 1000, criticalThreshold: 0.3 },
+        projectId: 'default',
+      },
+    );
+
+    // Expose the wired instances for the live drift/verification/test-gap
+    // consumers registered elsewhere in this file (deerflow-ipc phased path,
+    // quality-workers-service wiring) via the same lazy-global pattern already
+    // used for __pipelineTraceService above.
+    (global as any).__sessionForker = sessionForker;
+    (global as any).__diffReviewSystem = diffReviewSystem;
+    (global as any).__agentRacingEngine = agentRacingEngine;
+    (global as any).__testPlanner = testPlanner;
+    (global as any).__testGenerator = testGenerator;
+    (global as any).__testHealthTracker = testHealthTracker;
+    (global as any).__testDriftDetector = testDriftDetector;
+    (global as any).__enhancedDriftClassifier = enhancedDriftClassifier;
+    (global as any).__verificationAgent = verificationAgent;
+    (global as any).__driftAwareOrchestrator = driftAwareOrchestrator;
+
+    console.log('[IPC] P5 Category B facades (session-forker, diff-review-system, agent-racing-engine, drift-aware-orchestrator, test-planner, test-generator, test-health-tracker, test-drift-detector, enhanced-drift-classifier, verification-agent) wired');
+  } catch (error) {
+    console.error('[IPC] Failed to wire P5 Category B facades:', error);
+  }
 
   // ── Extension System IPC ────────────────────────────────────────
   const { ExtensionManager } = require('../extensions/extension-manager');
@@ -11357,6 +12033,8 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
       if (config.connectors.documentation) {
         indexingPipelineController.registerConnector(new DocumentationConnector());
       }
+      // ADR connector is always registered (Wire decision: live caller from indexing)
+      indexingPipelineController.registerConnector(new ADRConnector());
 
       // Wire FileEventEmitter events to the pipeline controller
       const fee = FileEventEmitter.getInstance();

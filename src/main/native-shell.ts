@@ -7,9 +7,9 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import * as os from 'node:os';
 import type { WindowConfig, WindowState } from '../shared/types.js';
 import { getSecureWebPreferences } from './security/window-hardener';
+import { getDataDirectory } from '../storage/data-directory.js';
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -31,7 +31,7 @@ export interface NativeShell {
 
 // ─── Constants ──────────────────────────────────────────────────
 
-const STATE_DIR = path.join(os.homedir(), '.ai-superagent');
+const STATE_DIR = getDataDirectory();
 const STATE_FILE = path.join(STATE_DIR, 'window-state.json');
 
 const DEFAULT_WINDOW_STATE: WindowState = {

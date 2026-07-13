@@ -10,6 +10,34 @@ Each pull request with user-facing changes must include a changeset entry.
 
 ## [Unreleased]
 
+## [0.1.586] - 2025-01-15
+
+### Added
+
+- Audit remediation: fail-closed security controls, sanitized environment, honest sandbox execution
+- Loop Engine: bounded, verification-gated iterative execution with harness layer
+- Agent registry: 118 specialized AI agents across 14 departments
+- Swarm orchestration with 5 execution modes (flash/standard/pro/ultra/loop)
+- Firewall rule correctness: word-boundary keyword matching, fork-bomb detection
+- Data integrity: migration contiguity guard, unified data directory accessor
+- Channel correctness: single status event constant, port validation, loopback-by-default
+- Agent tool-permission checks: default-deny with explicit profiles
+- CI drift guards for agent counts, migration contiguity, and IPC allowlist parity
+- Property-based test suite (fast-check) covering all security invariants
+
+### Fixed
+
+- TypeScript configuration: incompatible module/moduleResolution pairing (TS5095)
+- Action Security Analyzer: replaced allow-all default with fail-closed analyzer
+- Firewall engine: broken pol-01 fork-bomb pattern, substring keyword matching
+- Docker sandbox: no-op stubs no longer report false success in production builds
+- Environment leakage: executeTerminal no longer passes full process.env
+
+### Changed
+
+- Agent count reconciled to 118 (derived from registry, CI-guarded)
+- CHANGELOG wired to changeset versioning
+
 ## [0.1.0] - 2024-01-01
 
 ### Added

@@ -14,6 +14,7 @@
  *
  * Requirements: 12.1, 12.2, 12.3, 12.4, 12.5, 12.7, 12.8, 12.9, 12.10
  */
+import { spawn } from 'child_process';
 import type {
   VerificationStage,
   AgentEdit,
@@ -23,6 +24,7 @@ import type {
   StageName,
   FileChange,
 } from '../types';
+import { checkSandboxIsolation } from '../../sandbox-environment';
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -64,16 +66,37 @@ export interface TestGapResult {
 }
 
 /**
+ * Result of a Docker sandbox test execution.
+ * Reports success ONLY after the test process exits with a success status (R4.1).
+ * Returns non-success with reason on unavailability/container-start failure/missing runtime (R4.2).
+ * Returns non-success with reason and retained output on non-zero exit/crash/signal (R4.3).
+ * Returns timeout status when execution exceeds 300s (R4.4).
+ * Never reports success for un-run/skipped/no-exit-status tests (R4.5).
+ */
+export interface DockerSandboxRunResult {
+  /** Status of the test execution */
+  status: 'success' | 'failure' | 'error' | 'timeout';
+  /** Exit code of the test process, if available */
+  exitCode?: number;
+  /** Captured stdout/stderr — retained on failure (R4.3) */
+  output: string;
+  /** Identifies the unavailable/crash/timeout cause (R4.2, R4.3, R4.4) */
+  reason?: string;
+}
+
+/**
  * Interface for Docker sandbox test execution.
  * In production, this runs tests in an isolated Docker container.
  * Can be substituted with a mock for testing.
  */
 export interface DockerSandboxRunner {
+  /** Identifies whether this sandbox provides real Docker isolation or is a no-op (R5.1) */
+  readonly isolationKind: 'docker' | 'noop';
   /**
    * Execute a test file in the Docker sandbox.
-   * @returns true if the test passes (exit code 0), false otherwise.
+   * @returns A DockerSandboxRunResult reporting success only after verified completion.
    */
-  runTest(testContent: string, testFilePath: string): Promise<boolean>;
+  runTest(testContent: string, testFilePath: string): Promise<DockerSandboxRunResult>;
 }
 
 /**
@@ -338,39 +361,281 @@ describe('${exportName}', () => {
 `;
 }
 
-// ─── Default Docker Sandbox (Mock) ──────────────────────────────
+// ─── Default Docker Sandbox ──────────────────────────────────────
+
+/** Maximum execution time for a sandbox test run (R4.4). */
+const SANDBOX_TIMEOUT_MS = 300_000; // 300 seconds
 
 /**
  * Default Docker sandbox runner implementation.
- * In production, this would execute tests in an actual Docker container.
- * For now, this is a mock that simulates execution.
+ * Executes tests inside a Docker container and reports success ONLY after
+ * the test process runs to completion with a success exit status (R4.1).
+ *
+ * Reports non-success when:
+ * - The sandbox (Docker) is unavailable (R4.2)
+ * - The container fails to start (R4.2)
+ * - The test runtime is absent in the container (R4.2)
+ * - The process exits non-zero (R4.3)
+ * - The process crashes or is terminated by a signal (R4.3)
+ * - Execution exceeds 300s (R4.4)
+ *
+ * Never reports success for un-run/skipped/no-exit-status tests (R4.5).
  */
 export class DefaultDockerSandboxRunner implements DockerSandboxRunner {
-  async runTest(_testContent: string, _testFilePath: string): Promise<boolean> {
-    // In production, this would:
-    // 1. Copy test file into Docker container
-    // 2. Run `npx vitest run <testFilePath>` inside container
-    // 3. Return true if exit code is 0
-    // For now, simulate sandbox — returns true (test passes)
-    return true;
+  readonly isolationKind = 'docker' as const;
+  private dockerImage: string;
+  private testCommand: string;
+
+  constructor(options?: { dockerImage?: string; testCommand?: string }) {
+    this.dockerImage = options?.dockerImage ?? 'node:20-slim';
+    this.testCommand = options?.testCommand ?? 'npx vitest run';
+  }
+
+  async runTest(testContent: string, testFilePath: string): Promise<DockerSandboxRunResult> {
+    // R5.3, R5.4: Check isolation — refuse untrusted execution in production with noop sandbox
+    const refusal = checkSandboxIsolation(this.isolationKind);
+    if (refusal) {
+      return refusal;
+    }
+
+    // R4.5: Never report success for un-run tests (empty content means nothing to run)
+    if (!testContent || !testContent.trim()) {
+      return {
+        status: 'error',
+        output: '',
+        reason: 'Test content is empty — nothing to execute',
+      };
+    }
+
+    // Check Docker availability (R4.2)
+    const dockerAvailable = await this.isDockerAvailable();
+    if (!dockerAvailable) {
+      return {
+        status: 'error',
+        output: '',
+        reason: 'Docker is unavailable — cannot execute test in sandbox',
+      };
+    }
+
+    // Execute the test inside a Docker container
+    return this.executeInContainer(testContent, testFilePath);
+  }
+
+  /**
+   * Check if Docker is available on the host.
+   */
+  private isDockerAvailable(): Promise<boolean> {
+    return new Promise((resolve) => {
+      const proc = spawn('docker', ['info'], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: 10_000,
+      });
+
+      proc.on('close', (code) => {
+        resolve(code === 0);
+      });
+
+      proc.on('error', () => {
+        resolve(false);
+      });
+    });
+  }
+
+  /**
+   * Execute the test content inside a Docker container.
+   * Reports honest results per R4.1–R4.5.
+   */
+  private executeInContainer(
+    testContent: string,
+    testFilePath: string,
+  ): Promise<DockerSandboxRunResult> {
+    return new Promise((resolve) => {
+      let stdout = '';
+      let stderr = '';
+      let settled = false;
+      let timerHandle: ReturnType<typeof setTimeout> | undefined;
+
+      const settle = (result: DockerSandboxRunResult) => {
+        if (settled) return;
+        settled = true;
+        if (timerHandle) clearTimeout(timerHandle);
+        resolve(result);
+      };
+
+      // Build the docker run command:
+      // - Mount test content via stdin/echo
+      // - Run with --rm for cleanup
+      // - Set a working directory
+      const args = [
+        'run',
+        '--rm',
+        '--network=none', // no network access for test isolation
+        '-i',             // read stdin for test content
+        '-w', '/workspace',
+        this.dockerImage,
+        'sh', '-c',
+        // Write the test content to a file and run it
+        `cat > /workspace/${testFilePath} && ${this.testCommand} /workspace/${testFilePath}`,
+      ];
+
+      let proc: ReturnType<typeof spawn>;
+      try {
+        proc = spawn('docker', args, {
+          stdio: ['pipe', 'pipe', 'pipe'],
+        });
+      } catch (err: unknown) {
+        // R4.2: Container fails to start
+        settle({
+          status: 'error',
+          output: '',
+          reason: `Failed to start Docker container: ${err instanceof Error ? err.message : String(err)}`,
+        });
+        return;
+      }
+
+      // R4.4: Timeout enforcement — 300s max execution
+      timerHandle = setTimeout(() => {
+        if (!settled) {
+          // Kill the process and report timeout
+          try {
+            proc.kill('SIGKILL');
+          } catch {
+            // Best effort kill
+          }
+          settle({
+            status: 'timeout',
+            output: stdout + stderr,
+            reason: `Test execution exceeded the maximum time limit of ${SANDBOX_TIMEOUT_MS / 1000}s`,
+          });
+        }
+      }, SANDBOX_TIMEOUT_MS);
+
+      // Write test content to the container's stdin
+      if (proc.stdin) {
+        proc.stdin.write(testContent);
+        proc.stdin.end();
+      }
+
+      // Capture output
+      if (proc.stdout) {
+        proc.stdout.on('data', (chunk: Buffer) => {
+          stdout += chunk.toString();
+        });
+      }
+      if (proc.stderr) {
+        proc.stderr.on('data', (chunk: Buffer) => {
+          stderr += chunk.toString();
+        });
+      }
+
+      // R4.2: Handle spawn/container-start errors
+      proc.on('error', (err: Error) => {
+        const reason = err.message.includes('ENOENT')
+          ? 'Docker is not installed or not in PATH — cannot execute test in sandbox'
+          : `Container execution error: ${err.message}`;
+        settle({
+          status: 'error',
+          output: stdout + stderr,
+          reason,
+        });
+      });
+
+      // Handle process exit
+      proc.on('close', (code: number | null, signal: string | null) => {
+        const combinedOutput = stdout + stderr;
+
+        // R4.3: Terminated by signal (crash)
+        if (signal) {
+          settle({
+            status: 'failure',
+            exitCode: code ?? undefined,
+            output: combinedOutput,
+            reason: `Test process terminated by signal: ${signal}`,
+          });
+          return;
+        }
+
+        // R4.5: No verifiable exit status — never report success
+        if (code === null || code === undefined) {
+          settle({
+            status: 'error',
+            output: combinedOutput,
+            reason: 'Test process produced no verifiable exit status',
+          });
+          return;
+        }
+
+        // R4.1: Success ONLY on exit code 0
+        if (code === 0) {
+          settle({
+            status: 'success',
+            exitCode: 0,
+            output: combinedOutput,
+          });
+          return;
+        }
+
+        // R4.3: Non-zero exit — determine if it's a missing runtime or test failure
+        const isRuntimeMissing =
+          combinedOutput.includes('not found') ||
+          combinedOutput.includes('command not found') ||
+          combinedOutput.includes('No such file or directory') ||
+          code === 127; // standard "command not found" exit code
+
+        if (isRuntimeMissing) {
+          // R4.2: Missing runtime
+          settle({
+            status: 'error',
+            exitCode: code,
+            output: combinedOutput,
+            reason: 'Test runtime is not available in the sandbox container',
+          });
+        } else {
+          // R4.3: Test failure (non-zero exit)
+          settle({
+            status: 'failure',
+            exitCode: code,
+            output: combinedOutput,
+            reason: `Test process exited with non-zero status: ${code}`,
+          });
+        }
+      });
+    });
   }
 }
 
 // ─── Default Feature Flag Checker ───────────────────────────────
 
 /**
- * Default feature flag checker that always returns enabled.
- * In production, integrates with the actual feature flag system.
+ * Default feature flag checker with per-flag documented defaults.
+ *
+ * Documented defaults:
+ *   - test_gap_detection: true (enabled by default)
+ *   - All other flags: false (disabled by default)
+ *
+ * When a flags map is provided, flags present in that map use the map value.
+ * Flags absent from the map fall back to the documented default — the same
+ * value returned when no map is provided at all (Requirement 19.5).
  */
 export class DefaultFeatureFlagChecker implements FeatureFlagChecker {
+  /** Documented defaults — the canonical source of truth per flag (R19.6). */
+  private static readonly DEFAULTS: Record<string, boolean> = {
+    // Reconciled with isFeatureEnabled('test_gap_detection') in enhanced-orchestration-constraints.ts
+    test_gap_detection: true,
+  };
+
   private flags: Map<string, boolean>;
 
   constructor(flags?: Record<string, boolean>) {
-    this.flags = new Map(Object.entries(flags ?? { test_gap_detection: true }));
+    this.flags = new Map(Object.entries(flags ?? {}));
   }
 
   isEnabled(flagName: string): boolean {
-    return this.flags.get(flagName) ?? false;
+    if (this.flags.has(flagName)) {
+      return this.flags.get(flagName)!;
+    }
+    // Missing key falls back to the documented default (same as no-map behavior).
+    return DefaultFeatureFlagChecker.DEFAULTS[flagName] ?? false;
   }
 }
 
@@ -539,8 +804,9 @@ export class TestGapDetectorStage implements VerificationStage {
 
     const testFilePath = this.deriveTestPath(filePath, exportName);
 
-    // Run in Docker sandbox — only green runs accepted
-    const passed = await this.sandboxRunner.runTest(testContent, testFilePath);
+    // Run in Docker sandbox — only green runs accepted (R4.1)
+    const result = await this.sandboxRunner.runTest(testContent, testFilePath);
+    const passed = result.status === 'success';
 
     return {
       testFilePath,

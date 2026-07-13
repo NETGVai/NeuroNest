@@ -16,6 +16,7 @@
 import type { LLMClient, LLMMessage } from './llm-client';
 import { buildMinimalismSection, type CodeQualityDirectives } from './system-prompt-builder';
 import { findTriggeredSkills } from '../skills/skill-keyword-trigger';
+import { resolveRole } from '../orchestration/role-vocabulary';
 
 export interface SubagentTask {
   id: string;
@@ -146,18 +147,28 @@ export function formatSubagentResults(results: SubagentResult[]): string {
  * Resolve which skills from the catalog should be injected into a subagent's context.
  *
  * Logic:
- * 1. Run keyword matching against the task description (text) and role
- * 2. Filter matched skills against the role's allowlist
- * 3. Enforce per-role budget: reject (never truncate) skills that exceed remaining budget
- * 4. Return skill IDs and their content that fit within budget
+ * 1. Validate the role against the shared Role_Vocabulary by exact comparison (R10.2)
+ * 2. If the role is not in the vocabulary, return no skills and surface an indication (R10.5)
+ * 3. Run keyword matching against the task description (text) and role
+ * 4. Filter matched skills against the role's allowlist (derived from Role_Vocabulary, R10.3)
+ * 5. Enforce per-role budget: reject (never truncate) skills that exceed remaining budget
+ * 6. Return skill IDs and their content that fit within budget
  *
- * Requirements: 5.2, 5.4, 5.5, 5.8
+ * Requirements: 5.2, 5.4, 5.5, 5.8, 10.2, 10.3, 10.4, 10.5
  */
 export function resolveSkillsForRole(
   task: EnhancedSubagentTask,
   config: SkillInjectionConfig,
   skillCatalog: Map<string, string>,
-): { skillIds: string[]; skillContent: string } {
+): { skillIds: string[]; skillContent: string; unmatchedIndication?: string } {
+  // Validate the role against the shared Role_Vocabulary (R10.2, R10.5)
+  const resolution = resolveRole(task.role);
+  if (!resolution.matched) {
+    // Role absent from vocabulary: return no skills and surface indication (R10.5)
+    console.warn(`[resolveSkillsForRole] ${resolution.unmatchedIndication}`);
+    return { skillIds: [], skillContent: '', unmatchedIndication: resolution.unmatchedIndication };
+  }
+
   // Get allowlist for this role; if no allowlist entry, no skills are injectable
   const allowedSkills = config.roleAllowlist.get(task.role);
   if (!allowedSkills || allowedSkills.length === 0) {
@@ -170,7 +181,7 @@ export function resolveSkillsForRole(
   // Run keyword matching against the search text and role
   const triggered = findTriggeredSkills(searchText, task.role);
 
-  // Filter to only skills on the allowlist
+  // Filter to only skills on the allowlist (R10.3)
   const allowedTriggered = triggered.filter(t => allowedSkills.includes(t.mapping.skillId));
 
   if (allowedTriggered.length === 0) {

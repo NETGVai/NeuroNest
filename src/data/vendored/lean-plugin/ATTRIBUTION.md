@@ -21,9 +21,12 @@ extended for the NeuroNest agent pipeline.
 ## Components Derived from This Source
 
 - `src/data/bundled-catalog/skills/lean-minimalism.md` — Bundled skill document
-- `src/loop-engine/harness/verifier-subagent.ts` — Lean Comment parsing and reconciliation
-- `src/loop-engine/harness/debt-ledger.ts` — Debt Ledger storage for intentional simplifications
 - `src/pipeline/system-prompt-builder.ts` — Minimalism directive section builder
+
+> Note: the former `src/loop-engine/harness/verifier-subagent.ts` (Lean Comment
+> parsing and reconciliation) and `src/loop-engine/harness/debt-ledger.ts`
+> (Debt Ledger storage) components were removed with the loop-engine subsystem
+> (spec orphaned-code-remediation task 14.2, R10 REMOVE disposition).
 
 ## Modifications
 

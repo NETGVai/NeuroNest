@@ -7,6 +7,13 @@ import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs';
 import { EventEmitter } from 'events';
+import {
+  type ListenerConfig,
+  WHATSAPP_WEBHOOK_DEFAULT_PORT,
+  DEFAULT_BIND_HOST,
+  buildListenerConfig,
+} from './listener-config';
+import { APP_NAME } from '../branding';
 
 // ── Public types ────────────────────────────────────────────────────
 
@@ -44,6 +51,14 @@ interface ChannelHandle {
   send: (to: string, message: string) => Promise<SendResult>;
 }
 
+// ── Channel status event constant (R22.1, R22.2) ───────────────────
+
+/**
+ * The single shared constant for all channel-status-transition events.
+ * Every emitter and the `onStatusChange` subscriber reference this constant.
+ */
+export const CHANNEL_STATUS_EVENT = 'channel-status' as const;
+
 // ── Supported channel IDs that have real SDK wiring ─────────────────
 
 const SUPPORTED_CHANNELS = new Set([
@@ -60,6 +75,17 @@ const SUPPORTED_CHANNELS = new Set([
 export class ChannelManager {
   private channels = new Map<string, ChannelHandle>();
   private emitter = new EventEmitter();
+
+  /**
+   * The currently active WhatsApp webhook listener config, if connected.
+   * Used for port-conflict detection with other listeners (R22.8).
+   */
+  private _whatsAppWebhookListenerConfig: ListenerConfig | null = null;
+
+  /** Get the active WhatsApp webhook listener config (null if not connected). */
+  getWhatsAppWebhookListenerConfig(): ListenerConfig | null {
+    return this._whatsAppWebhookListenerConfig;
+  }
 
   // ── Public API ──────────────────────────────────────────────────
 
@@ -116,6 +142,11 @@ export class ChannelManager {
     handle.connection.status = 'disconnected';
     handle.connection.error = undefined;
     this.channels.delete(channelId);
+    // Clear webhook listener config on WhatsApp disconnect (R22.8)
+    if (channelId === 'whatsapp') {
+      this._whatsAppWebhookListenerConfig = null;
+    }
+    this.emitter.emit(CHANNEL_STATUS_EVENT, { channelId, status: 'disconnected' });
     console.log(`[ChannelManager] ${channelId} disconnected`);
   }
 
@@ -150,7 +181,7 @@ export class ChannelManager {
   }
 
   onStatusChange(handler: (status: { channelId: string; status: string; qrCode?: string; error?: string }) => void): void {
-    this.emitter.on('status-change', handler);
+    this.emitter.on(CHANNEL_STATUS_EVENT, handler);
   }
 
   stopAll(): void {
@@ -160,8 +191,10 @@ export class ChannelManager {
       } catch (err: any) {
         console.error(`[ChannelManager] stopAll – error stopping ${id}:`, err?.message);
       }
+      this.emitter.emit(CHANNEL_STATUS_EVENT, { channelId: id, status: 'disconnected' });
     }
     this.channels.clear();
+    this._whatsAppWebhookListenerConfig = null;
     this.emitter.removeAllListeners();
     console.log('[ChannelManager] all channels stopped');
   }
@@ -176,25 +209,10 @@ export class ChannelManager {
     this.emitter.emit('message', msg);
   }
 
-  // ── WhatsApp (Cloud API or Baileys) ──────────────────────────────
-
-  private whatsAppAdapter: any = null;
+  // ── WhatsApp (Cloud API only) ──────────────────────────────────────
 
   private async connectWhatsApp(channelId: string, _config: any): Promise<ConnectResult> {
-    const mode = _config?.mode || 'auto';
-
-    // Explicit mode selection
-    if (mode === 'baileys' || mode === 'qr') {
-      return this.connectWhatsAppBaileys(channelId, _config);
-    }
-    if (mode === 'cloud') {
-      return this.connectWhatsAppCloud(channelId, _config);
-    }
-    // Auto: if Cloud API credentials provided, use Cloud API; otherwise try Baileys
-    if (_config?.accessToken && _config?.phoneNumberId) {
-      return this.connectWhatsAppCloud(channelId, _config);
-    }
-    return this.connectWhatsAppBaileys(channelId, _config);
+    return this.connectWhatsAppCloud(channelId, _config);
   }
 
   // Cloud API mode — official, reliable, never blocked
@@ -213,7 +231,7 @@ export class ChannelManager {
           '3. Copy the "Temporary access token" and "Phone number ID"\n' +
           '4. Connect with: /channel whatsapp accessToken=<token> phoneNumberId=<id>\n\n' +
           'The Cloud API is free for up to 1,000 conversations/month.\n' +
-          'Note: Baileys (QR code method) is no longer supported — WhatsApp blocks it with HTTP 405.'
+          'WhatsApp integration uses the official Cloud API exclusively.'
       };
     }
 
@@ -240,7 +258,21 @@ export class ChannelManager {
     // Start a local webhook server to receive incoming messages from WhatsApp
     const http = require('node:http');
     let webhookServer: any = null;
-    const webhookPort = 9876;
+    // Use configured port or distinct default; bind loopback unless remote access configured (R22.5, R22.6)
+    const webhookListenerConfig = buildListenerConfig(
+      {
+        port: _config?.webhookPort,
+        host: _config?.webhookHost,
+        remoteAccessExplicit: !!_config?.webhookHost && _config.webhookHost !== DEFAULT_BIND_HOST,
+      },
+      { port: WHATSAPP_WEBHOOK_DEFAULT_PORT },
+      'WhatsApp Cloud webhook',
+    );
+    const webhookPort = webhookListenerConfig.port;
+    const webhookHost = webhookListenerConfig.host;
+
+    // Store the listener config for port-conflict detection (R22.8)
+    this._whatsAppWebhookListenerConfig = webhookListenerConfig;
 
     try {
       webhookServer = http.createServer((req: any, res: any) => {
@@ -296,8 +328,8 @@ export class ChannelManager {
         res.end('Not Found');
       });
 
-      webhookServer.listen(webhookPort, '0.0.0.0');
-      console.log('[WhatsApp:Cloud] Webhook server listening on port', webhookPort);
+      webhookServer.listen(webhookPort, webhookHost);
+      console.log('[WhatsApp:Cloud] Webhook server listening on', webhookHost + ':' + webhookPort);
     } catch (e: any) {
       console.warn('[WhatsApp:Cloud] Could not start webhook server:', e?.message);
       // Continue anyway — outbound messaging still works
@@ -327,50 +359,8 @@ export class ChannelManager {
       },
     });
 
-    this.emitter.emit('status-change', { channelId, status: 'connected' });
-    return { success: true, message: 'WhatsApp Cloud API connected! Webhook on port ' + webhookPort + '. Configure your Meta webhook URL to point to this machine.' };
-  }
-
-  // Baileys mode — uses browser fingerprinting and pairing code auth to avoid 405 blocks
-  private async connectWhatsAppBaileys(channelId: string, _config: any): Promise<ConnectResult> {
-    try {
-      const { WhatsAppAdapter } = require('../main/channels/whatsapp');
-
-      if (this.whatsAppAdapter) {
-        await this.whatsAppAdapter.disconnect();
-      }
-
-      // Support pairing code auth: /channel whatsapp pairingCode=+1234567890
-      const pairingPhoneNumber = _config?.pairingCode || _config?.phoneNumber || null;
-      this.whatsAppAdapter = new WhatsAppAdapter(
-        pairingPhoneNumber ? { pairingPhoneNumber } : undefined
-      );
-
-      this.whatsAppAdapter.onMessage((msg: IncomingMessage) => { this.emit(msg); });
-      this.whatsAppAdapter.onStatus((status: any) => {
-        this.emitter.emit('status-change', status);
-        const handle = this.channels.get(channelId);
-        if (handle) {
-          if (status.status === 'connected') { handle.connection.status = 'connected'; handle.connection.error = undefined; }
-          else if (status.status === 'error' || status.status === 'disconnected') { handle.connection.status = status.status === 'error' ? 'error' : 'disconnected'; handle.connection.error = status.error; }
-          else { handle.connection.status = 'connecting'; }
-        }
-      });
-
-      this.upsertHandle(channelId, {
-        connection: { id: channelId, status: 'connecting' },
-        stop: () => { if (this.whatsAppAdapter) this.whatsAppAdapter.disconnect().catch(() => {}); },
-        send: async (to: string, message: string) => {
-          if (!this.whatsAppAdapter) return { success: false, message: 'Not connected' };
-          return this.whatsAppAdapter.sendMessage(to, message);
-        },
-      });
-
-      this.emitter.emit('status-change', { channelId, status: 'connecting' });
-      return await this.whatsAppAdapter.connect();
-    } catch (e: any) {
-      return { success: false, message: 'Baileys connection failed: ' + (e?.message || '') };
-    }
+    this.emitter.emit(CHANNEL_STATUS_EVENT, { channelId, status: 'connected' });
+    return { success: true, message: 'WhatsApp Cloud API connected! Webhook on ' + webhookHost + ':' + webhookPort + '. Configure your Meta webhook URL to point to this machine.' };
   }
 
   // ── Telegram via grammy ──────────────────────────────────────────
@@ -714,7 +704,7 @@ export class ChannelManager {
             await transporter.sendMail({
               from: username,
               to,
-              subject: 'NeuroNest Message',
+              subject: `${APP_NAME} Message`,
               text: message,
             });
             return { success: true, message: 'Email sent successfully' };
@@ -727,7 +717,7 @@ export class ChannelManager {
       console.log('[ChannelManager] Email SMTP connected');
       return {
         success: true,
-        message: 'Email connected (send-only — incoming messages require IMAP which is not yet supported)',
+        message: 'Email connected (send-only — receiving requires IMAP integration which is not currently implemented)',
       };
     } catch (err: any) {
       const msg = err?.message ?? 'Email connection failed';
@@ -791,7 +781,7 @@ export class ChannelManager {
         stop: () => {},
         send: async () => ({ success: false, message: errMsg }),
       });
-      this.emitter.emit('status', { channelId, status: 'error', error: errMsg });
+      this.emitter.emit(CHANNEL_STATUS_EVENT, { channelId, status: 'error', error: errMsg });
       return { success: false, message: errMsg };
     }
 
@@ -841,7 +831,7 @@ export class ChannelManager {
       },
     });
 
-    this.emitter.emit('status', { channelId, status: 'connected' });
+    this.emitter.emit(CHANNEL_STATUS_EVENT, { channelId, status: 'connected' });
     return { success: true, message: 'Connected to GitHub as ' + validateResult.user };
   }
 }

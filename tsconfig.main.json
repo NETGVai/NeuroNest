@@ -2,7 +2,8 @@
   "compilerOptions": {
     "target": "ES2022",
     "module": "CommonJS",
-    "moduleResolution": "bundler",
+    "moduleResolution": "node",
+    "ignoreDeprecations": "6.0",
     "lib": [
       "ES2022",
       "DOM",

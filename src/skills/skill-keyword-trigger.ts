@@ -7,11 +7,12 @@
  * Implements retry-once logic for attachment failures: if the first attempt
  * fails, retries once and logs an error on the second failure.
  *
- * Requirements: 1.2, 1.3, 1.6
+ * Requirements: 1.2, 1.3, 1.6, 10.1, 10.4, 10.6
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { type Role } from '../orchestration/role-vocabulary.js';
 
 export interface KeywordSkillMapping {
   skillId: string;
@@ -30,17 +31,18 @@ export interface SkillAttachmentResult {
 /**
  * Default keyword-skill trigger mappings.
  * Each entry maps a skill to trigger keywords and eligible roles.
+ * Roles are derived solely from the shared Role_Vocabulary (R10.1, R10.6).
  */
 const KEYWORD_SKILL_MAPPINGS: KeywordSkillMapping[] = [
   {
     skillId: 'lean-minimalism',
     keywords: ['simplest', 'minimal', 'yagni', 'over-engineered', 'bloat', 'do less'],
-    roles: ['neuronest-coder', 'neuronest-reviewer', 'senior-developer', 'neuronest-refactor'],
+    roles: ['implementer', 'reviewer'] satisfies Role[],
   },
   {
     skillId: 'adr',
     keywords: ['architecture decision', 'adr', 'design decision', 'architectural record'],
-    roles: ['neuronest-architect', 'architect-planner', 'systems-architect', 'backend-architect', 'solutions-architect'],
+    roles: ['architect'] satisfies Role[],
   },
 ];
 

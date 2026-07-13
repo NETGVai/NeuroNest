@@ -15,8 +15,8 @@
  */
 
 import path from 'node:path';
-import os from 'node:os';
 import { initDatabase } from '../storage/database.js';
+import { getDataDirectory } from '../storage/data-directory.js';
 import { AgentSkillsService } from './agent-skills-service.js';
 import {
   initializeWebSocketIntegration,
@@ -109,7 +109,7 @@ export async function initializeAgentSkillsInMainProcess(): Promise<AgentSkillsS
 
   // 4. Database recovery manager ----------------------------------------------
   try {
-    const backupDir = path.join(os.homedir(), '.ai-superagent', 'backups');
+    const backupDir = path.join(getDataDirectory(), 'backups');
     recoveryManager = new DatabaseRecoveryManager(database, backupDir);
     componentStatus['database-recovery'] = { ok: true };
     logger.info('Database recovery manager initialized', { backupDir });

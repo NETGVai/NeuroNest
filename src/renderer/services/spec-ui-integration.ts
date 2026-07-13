@@ -16,6 +16,7 @@ import type {
   SpecQuestionMessage,
 } from '../types/action-buttons';
 import { ipcOn, type IpcUnsubscribe } from './ipc-client';
+import { UserInputBridge } from './user-input-bridge';
 
 /** IPC channel constants for spec workflow communication. */
 const IPC_CHANNELS = {
@@ -45,6 +46,7 @@ export class SpecUIController {
   private manager: IButtonGroupManager;
   private unsubscribers: IpcUnsubscribe[] = [];
   private indicatorEl: HTMLElement | null = null;
+  private userInputBridge: UserInputBridge | null = null;
 
   constructor(
     orchestrator: ISpecOrchestrator,
@@ -54,6 +56,26 @@ export class SpecUIController {
     this.orchestrator = orchestrator;
     this.renderer = renderer;
     this.manager = manager;
+  }
+
+  /**
+   * Initialize and start the user-input bridge, wiring it to render
+   * User_Input_Requests through the ActionButtonRenderer.
+   *
+   * @param containerProvider - Function returning the DOM container for user-input UI
+   *
+   * Requirements: 18.1, 18.2, 18.3, 18.4, 18.5, 18.6, 18.7
+   */
+  initUserInputBridge(containerProvider: () => HTMLElement | null): void {
+    if (this.userInputBridge) {
+      this.userInputBridge.dispose();
+    }
+    this.userInputBridge = new UserInputBridge(
+      this.renderer,
+      this.manager,
+      containerProvider,
+    );
+    this.userInputBridge.startListening();
   }
 
   /**
@@ -223,6 +245,10 @@ export class SpecUIController {
     }
     this.unsubscribers = [];
     this.indicatorEl = null;
+    if (this.userInputBridge) {
+      this.userInputBridge.dispose();
+      this.userInputBridge = null;
+    }
   }
 
   // ---------------------------------------------------------------------------

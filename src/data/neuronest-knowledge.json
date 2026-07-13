@@ -48,7 +48,7 @@
     },
     {
       "keywords": ["channel", "slack", "discord", "telegram", "whatsapp", "email", "github", "messaging", "integration"],
-      "answer": "💬 **Channel Hub — 6 Integrations**\n\nAll incoming messages are firewall-scanned, processed through the AI pipeline, then the response is sent back to the originating channel.\n\n• **Slack** (Bolt OAuth)\n• **Discord** (discord.js)\n• **Telegram** (Grammy Bot API)\n• **WhatsApp** (Baileys WebSocket)\n• **Email** (Nodemailer + IMAP)\n• **GitHub** (REST API)\n\nEvery outbound message routes through the same security gate. Your approval is required before send."
+      "answer": "💬 **Channel Hub — 6 Integrations**\n\nAll incoming messages are firewall-scanned, processed through the AI pipeline, then the response is sent back to the originating channel.\n\n• **Slack** (Bolt OAuth)\n• **Discord** (discord.js)\n• **Telegram** (Grammy Bot API)\n• **WhatsApp** (Cloud API)\n• **Email** (Nodemailer, send-only)\n• **GitHub** (REST API)\n\nEvery outbound message routes through the same security gate. Your approval is required before send."
     },
     {
       "keywords": ["company", "netgv", "who made", "who built", "creator", "developer", "team"],

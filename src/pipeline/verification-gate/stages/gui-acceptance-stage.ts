@@ -31,6 +31,7 @@ import type {
 import type { FeatureFlagChecker } from './test-gap-stage';
 import { DefaultFeatureFlagChecker } from './test-gap-stage';
 import type { AccessibilityFrictionEntry } from '../../../architecture/arch-quality-service';
+import { checkSandboxIsolation } from '../../sandbox-environment';
 
 // ─── GUI Acceptance Types ───────────────────────────────────────
 
@@ -327,6 +328,8 @@ export class DefaultAccessibilityFrictionLogger implements AccessibilityFriction
  * In production, this boots the app and provides DOM access.
  */
 export interface DockerSandboxPreview {
+  /** Identifies whether this sandbox provides real Docker isolation or is a no-op (R5.1) */
+  readonly isolationKind: 'docker' | 'noop';
   /** Boot the application preview in the Docker sandbox */
   boot(projectDir: string): Promise<{ success: boolean; error?: string }>;
   /** Get current DOM state as serialized string */
@@ -344,6 +347,18 @@ export interface DockerSandboxPreview {
 export interface ActionSecurityAnalyzer {
   /** Validate whether an action is safe to execute */
   validateAction(action: string, target: string, value?: string): Promise<{ allowed: boolean; reason?: string }>;
+}
+
+/**
+ * Interface for a security policy that provides explicit permit/deny rules.
+ * Used by FailClosedActionSecurityAnalyzer to determine whether an action is allowed.
+ */
+export interface SecurityPolicy {
+  /**
+   * Match an action against permit rules.
+   * @returns true if explicitly permitted, false if explicitly denied, undefined if no rule matches.
+   */
+  matchPermit(action: string, target: string, value?: string): boolean | undefined;
 }
 
 // ─── Interface: GUI Agent ───────────────────────────────────────
@@ -376,11 +391,19 @@ export interface QASpecialistSpawner {
 // ─── Default Implementations (Mock) ────────────────────────────
 
 /**
- * Default Docker sandbox preview — mock implementation.
- * In production, boots the app in Docker and provides real DOM access.
+ * Default Docker sandbox preview — NoOp/Mock implementation (R5.1).
+ * isolationKind is 'noop' — no real Docker-backed isolation.
+ * In production builds, boot() refuses before any host execution (R5.3, R5.4).
  */
 export class DefaultDockerSandboxPreview implements DockerSandboxPreview {
+  readonly isolationKind = 'noop' as const;
+
   async boot(_projectDir: string): Promise<{ success: boolean; error?: string }> {
+    // R5.3, R5.4: In production, refuse before any host execution
+    const refusal = checkSandboxIsolation(this.isolationKind);
+    if (refusal) {
+      return { success: false, error: refusal.reason };
+    }
     return { success: true };
   }
 
@@ -394,10 +417,34 @@ export class DefaultDockerSandboxPreview implements DockerSandboxPreview {
 }
 
 /**
- * Default Action Security Analyzer — mock that allows all actions.
- * In production, validates against security policies.
+ * Production default — deny unless an explicit permit rule matches.
+ * Fail-closed: any exception, indeterminate, or missing policy results in denial
+ * with an identifying reason.
+ *
+ * Requirements: 3.1, 3.2, 3.3, 3.4
  */
-export class DefaultActionSecurityAnalyzer implements ActionSecurityAnalyzer {
+export class FailClosedActionSecurityAnalyzer implements ActionSecurityAnalyzer {
+  constructor(private policy?: SecurityPolicy) {}
+
+  async validateAction(action: string, target: string, value?: string): Promise<{ allowed: boolean; reason?: string }> {
+    try {
+      const permit = this.policy?.matchPermit(action, target, value);
+      if (permit === true) return { allowed: true };
+      if (permit === false) return { allowed: false, reason: 'explicit deny' };
+      return { allowed: false, reason: 'no explicit permit rule (fail-closed)' };
+    } catch (e) {
+      return { allowed: false, reason: `indeterminate: ${String(e)}` };
+    }
+  }
+}
+
+/**
+ * Test-only allow-all analyzer — must be explicitly instantiated.
+ * Never selected as a production default.
+ *
+ * Requirement: 3.6
+ */
+export class AllowAllActionSecurityAnalyzerForTesting implements ActionSecurityAnalyzer {
   async validateAction(_action: string, _target: string, _value?: string): Promise<{ allowed: boolean; reason?: string }> {
     return { allowed: true };
   }
@@ -572,7 +619,7 @@ export class GUIAcceptanceStage implements VerificationStage {
   }) {
     this.featureFlagChecker = options?.featureFlagChecker ?? new DefaultFeatureFlagChecker();
     this.dockerSandbox = options?.dockerSandbox ?? new DefaultDockerSandboxPreview();
-    this.securityAnalyzer = options?.securityAnalyzer ?? new DefaultActionSecurityAnalyzer();
+    this.securityAnalyzer = options?.securityAnalyzer ?? new FailClosedActionSecurityAnalyzer();
     this.qaSpawner = options?.qaSpawner ?? new DefaultQASpecialistSpawner();
     this.acceptanceCriteria = options?.acceptanceCriteria ?? [];
     this.scriptWriter = options?.scriptWriter ?? new DefaultE2EScriptWriter();

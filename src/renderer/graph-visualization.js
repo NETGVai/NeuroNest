@@ -46,16 +46,17 @@ function initializeCytoscape(container, graphData) {
         'label': 'data(label)',
         'text-valign': 'center',
         'text-halign': 'center',
-        'font-size': '12px',
+        'font-size': '11px',
         'font-family': 'system-ui, -apple-system, sans-serif',
-        'color': '#ffffff',
+        'color': '#cccccc',
         'text-outline-width': 2,
-        'text-outline-color': '#1e40af',
-        'width': 'mapData(degree, 1, 20, 30, 80)',
-        'height': 'mapData(degree, 1, 20, 30, 80)',
-        'border-width': 2,
-        'border-color': '#1e40af',
-        'cursor': 'pointer'
+        'text-outline-color': '#1e1e1e',
+        'width': 'mapData(degree, 1, 20, 25, 70)',
+        'height': 'mapData(degree, 1, 20, 25, 70)',
+        'border-width': 1.5,
+        'border-color': '#3c3c3c',
+        'cursor': 'pointer',
+        'overlay-opacity': 0
       }
     },
     // Code file nodes
@@ -100,21 +101,21 @@ function initializeCytoscape(container, graphData) {
       style: {
         'background-color': '#ef4444',
         'border-color': '#dc2626',
-        'border-width': 4,
-        'text-outline-color': '#dc2626'
+        'border-width': 3,
+        'text-outline-color': '#7f1d1d'
       }
     },
     // Edge styles
     {
       selector: 'edge',
       style: {
-        'width': 2,
-        'line-color': '#6b7280',
-        'target-arrow-color': '#6b7280',
+        'width': 1.5,
+        'line-color': '#3c3c3c',
+        'target-arrow-color': '#5a5a5a',
         'target-arrow-shape': 'triangle',
         'curve-style': 'bezier',
-        'arrow-scale': 1.2,
-        'opacity': 0.7
+        'arrow-scale': 1,
+        'opacity': 0.5
       }
     },
     // Import relationships
@@ -147,16 +148,16 @@ function initializeCytoscape(container, graphData) {
     {
       selector: 'node:selected',
       style: {
-        'border-width': 4,
-        'border-color': '#fbbf24',
-        'background-color': '#f59e0b'
+        'border-width': 3,
+        'border-color': '#007AFF',
+        'overlay-opacity': 0
       }
     },
     // Highlighted nodes (on hover)
     {
       selector: 'node.highlighted',
       style: {
-        'border-width': 3,
+        'border-width': 2.5,
         'border-color': '#fbbf24',
         'z-index': 10
       }
@@ -386,6 +387,11 @@ function setupCytoscapeEventListeners(cy, graphData) {
     
     console.log('[GraphViz] Node clicked:', nodeData);
     
+    // Highlight neighbors: dim everything, then brighten selected + neighbors
+    cy.elements().style('opacity', 0.2);
+    node.style('opacity', 1);
+    node.neighborhood().style('opacity', 1);
+    
     // Show node details
     showNodeDetails(nodeData);
   });
@@ -401,10 +407,11 @@ function setupCytoscapeEventListeners(cy, graphData) {
     showEdgeDetails(edgeData);
   });
 
-  // Background click handler (deselect)
+  // Background click handler (deselect and restore opacity)
   cy.on('tap', function(event) {
     if (event.target === cy) {
       cy.$(':selected').unselect();
+      cy.elements().style('opacity', 1);
     }
   });
 
