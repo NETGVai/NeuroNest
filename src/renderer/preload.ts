@@ -163,10 +163,14 @@ const INVOKE_CHANNELS = [
   'lint-test:get-config', 'lint-test:set-config', 'lint-test:run', 'lint-test:recent-runs', 'lint-test:stats', 'lint-test:detect',
   // Voice-to-Code
   'voice:transcribe', 'voice:get-config', 'voice:set-config', 'voice:download-models', 'voice:models-ready', 'voice:synthesize',
+  // Voice Input (Speech-to-Text) — Kilo-Inspired Feature Integration
+  'voice:start-capture', 'voice:stop-capture', 'voice:status',
+  // Interactive Terminal (Kilo-Inspired Feature Integration)
+  'terminal:create', 'terminal:write', 'terminal:read', 'terminal:close',
   // OS Mode
   'os-mode:screenshot', 'os-mode:get-config', 'os-mode:set-config',
   // Git Worktrees
-  'worktree:create', 'worktree:list', 'worktree:delete',
+  'worktree:create', 'worktree:list', 'worktree:delete', 'worktree:merge', 'worktree:discard', 'worktree:diff',
   // Notifications
   'notifications:get-config', 'notifications:set-config', 'notifications:send',
   // Context Items (Image/URL/Note/Pipe)
@@ -218,7 +222,7 @@ const INVOKE_CHANNELS = [
   // Skill Learner
   'skills:learned-list', 'skills:learned-delete', 'skills:find-matching',
   // Subagent
-  'subagent:spawn',
+  'subagent:spawn', 'subagent:status', 'subagent:results',
   // Architectural Quality
   'arch:scan', 'arch:latest', 'arch:gate-start', 'arch:gate-end', 'arch:gate-history',
   'arch:add-rule', 'arch:get-rules', 'arch:toggle-rule', 'arch:delete-rule', 'arch:check-rules',
@@ -255,6 +259,32 @@ const INVOKE_CHANNELS = [
   'e2e:get-config', 'e2e:update-config', 'e2e:share', 'e2e:get-share', 'e2e:list', 'e2e:delete', 'e2e:decrypt', 'e2e:stats',
   // Indexing Pipeline
   'indexing:getStatus', 'indexing:fullReindex', 'indexing:stop', 'indexing:getConfig', 'indexing:updateConfig',
+  // Inline Autocomplete (Kilo-Inspired Feature Integration)
+  'autocomplete:request', 'autocomplete:cancel', 'autocomplete:config',
+  // Semantic Index (Kilo-Inspired Feature Integration)
+  'semantic:search', 'semantic:index-status', 'semantic:reindex',
+  // Context Mentions (Kilo-Inspired Feature Integration)
+  'context:resolve-mention', 'context:list-mentionables',
+  // Prompt Enhancement (Kilo-Inspired Feature Integration)
+  'prompt:enhance', 'prompt:config',
+  // Commit Message Generator (Kilo-Inspired Feature Integration)
+  'commit:generate', 'commit:config',
+  // i18n (Kilo-Inspired Feature Integration)
+  'i18n:set-locale', 'i18n:get-locale', 'i18n:available-locales',
+  // LSP Integration (Kilo-Inspired Feature Integration)
+  'lsp:diagnostics', 'lsp:references', 'lsp:definition', 'lsp:symbols', 'lsp:status',
+  // DiffViewer (Kilo-Inspired Feature Integration)
+  'diff:get-turns', 'diff:get-files', 'diff:revert-turn', 'diff:revert-file',
+  // CheckpointTimeline (Kilo-Inspired Feature Integration)
+  'checkpoint:timeline', 'checkpoint:restore', 'checkpoint:star',
+  // Code Review Pipeline (Kilo-Inspired Feature Integration)
+  'review:start', 'review:status', 'review:comments', 'review:post-to-github',
+  // Cost Controls (Kilo-Inspired Feature Integration)
+  'cost:budget-set', 'cost:budget-status', 'cost:alert-config', 'cost:session-summary',
+  // Background Process Manager (Kilo-Inspired Feature Integration)
+  'process:start', 'process:stop', 'process:list', 'process:logs', 'process:status',
+  // Network Sandbox (Kilo-Inspired Feature Integration)
+  'sandbox:policy-get', 'sandbox:policy-set', 'sandbox:log', 'sandbox:activity',
   // Performance: BoundedMessageStore
   'load-older-messages', 'persist-overflow-messages', 'get-overflow-count', 'clear-overflow-session',
   // Readiness Probe (Feature 6)
@@ -292,6 +322,8 @@ const RECEIVE_CHANNELS = [
   'runtime-log', 'runtime-status-update', 'runtime-preflight-failed',
   // Voice TTS
   'voice:download-progress',
+  // Voice Input (Speech-to-Text) — real-time updates
+  'voice:status-update', 'voice:audio-level',
   // Diagnostics & Security
   'diagnostics-progress', 'security-scan-progress',
   // DeerFlow integration
@@ -323,6 +355,24 @@ const RECEIVE_CHANNELS = [
   'hooks:execution-status',
   // Intent Gate — decision broadcast (Main → Renderer)
   'intent:decision',
+  // Autocomplete status updates (Main → Renderer)
+  'autocomplete:status',
+  // Interactive Terminal status updates (Main → Renderer)
+  'terminal:output', 'terminal:status-update',
+  // Worktree manager panel updates (Main → Renderer)
+  'worktree:status-update',
+  // Prompt Enhancement confirmation (Main → Renderer)
+  'prompt:enhanced',
+  // DiffViewer turn updates (Main → Renderer)
+  'diff:turn-updated',
+  // CheckpointTimeline updates (Main → Renderer)
+  'checkpoint:timeline-updated',
+  // Cost Controls real-time budget events (Main → Renderer)
+  'cost:budget-event',
+  // Background Process Manager status updates (Main → Renderer)
+  'process:status-update',
+  // Network Sandbox activity updates (Main → Renderer)
+  'sandbox:activity-update',
 ];
 
 contextBridge.exposeInMainWorld('electronAPI', {

@@ -2525,10 +2525,32 @@ export class AgentLoopController {
       systemPrompt = buildSystemPrompt(projectDir, toolDefs, rulesContent, combinedContext);
     }
 
+    // ─── Context Mentions: resolve @-mentions in user message before LLM call (Req 14.3, 14.7) ───
+    let processedMessage = message;
+    if (this.isFeatureEnabled('context_mentions')) {
+      try {
+        const { ContextMentionsPreprocessor } = await import('./context-mentions-preprocessor.js');
+        const { MentionResolver } = await import('../context/mention-resolver.js');
+        const resolver = MentionResolver.getInstance();
+        const mentionsPreprocessor = new ContextMentionsPreprocessor(resolver, {
+          enabled: true,
+          budgetRatio: 0.3,
+          contextWindowTokens: 128_000,
+        });
+        const mentionsResult = await mentionsPreprocessor.process(message);
+        if (mentionsResult.hasMentions) {
+          processedMessage = mentionsResult.processedMessage;
+        }
+      } catch (err) {
+        // Graceful degradation: if mention preprocessing fails, use original message
+        console.warn('[AgentLoop] Context mentions preprocessing failed, proceeding with original message:', err);
+      }
+    }
+
     // Initialize conversation
     const messages: AgentMessage[] = [
       { role: 'system', content: systemPrompt },
-      { role: 'user', content: message },
+      { role: 'user', content: processedMessage },
     ];
 
     // Track state

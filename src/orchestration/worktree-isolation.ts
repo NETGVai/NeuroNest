@@ -11,7 +11,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { randomUUID } from 'node:crypto';
-import { rm, access } from 'node:fs/promises';
+import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 
 const execFileAsync = promisify(execFile);
@@ -90,7 +90,7 @@ export class WorktreeIsolation {
    */
   async validate(handle: WorktreeHandle): Promise<ValidateResult> {
     // Get the current main branch name
-    const mainBranch = await this.getMainBranch();
+    const _mainBranch = await this.getMainBranch();
 
     try {
       // Attempt a dry-run merge: merge --no-commit --no-ff, then abort

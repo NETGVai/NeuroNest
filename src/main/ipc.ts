@@ -129,6 +129,21 @@ import { RuntimeManager } from '../runtime';
 import type { RuntimeError } from '../runtime';
 import { registerDeerFlowIPC, setDeerFlowMainWindow } from './deerflow-ipc.js';
 import { registerUnifiedIntentGateIPC } from './unified-intent-gate-ipc.js';
+import { registerAutocompleteIPC } from './autocomplete-ipc.js';
+import { registerSemanticIPC } from './semantic-ipc.js';
+import { registerMentionIPC } from './mention-ipc.js';
+import { registerPromptEnhancerIPC } from './prompt-enhancer-ipc.js';
+import { registerCommitIPC } from './commit-ipc.js';
+import { registerSubagentIPC } from './subagent-ipc.js';
+import { registerLspIPC } from './lsp-ipc.js';
+import { registerReviewIPC } from './review-ipc.js';
+import { registerCostIPC } from './cost-ipc.js';
+import { registerProcessIPC } from './process-ipc.js';
+import { registerNetworkSandboxIPC } from './network-sandbox-ipc.js';
+import { registerTerminalIPC } from './terminal-ipc.js';
+import { registerCheckpointTimelineIPC } from './checkpoint-timeline-ipc.js';
+import { registerNotebookIPC } from './notebook-ipc.js';
+import { registerMarketplaceIPC } from './marketplace-ipc.js';
 // P5 orphan sweep (task 23.2) — Category A unwired IPC handler modules, wired
 // onto the live IPC path from registerIPCHandlers below (R16.3, R16.4).
 import { registerVisionIPC } from './vision-ipc.js';
@@ -2901,6 +2916,40 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
         const [switchProvider, switchModel] = modelStr.split(',');
         if (smartRouterRef) smartRouterRef.setOverride(switchProvider, switchModel);
         sendAndStore(mainWindow, { role: 'assistant', content: '🔀 Model switched to **' + switchProvider + '/' + switchModel + '**. Use `/model` to check status or clear with the Router settings.', isCommand: true, agent: 'Router' });
+        mainWindow.webContents.send('chat-response', { role: 'assistant', content: '', agent: 'NeuroNest' });
+        return;
+      } else if (result.success && result.output.startsWith('__COMMIT_GENERATE__')) {
+        // Smart Commit Message Generation (Kilo-Inspired Feature)
+        try {
+          sendAndStore(mainWindow, { role: 'assistant', content: '📝 Generating commit message from staged changes...', isCommand: true, agent: 'CommitGen' });
+          const { CommitMessageGenerator } = require('../git/commit-message-generator');
+          const commitGen = CommitMessageGenerator.getInstance();
+          // Inject LLM client for AI-powered message generation
+          const commitLLM = resolveActiveLLMClient();
+          if (commitLLM) {
+            commitGen.setLLMClient({
+              async chat(messages: any[], options?: any) {
+                const r = await commitLLM.chat(messages, options);
+                return { content: r?.content || '' };
+              },
+            });
+          }
+          const commitMsg = await commitGen.generate();
+          if (commitMsg) {
+            sendAndStore(mainWindow, {
+              role: 'assistant',
+              content: '📝 **Generated Commit Message:**\n\n```\n' + commitMsg.full + '\n```\n\n' +
+                '**Type:** ' + commitMsg.type + '\n**Scope:** ' + commitMsg.scope + '\n\n' +
+                '_Copy the message above and use it with `git commit -m`._',
+              isCommand: true,
+              agent: 'CommitGen',
+            });
+          } else {
+            sendAndStore(mainWindow, { role: 'assistant', content: '⚠️ No staged changes found. Stage files with `git add` first.', isCommand: true, agent: 'CommitGen' });
+          }
+        } catch (commitErr: any) {
+          sendAndStore(mainWindow, { role: 'assistant', content: '❌ Commit message generation failed: ' + (commitErr?.message || 'Unknown error'), isCommand: true, agent: 'CommitGen' });
+        }
         mainWindow.webContents.send('chat-response', { role: 'assistant', content: '', agent: 'NeuroNest' });
         return;
       } else {
@@ -9711,6 +9760,314 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
     console.warn('[IPC] Unified Intent Gate IPC registration failed (non-fatal):', err?.message);
   }
 
+  // ── Kilo-Inspired Feature: Inline Autocomplete IPC ───────────────
+  try {
+    registerAutocompleteIPC({
+      mainWindow,
+      featureGate: new FeatureGateSystem({}),
+      firewallEvaluator: firewallEngine || undefined,
+    });
+  } catch (err: any) {
+    console.warn('[IPC] Autocomplete IPC registration failed (non-fatal):', err?.message);
+  }
+
+  // ── Kilo-Inspired Feature: Semantic Index IPC ───────────────────
+  try {
+    registerSemanticIPC({
+      featureGate: new FeatureGateSystem({}),
+      getIndexingPipeline: () => indexingPipelineController,
+      getVectorStore: () => {
+        // The vector store is accessed through the indexing pipeline controller
+        // or directly from the EmbeddingStore if available
+        if (indexingPipelineController && (indexingPipelineController as any).embeddingStore) {
+          return (indexingPipelineController as any).embeddingStore;
+        }
+        return null;
+      },
+      getActiveProjectId: () => activeSessionId,
+    });
+  } catch (err: any) {
+    console.warn('[IPC] Semantic IPC registration failed (non-fatal):', err?.message);
+  }
+
+  // ── Kilo-Inspired Feature: Context Mentions IPC ──────────────────
+  try {
+    registerMentionIPC({
+      isFeatureEnabled: () => {
+        try {
+          const fg = new FeatureGateSystem({});
+          return fg.isEnabled('context_mentions');
+        } catch {
+          return true; // Default to enabled if gate system is unavailable
+        }
+      },
+    });
+  } catch (err: any) {
+    console.warn('[IPC] Mention IPC registration failed (non-fatal):', err?.message);
+  }
+
+  // ── Kilo-Inspired Feature: Prompt Enhancement IPC ────────────────
+  try {
+    registerPromptEnhancerIPC({
+      featureGate: new FeatureGateSystem({}),
+      resolveLLMClient: () => resolveActiveLLMClient(),
+    });
+  } catch (err: any) {
+    console.warn('[IPC] Prompt Enhancer IPC registration failed (non-fatal):', err?.message);
+  }
+
+  // ── Kilo-Inspired Feature: Commit Message Generator IPC ─────────
+  try {
+    registerCommitIPC({
+      featureGate: new FeatureGateSystem({}),
+      resolveLLMClient: () => {
+        const client = resolveActiveLLMClient();
+        if (!client) return null;
+        // Wrap to match CommitLLMClient interface
+        return {
+          async chat(
+            messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
+            options?: { temperature?: number; maxTokens?: number }
+          ) {
+            const result = await client.chat(messages as any, options);
+            return { content: result?.content || '' };
+          },
+        };
+      },
+    });
+  } catch (err: any) {
+    console.warn('[IPC] Commit IPC registration failed (non-fatal):', err?.message);
+  }
+
+  // ── Kilo-Inspired Feature: Subagent Spawning IPC ────────────────
+  try {
+    registerSubagentIPC({
+      isFeatureEnabled: () => {
+        try {
+          const fg = new FeatureGateSystem({});
+          return fg.isEnabled('subagent_spawning');
+        } catch {
+          return false; // Default to disabled if gate system is unavailable
+        }
+      },
+      resolveLLMClient: () => resolveActiveLLMClient(),
+      getActiveSessionId: () => activeSessionId,
+      costTracker: costStore ? {
+        recordCost(sessionId: string, costUSD: number, metadata: Record<string, unknown>) {
+          try {
+            costStore.record({
+              projectId: sessionId,
+              provider: (metadata.provider as string) || 'subagent',
+              model: (metadata.model as string) || 'subagent',
+              promptTokens: (metadata.promptTokens as number) || 0,
+              completionTokens: (metadata.completionTokens as number) || 0,
+              cost: costUSD,
+            });
+          } catch {}
+        },
+        getSessionCost(sessionId: string) {
+          try { return costStore.getProjectCost(sessionId); }
+          catch { return 0; }
+        },
+      } : null,
+      getSpawnBudget: () => {
+        try {
+          const budgetStr = getCachedConfig('subagent-spawn-budget');
+          if (budgetStr) {
+            const budget = parseInt(budgetStr, 10);
+            if (Number.isFinite(budget) && budget > 0) return budget;
+          }
+        } catch {}
+        return 10; // Default: 10 spawns per session
+      },
+    });
+  } catch (err: any) {
+    console.warn('[IPC] Subagent IPC registration failed (non-fatal):', err?.message);
+  }
+
+  // ── Kilo-Inspired Feature: LSP Integration IPC ──────────────────
+  try {
+    registerLspIPC({
+      isFeatureEnabled: () => {
+        try {
+          const fg = new FeatureGateSystem({});
+          return fg.isEnabled('lsp_intelligence');
+        } catch {
+          return false; // Default to disabled if gate system is unavailable
+        }
+      },
+      getActiveProjectDir: () => {
+        if (!activeSessionId) return null;
+        const os = require('node:os');
+        const path = require('node:path');
+        return path.join(os.homedir(), '.neuronest', 'projects', activeSessionId);
+      },
+    });
+  } catch (err: any) {
+    console.warn('[IPC] LSP IPC registration failed (non-fatal):', err?.message);
+  }
+
+  // ── Kilo-Inspired Feature: Code Review Pipeline IPC ─────────────
+  try {
+    registerReviewIPC({
+      isFeatureEnabled: () => {
+        try {
+          const fg = new FeatureGateSystem({});
+          return fg.isEnabled('code_review_pipeline');
+        } catch {
+          return false;
+        }
+      },
+      resolveLLMClient: () => {
+        const client = resolveActiveLLMClient();
+        if (!client) return null;
+        return {
+          async chat(
+            messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
+            options?: { temperature?: number; maxTokens?: number }
+          ) {
+            const result = await client.chat(messages as any, options);
+            return { content: result?.content || '' };
+          },
+        };
+      },
+      getProjectCwd: () => {
+        if (!activeSessionId) return null;
+        const os = require('node:os');
+        const path = require('node:path');
+        return path.join(os.homedir(), '.neuronest', 'projects', activeSessionId);
+      },
+      getProjectId: () => activeSessionId,
+      db: db || undefined,
+    });
+  } catch (err: any) {
+    console.warn('[IPC] Review Pipeline IPC registration failed (non-fatal):', err?.message);
+  }
+
+  // ── Kilo-Inspired Feature: Cost Controls IPC ────────────────────
+  try {
+    registerCostIPC({
+      mainWindow,
+      featureGate: new FeatureGateSystem({}),
+      getDb: () => db,
+      getActiveSessionId: () => activeSessionId,
+    });
+  } catch (err: any) {
+    console.warn('[IPC] Cost Controls IPC registration failed (non-fatal):', err?.message);
+  }
+
+  // ── Kilo-Inspired Feature: Background Process Manager IPC ───────
+  try {
+    registerProcessIPC({
+      mainWindow,
+      featureGate: (() => {
+        try { return new FeatureGateSystem({}); } catch { return undefined; }
+      })(),
+    });
+  } catch (err: any) {
+    console.warn('[IPC] Background Process Manager IPC registration failed (non-fatal):', err?.message);
+  }
+
+  // ── Kilo-Inspired Feature: Network Sandbox IPC ──────────────────
+  try {
+    registerNetworkSandboxIPC({
+      isFeatureEnabled: () => {
+        try {
+          const fg = new FeatureGateSystem({});
+          return fg.isEnabled('network_sandbox');
+        } catch {
+          return false;
+        }
+      },
+    });
+  } catch (err: any) {
+    console.warn('[IPC] Network Sandbox IPC registration failed (non-fatal):', err?.message);
+  }
+
+  // ── Kilo-Inspired Feature: Interactive Terminal IPC ──────────────
+  try {
+    registerTerminalIPC({
+      isFeatureEnabled: () => {
+        try {
+          const fg = new FeatureGateSystem({});
+          return fg.isEnabled('interactive_terminal');
+        } catch {
+          return false;
+        }
+      },
+      mainWindow,
+      getActiveWorkspaceId: () => activeSessionId,
+      getActiveProjectDir: () => {
+        if (!activeSessionId) return null;
+        const os = require('node:os');
+        const path = require('node:path');
+        return path.join(os.homedir(), '.neuronest', 'projects', activeSessionId);
+      },
+    });
+  } catch (err: any) {
+    console.warn('[IPC] Interactive Terminal IPC registration failed (non-fatal):', err?.message);
+  }
+
+  // ── Kilo-Inspired Feature: Checkpoint Timeline IPC ──────────────
+  try {
+    registerCheckpointTimelineIPC({
+      mainWindow,
+      featureGate: new FeatureGateSystem({}),
+      getActiveSessionId: () => activeSessionId,
+      getCheckpointService: () => {
+        const os = require('node:os');
+        const path = require('node:path');
+        return new (require('../durability/checkpoint-service.js').CheckpointService)({
+          directory: path.join(os.homedir(), '.neuronest', 'checkpoints'),
+          maxDiskUsageMb: 500,
+          currentSchemaVersion: 1,
+        });
+      },
+    });
+  } catch (err: any) {
+    console.warn('[IPC] Checkpoint Timeline IPC registration failed (non-fatal):', err?.message);
+  }
+
+  // ── Kilo-Inspired Feature: Notebook Integration IPC ─────────────
+  try {
+    registerNotebookIPC({
+      mainWindow,
+      isFeatureEnabled: () => {
+        try {
+          const fg = new FeatureGateSystem({});
+          return fg.isEnabled('notebook_integration');
+        } catch {
+          return false;
+        }
+      },
+      getProjectDir: () => {
+        if (!activeSessionId) return null;
+        const os = require('node:os');
+        const path = require('node:path');
+        return path.join(os.homedir(), '.neuronest', 'projects', activeSessionId);
+      },
+    });
+  } catch (err: any) {
+    console.warn('[IPC] Notebook IPC registration failed (non-fatal):', err?.message);
+  }
+
+  // ── MCP Marketplace IPC ─────────────────────────────────────────
+  try {
+    registerMarketplaceIPC({
+      db,
+      projectDir: (() => {
+        if (!activeSessionId) return process.cwd();
+        const os = require('node:os');
+        const path = require('node:path');
+        return path.join(os.homedir(), '.neuronest', 'projects', activeSessionId);
+      })(),
+      firewallEngine,
+    });
+    console.log('[IPC] Marketplace IPC handlers registered');
+  } catch (err: any) {
+    console.warn('[IPC] Marketplace IPC registration failed (non-fatal):', err?.message);
+  }
+
   // ── Shell: open external URL in default browser ──
   ipcMain.handle('shell:open-external', async (_event: any, url: string) => {
     const { shell } = require('electron');
@@ -11062,16 +11419,10 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
   ipcMain.handle('skills:find-matching', async (_ev: any, message: string) => { try { return skillLearner?.findMatchingSkill(message) ?? null; } catch { return null; } });
 
   // ── Subagent IPC ───────────────────────────────────────────────
-  ipcMain.handle('subagent:spawn', async (_ev: any, args: { name: string; task: string; systemPrompt?: string }) => {
-    try {
-      const llm = resolveActiveLLMClient();
-      if (!llm) return { success: false, error: 'No LLM provider configured' };
-      const result = await spawnSubagent({ id: require('node:crypto').randomUUID(), name: args.name, task: args.task, systemPrompt: args.systemPrompt }, llm);
-      return result;
-    } catch (e: any) { return { success: false, error: e.message }; }
-  });
+  // NOTE: subagent:spawn is registered by registerSubagentIPC() in the Kilo-Inspired section.
+  // Do NOT re-register here to avoid "Attempted to register a second handler" errors.
 
-  console.log('[IPC] Scheduler, Skill Learner, Subagent handlers registered');
+  console.log('[IPC] Scheduler, Skill Learner handlers registered');
 
   // ── OS Mode IPC (screenshot + click control) ────────────────────
   ipcMain.handle('os-mode:screenshot', async () => {
@@ -11125,6 +11476,48 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
   ipcMain.handle('worktree:create', async (_ev: any, args: any) => { try { return worktreeService.create(args); } catch (e: any) { return { error: e.message }; } });
   ipcMain.handle('worktree:list', async (_ev: any, projectId: string) => { try { return worktreeService.list(projectId); } catch { return []; } });
   ipcMain.handle('worktree:delete', async (_ev: any, id: string) => { try { return { success: worktreeService.delete(id) }; } catch { return { success: false }; } });
+  ipcMain.handle('worktree:merge', async (_ev: any, args: { worktreeId: string; projectDir: string }) => {
+    try {
+      const { WorktreeManager } = require('../worktree/worktree-manager');
+      const { WorktreePromotion } = require('../worktree/worktree-promotion');
+      const config = { projectDir: args.projectDir, projectId: args.worktreeId, maxConcurrentWorktrees: 5, abandonedThresholdMs: 86400000, envFiles: ['.env', '.env.local'], symlinkNodeModules: true };
+      const manager = WorktreeManager.getInstance(config);
+      if (db) manager.setDatabase(db);
+      const session = manager.getSession(args.worktreeId);
+      if (!session) return { success: false, error: 'Worktree session not found' };
+      const promotion = new WorktreePromotion(manager, args.projectDir);
+      const result = await promotion.mergeToCurrent(session);
+      return result;
+    } catch (e: any) { return { success: false, error: e.message }; }
+  });
+  ipcMain.handle('worktree:discard', async (_ev: any, args: { worktreeId: string; projectDir: string }) => {
+    try {
+      const { WorktreeManager } = require('../worktree/worktree-manager');
+      const { WorktreePromotion } = require('../worktree/worktree-promotion');
+      const config = { projectDir: args.projectDir, projectId: args.worktreeId, maxConcurrentWorktrees: 5, abandonedThresholdMs: 86400000, envFiles: ['.env', '.env.local'], symlinkNodeModules: true };
+      const manager = WorktreeManager.getInstance(config);
+      if (db) manager.setDatabase(db);
+      const session = manager.getSession(args.worktreeId);
+      if (!session) return { success: false, error: 'Worktree session not found' };
+      const promotion = new WorktreePromotion(manager, args.projectDir);
+      const result = await promotion.discard(session);
+      return result;
+    } catch (e: any) { return { success: false, error: e.message }; }
+  });
+  ipcMain.handle('worktree:diff', async (_ev: any, args: { worktreeId: string; projectDir: string }) => {
+    try {
+      const { WorktreeManager } = require('../worktree/worktree-manager');
+      const { WorktreePromotion } = require('../worktree/worktree-promotion');
+      const config = { projectDir: args.projectDir, projectId: args.worktreeId, maxConcurrentWorktrees: 5, abandonedThresholdMs: 86400000, envFiles: ['.env', '.env.local'], symlinkNodeModules: true };
+      const manager = WorktreeManager.getInstance(config);
+      if (db) manager.setDatabase(db);
+      const session = manager.getSession(args.worktreeId);
+      if (!session) return { error: 'Worktree session not found' };
+      const promotion = new WorktreePromotion(manager, args.projectDir);
+      const summary = await promotion.generateDiffSummary(session);
+      return summary;
+    } catch (e: any) { return { error: e.message }; }
+  });
 
   // Notifications
   ipcMain.handle('notifications:get-config', async (_ev: any, projectId: string) => { try { return notificationService.getConfig(projectId); } catch { return null; } });
@@ -12396,6 +12789,122 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
   });
 
   console.log('[IPC] BoundedMessageStore handlers registered');
+
+  // ─── DiffViewer IPC Handlers (Kilo-Inspired Feature Integration) ────────
+  // Serves diff:get-turns, diff:get-files, diff:revert-turn, diff:revert-file
+  // Gated behind `diff_viewer` feature flag (requires `diff_review`).
+  // Requirements: 15.2, 15.3, 15.4, 15.5, 15.6
+  try {
+    const { TurnTracker, SqliteTurnTrackerStore } = require('../diff/turn-tracker');
+    const { RevertEngine } = require('../diff/revert-engine');
+
+    const diffViewerGate = new FeatureGateSystem({ diff_viewer: true, diff_review: true });
+    let diffTurnStore: any = null;
+    let diffTurnTracker: any = null;
+    let diffRevertEngine: any = null;
+
+    function ensureDiffSubsystem(): boolean {
+      if (!diffViewerGate.isEnabled('diff_viewer')) return false;
+      if (diffTurnStore) return true;
+      try {
+        diffTurnStore = new SqliteTurnTrackerStore(db);
+        diffTurnTracker = TurnTracker.getInstance(diffTurnStore);
+        const fsAdapter = {
+          readFile(filePath: string): string | null {
+            try { return require('node:fs').readFileSync(filePath, 'utf-8'); } catch { return null; }
+          },
+          writeFile(filePath: string, content: string): void {
+            const fs = require('node:fs');
+            const path = require('node:path');
+            fs.mkdirSync(path.dirname(filePath), { recursive: true });
+            fs.writeFileSync(filePath, content, 'utf-8');
+          },
+          deleteFile(filePath: string): void {
+            try { require('node:fs').unlinkSync(filePath); } catch {}
+          },
+          fileExists(filePath: string): boolean {
+            try { return require('node:fs').existsSync(filePath); } catch { return false; }
+          },
+        };
+        const checkpointCreator = {
+          createCheckpoint(description: string): string {
+            try {
+              const { CheckpointManager } = require('../durability/checkpoint-manager');
+              const mgr = CheckpointManager.getInstance();
+              return mgr.createCheckpoint({ description }) || `chk_${Date.now()}`;
+            } catch {
+              return `chk_${Date.now()}`;
+            }
+          },
+        };
+        diffRevertEngine = new RevertEngine(diffTurnStore, fsAdapter, checkpointCreator);
+        return true;
+      } catch (e: any) {
+        console.error('[IPC] DiffViewer subsystem init failed:', e.message);
+        return false;
+      }
+    }
+
+    ipcMain.handle('diff:get-turns', async (_ev: any, args: any) => {
+      try {
+        if (!ensureDiffSubsystem()) return [];
+        const { sessionId } = args || {};
+        if (!sessionId) return [];
+        return diffTurnTracker.getTurnsForSession(sessionId);
+      } catch (e: any) {
+        console.error('[IPC] diff:get-turns error:', e.message);
+        return [];
+      }
+    });
+
+    ipcMain.handle('diff:get-files', async (_ev: any, args: any) => {
+      try {
+        if (!ensureDiffSubsystem()) return [];
+        const { turnId } = args || {};
+        if (!turnId) return [];
+        return diffTurnTracker.getFilesForTurn(turnId);
+      } catch (e: any) {
+        console.error('[IPC] diff:get-files error:', e.message);
+        return [];
+      }
+    });
+
+    ipcMain.handle('diff:revert-turn', async (_ev: any, args: any) => {
+      try {
+        if (!ensureDiffSubsystem()) return { success: false, error: 'DiffViewer not available' };
+        const { sessionId, turnId } = args || {};
+        if (!sessionId || !turnId) return { success: false, error: 'Missing sessionId or turnId' };
+        const result = diffRevertEngine.revertTurn(sessionId, turnId);
+        if (result.success && mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('diff:turn-updated', { sessionId, turnId });
+        }
+        return result;
+      } catch (e: any) {
+        console.error('[IPC] diff:revert-turn error:', e.message);
+        return { success: false, error: e.message };
+      }
+    });
+
+    ipcMain.handle('diff:revert-file', async (_ev: any, args: any) => {
+      try {
+        if (!ensureDiffSubsystem()) return { success: false, error: 'DiffViewer not available' };
+        const { sessionId, turnId, filePath } = args || {};
+        if (!sessionId || !turnId || !filePath) return { success: false, error: 'Missing required parameters' };
+        const result = diffRevertEngine.revertFile(sessionId, turnId, filePath);
+        if (result.success && mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('diff:turn-updated', { sessionId, turnId });
+        }
+        return result;
+      } catch (e: any) {
+        console.error('[IPC] diff:revert-file error:', e.message);
+        return { success: false, error: e.message };
+      }
+    });
+
+    console.log('[IPC] DiffViewer IPC handlers registered');
+  } catch (diffViewerErr: any) {
+    console.warn('[IPC] DiffViewer IPC handlers skipped:', diffViewerErr?.message);
+  }
 }
 
 export { runtimeManager, activeLlmClient, providerRegistryRef };

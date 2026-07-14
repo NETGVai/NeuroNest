@@ -44,7 +44,9 @@ export const builtInCommands: CommandDefinition[] = [
         '/forget <fact> — Delete a fact from long-term memory\n' +
         '/channel <platform> <config> — Configure IM channel\n' +
         '/sandbox <local|docker> — Set sandbox backend\n' +
-        '/mcp <list|add|remove> — Manage MCP servers');
+        '/mcp <list|add|remove> — Manage MCP servers\n' +
+        '/commit — Generate commit message from staged changes\n' +
+        '/review — Run automated code review on changes');
     }
   },
   {
@@ -272,6 +274,24 @@ export const builtInCommands: CommandDefinition[] = [
       const sub = args[0].toLowerCase();
       if (!['list', 'add', 'remove'].includes(sub)) return err('Unknown subcommand: ' + sub + '. Valid: list, add, remove');
       return ok('__MCP__' + JSON.stringify({ subcommand: sub, args: args.slice(1) }));
+    }
+  },
+  // ─── Kilo-Inspired: Smart Commit Message Generation ─────────────
+  {
+    id: 'commit', name: 'commit', description: 'Generate a commit message from staged changes', usage: '/commit',
+    execute: async () => ok('__COMMIT_GENERATE__')
+  },
+  // ─── Kilo-Inspired: Automated Code Review Pipeline ──────────────
+  {
+    id: 'review', name: 'review', description: 'Run automated code review on staged changes or a PR', usage: '/review [--source staged|pr|worktree] [--pr <number>] [--repo <owner/repo>]',
+    execute: async (args) => {
+      const source = parseFlag(args, '--source') || 'staged';
+      const pr = parseFlag(args, '--pr');
+      const repo = parseFlag(args, '--repo');
+      const payload: Record<string, unknown> = { source, trigger: 'command' };
+      if (pr) payload.prNumber = parseInt(pr, 10);
+      if (repo) payload.repository = repo;
+      return ok('__REVIEW_START__' + JSON.stringify(payload));
     }
   },
 ];

@@ -1,0 +1,57 @@
+# NeuroNest Cloud Agent — Docker Compose Configuration
+#
+# Task 22.4
+
+version: '3.8'
+
+services:
+  neuronest-cloud:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: neuronest-cloud
+    ports:
+      - "3100:3100"
+    environment:
+      - NODE_ENV=production
+      - PORT=3100
+      - HOST=0.0.0.0
+      - FEATURE_CLOUD_AGENT=true
+      - ENFORCE_FIREWALL=true
+      - ENFORCE_ACTION_ANALYZER=true
+      - ENFORCE_NETWORK_SANDBOX=true
+      - PLAN_TIER_REQUIRED=professional
+      # Secrets should be injected via env_file or secret manager
+      - HMAC_SECRET=${HMAC_SECRET}
+      - SLACK_SIGNING_SECRET=${SLACK_SIGNING_SECRET}
+      - DISCORD_PUBLIC_KEY=${DISCORD_PUBLIC_KEY}
+      - GITHUB_WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET}
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=100M
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 256M
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3100/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

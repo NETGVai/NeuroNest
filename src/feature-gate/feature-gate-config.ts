@@ -115,6 +115,31 @@ export interface FeatureGateFlags {
   loops_catalog_import: boolean;             // External catalog import pipeline
   loops_discover: boolean;                   // Loop discovery and suggestion
   loops_scheduler: boolean;                  // Cross-platform scheduled loop runs
+
+  // ─── Kilo-Inspired Feature Integration Flags ────────────────────
+  inline_autocomplete: boolean;              // Ghost-text code completion (Phase 1)
+  semantic_index: boolean;                   // Vector embedding codebase search (Phase 1)
+  context_mentions: boolean;                 // @-reference system (Phase 1)
+  speech_to_text: boolean;                   // Voice input transcription (Phase 1, requires voice_io)
+  prompt_enhancement: boolean;               // Pre-pipeline prompt rewriting (Phase 2)
+  commit_message_gen: boolean;               // Auto git commit messages (Phase 2)
+  subagent_spawning: boolean;                // Dynamic subagent creation (Phase 2)
+  worktree_agent_manager: boolean;           // Git worktree isolation (Phase 3, requires worktree_isolation)
+  diff_viewer: boolean;                      // Turn-level diff & revert (Phase 3, requires diff_review)
+  checkpoint_timeline: boolean;              // Visual checkpoint timeline (Phase 3, requires checkpoint)
+  code_review_pipeline: boolean;             // Automated code review (Phase 3)
+  network_sandbox: boolean;                  // Network access control (Phase 4)
+  cost_controls: boolean;                    // Session budget enforcement (Phase 4, requires cost_tracking)
+  background_processes: boolean;             // Persistent process management (Phase 4)
+  interactive_terminal: boolean;             // Agent-controlled PTY (Phase 4)
+  notebook_integration: boolean;             // Jupyter-compatible notebook (Phase 5)
+  plugin_system: boolean;                    // Plugin discovery, loading, and management (Phase 5)
+  session_portability: boolean;              // Session export/import/sharing (Phase 5)
+  mcp_marketplace: boolean;                  // MCP Marketplace browsing & install (Phase 5)
+  headless_cli: boolean;                     // Headless CLI entry point (requires headless_mode)
+  adoption_dashboard: boolean;               // Adoption analytics dashboard (Phase 6)
+  cloud_agent: boolean;                      // Cloud agent HTTP server & integrations (Phase 6, requires headless_mode)
+  i18n_system: boolean;                      // Internationalization locale management (Phase 6)
 }
 
 /** Default flags — all disabled */
@@ -223,6 +248,31 @@ export const DEFAULT_FEATURE_FLAGS: FeatureGateFlags = {
   loops_catalog_import: false,
   loops_discover: false,
   loops_scheduler: false,
+
+  // ─── Kilo-Inspired Feature Integration Flags ────────────────────
+  inline_autocomplete: false,
+  semantic_index: false,
+  context_mentions: false,
+  speech_to_text: false,
+  prompt_enhancement: false,
+  commit_message_gen: false,
+  subagent_spawning: false,
+  worktree_agent_manager: false,
+  diff_viewer: false,
+  checkpoint_timeline: false,
+  code_review_pipeline: false,
+  network_sandbox: false,
+  cost_controls: false,
+  background_processes: false,
+  interactive_terminal: false,
+  notebook_integration: false,
+  plugin_system: false,
+  session_portability: false,
+  mcp_marketplace: false,
+  headless_cli: false,
+  adoption_dashboard: false,
+  cloud_agent: false,
+  i18n_system: false,
 };
 
 // ─── Dependency Declarations ────────────────────────────────────
@@ -268,6 +318,30 @@ export const FEATURE_DEPENDENCIES: FeatureDependency[] = [
     feature: 'gcf_expanded_handoffs',
     requires: [],  // No hard FeatureGateFlags prerequisites
     // Note: requires GCF_WIRE_FORMAT in PERF_FLAGS, enforced at runtime
+  },
+  {
+    feature: 'speech_to_text',
+    requires: ['voice_io'],
+  },
+  {
+    feature: 'worktree_agent_manager',
+    requires: ['worktree_isolation'],
+  },
+  {
+    feature: 'diff_viewer',
+    requires: ['diff_review'],
+  },
+  {
+    feature: 'checkpoint_timeline',
+    requires: ['checkpoint'],
+  },
+  {
+    feature: 'headless_cli',
+    requires: ['headless_mode'],
+  },
+  {
+    feature: 'cloud_agent',
+    requires: ['headless_mode'],
   },
 ];
 

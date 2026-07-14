@@ -27,6 +27,17 @@
     "dist",
     "**/*.test.ts",
     "src/renderer/index.ts",
-    "src/renderer/metrics-panel.ts"
+    "src/renderer/metrics-panel.ts",
+    "src/renderer/worktree-panel.ts",
+    "src/renderer/diff-viewer-panel.ts",
+    "src/renderer/plugin-panel.ts",
+    "src/renderer/checkpoint-timeline-panel.ts",
+    "src/renderer/cost-controls-panel.ts",
+    "src/renderer/interactive-terminal-panel.ts",
+    "src/renderer/process-manager-panel.ts",
+    "src/renderer/network-activity-panel.ts",
+    "src/renderer/marketplace-panel.ts",
+    "src/renderer/notebook-panel.ts",
+    "src/renderer/analytics-dashboard-panel.ts"
   ]
 }
