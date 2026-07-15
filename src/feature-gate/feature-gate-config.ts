@@ -244,7 +244,7 @@ export const DEFAULT_FEATURE_FLAGS: FeatureGateFlags = {
   harness_hooks: false,
   harness_subagents: false,
   harness_mcp_scoping: false,
-  loops_enabled: false,
+  loops_enabled: true,
   loops_catalog_import: false,
   loops_discover: false,
   loops_scheduler: false,

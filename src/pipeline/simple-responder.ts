@@ -240,6 +240,9 @@ ${this.projectContext ? `\n--- ACTIVE PROJECT CONTEXT ---\n${this.projectContext
       /```(?:json)?\s*\n(\{[\s\S]*?"action"\s*:[\s\S]*?\})\n```/g,
       /(?:^|\n)__action__\s*\n(\{[\s\S]*?\})/g,
       /(?:^|\n)action\s+(\{"action"\s*:\s*"[^"]+?"[\s\S]*?\})/gm,
+      // Pattern 6: Bare JSON object with "action" field (no prefix or fences)
+      // Matches when the LLM outputs just the raw JSON on its own line
+      /(?:^|\n)\s*(\{"action"\s*:\s*"[^"]+?"[^}]*\})\s*(?:\n|$)/gm,
     ];
 
     let hasActions = false;

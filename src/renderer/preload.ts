@@ -223,6 +223,9 @@ const INVOKE_CHANNELS = [
   'skills:learned-list', 'skills:learned-delete', 'skills:find-matching',
   // Subagent
   'subagent:spawn', 'subagent:status', 'subagent:results',
+  // Loop Engine
+  'loops:list', 'loops:craft', 'loops:audit', 'loops:run', 'loops:approve',
+  'loops:stop', 'loops:runStatus', 'loops:receipt',
   // Architectural Quality
   'arch:scan', 'arch:latest', 'arch:gate-start', 'arch:gate-end', 'arch:gate-history',
   'arch:add-rule', 'arch:get-rules', 'arch:toggle-rule', 'arch:delete-rule', 'arch:check-rules',
@@ -373,6 +376,8 @@ const RECEIVE_CHANNELS = [
   'process:status-update',
   // Network Sandbox activity updates (Main → Renderer)
   'sandbox:activity-update',
+  // Loop Engine pass progress and state updates (Main → Renderer)
+  'loop:pass-completed', 'loop:state-changed', 'loop:run-completed',
 ];
 
 contextBridge.exposeInMainWorld('electronAPI', {

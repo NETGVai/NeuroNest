@@ -17,7 +17,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-000?style=flat-square&logo=electron" alt="Platforms" />
-  <img src="https://img.shields.io/badge/version-0.1.586-blue?style=flat-square" alt="Version" />
+  <img src="https://img.shields.io/badge/version-0.1.605-blue?style=flat-square" alt="Version" />
   <img src="https://img.shields.io/badge/agents-118-purple?style=flat-square" alt="Agents" />
   <img src="https://img.shields.io/badge/providers-11-green?style=flat-square" alt="Providers" />
   <a href="./LICENSE"><img src="https://img.shields.io/badge/License-BUSL--1.1-yellow?style=flat-square" alt="License: BUSL-1.1" /></a>
@@ -55,13 +55,73 @@ Mode selection is automatic (based on agent scoring) or manually overridable via
 
 ### Loop Engine
 
-Bounded, verification-gated iterative execution. Define a goal, verification checks, and stop conditions — NeuroNest loops until the checks pass or limits are hit. Built-in loops: Type-clean (tsc), Test-repair (vitest), Docs-current (link-check). Features include:
+Bounded, verification-gated iterative execution that makes NeuroNest dramatically more efficient at building and repairing projects. Define a goal, verification checks, and stop conditions — NeuroNest loops autonomously until all checks pass or limits are hit.
 
-- 11-state deterministic state machine with guaranteed termination
-- Independent verifier subagent that catches 11 fake-done shortcut patterns
-- Immutable receipts for every run (auditable, reproducible)
-- Crash recovery with checkpoint persistence
-- Cross-platform scheduler (macOS launchd, Linux systemd, Windows Task Scheduler)
+**How it works:**
+
+```
+  Goal: "Fix all TypeScript errors"
+  ┌──────────────────────────────────────────────────────┐
+  │ Pass 1: Agent fixes 12 errors → tsc reports 5 remain │
+  │ Pass 2: Agent fixes 4 errors  → tsc reports 1 remain │
+  │ Pass 3: Agent fixes last error → tsc exits 0 ✓       │
+  └──────────────────────────────────────────────────────┘
+  Result: SUCCEEDED (3 passes, $0.42, 2m 18s)
+```
+
+**Built-in loops** (ready to use with zero configuration):
+
+| Loop | Verification | Goal |
+|------|-------------|------|
+| **Type-clean** | `tsc --noEmit` exits 0 | Fix all TypeScript type errors |
+| **Test-repair** | `vitest --run` exits 0 | Fix all failing tests without breaking passing ones |
+| **Docs-current** | `npm run docs:check` exits 0 | Fix documentation link rot and format issues |
+
+**Custom loops** — define your own with any shell command as verification:
+```json
+{
+  "goal": "Achieve 90% test coverage",
+  "verify": [{ "type": "command", "command": "npx vitest --coverage --threshold 90", "expectedExitCode": 0 }],
+  "stop": { "maxPasses": 10, "maxCostUsd": 3.0, "maxWallClockMin": 20 }
+}
+```
+
+**Core features:**
+
+- **11-state deterministic state machine** — IDLE → PLANNING_PASS → EXECUTING_PASS → VERIFYING → APPLYING_FEEDBACK → terminal states (SUCCEEDED / STALLED / BLOCKED / LIMIT_EXHAUSTED / NO_OP / AWAITING_APPROVAL). Guaranteed termination via max passes, cost budget, and wall-clock timeout.
+- **Adversarial verifier subagent** — Fresh-context reviewer dispatched after each pass that detects 11 fake-done shortcut patterns: test deletion, `@ts-ignore` insertion, assertion weakening, `skip()` annotations, commenting out code, reducing coverage thresholds, removing lint rules, empty catch blocks, and more.
+- **Immutable receipts** — Every run produces a tamper-evident receipt (JSON + Markdown export) recording each pass's actions, verification results, cost, file changes, and progress hashes. Fully auditable and reproducible.
+- **Crash recovery** — Checkpointed after every completed pass. Kill the app mid-loop, restart, and resume from the last completed pass within seconds.
+- **Stall detection** — Progress hashes computed per pass detect when the agent is looping without making meaningful changes. Transitions to STALLED after N identical hashes.
+- **Approval boundaries** — Configure pass numbers where the loop pauses for human review (e.g., pause at pass 5 before proceeding to more expensive operations).
+
+**Harness layer** (infrastructure that makes loops reliable):
+
+- **Permission Pattern Engine** — Declarative allow/deny rules enabling zero-prompt unattended operation
+- **Context Budget** — Per-pass token budget enforcement with truncation ordering (memory first, then PLAN.md)
+- **Memory Vault** — Persistent cross-pass context with LRU eviction
+- **Progress Hash** — Deterministic content hash per pass for stall detection
+- **Hook Engine** — Pre/post tool-use hooks for instrumentation and safety gates
+- **MCP Scoping** — Workspace-scoped MCP server configuration per loop
+- **Skill Loading** — Auto-assign relevant skills to the loop agent based on goal
+- **Goal/Plan Manager** — GOAL.md + PLAN.md generation and maintenance across passes
+
+**Stop conditions** (any hit terminates the loop gracefully):
+
+| Condition | Default | Purpose |
+|-----------|---------|---------|
+| Max passes | 10 | Hard ceiling prevents runaway loops |
+| Max cost | $2.00 | Budget protection |
+| Max wall-clock | 15 min | Time bound |
+| No-progress passes | 3 | Detect stalls (identical progress hashes) |
+| Approval boundaries | none | Human checkpoints at specified passes |
+
+**Security enforcement:**
+
+- All loop passes run through the full 8-layer security stack
+- Scope constraints restrict allowed file paths and tools per loop
+- Security policy per loop (standard/strict/enterprise)
+- Cost tracking per pass with cumulative budget enforcement
 
 ### 11 LLM Providers with Formal Registry
 
@@ -111,7 +171,7 @@ Detect your project's tech stack, install dependencies, and run services with li
 
 ### Skills System
 
-198 skills with 2,275 agent-skill assignments. Bundled catalog, design templates, custom skills, workspace-specific skills, and skill packs. Skills are auto-assigned to agents by keyword matching and reinforced through usage tracking. Includes a skill learner that extracts new skills from successful executions.
+133 bundled skills with dynamic auto-assignment to all 118 agents. Bundled catalog, design templates, custom skills, workspace-specific skills, and skill packs. Skills are auto-assigned at startup based on keyword matching between skill tags and agent department/specialty, and reinforced through usage tracking. Includes a skill learner that extracts new skills from successful executions.
 
 ### Brainstorm Mode
 
@@ -127,9 +187,60 @@ Session state is auto-saved every 30 seconds. Loop runs persist after each pass.
 
 ---
 
+## Advanced Features
+
+The following capabilities extend NeuroNest beyond core orchestration. Each is independently feature-gated and can be enabled in Settings.
+
+### Code Intelligence
+
+- **Inline Autocomplete** — Ghost-text suggestions via Fill-in-the-Middle (FIM) inference. Tab to accept, Escape to dismiss. Uses the fastest/cheapest model tier. Contextual skip logic suppresses suggestions inside strings and imports.
+- **Semantic Code Search** — AST-based tree-sitter chunking + vector embeddings (LanceDB). Natural language queries find relevant code by meaning, not just filenames. Incremental re-indexing on file save.
+- **LSP Integration** — Language Server Protocol tools (`lsp_diagnostics`, `lsp_references`, `lsp_definition`, `lsp_symbols`) giving agents compiler-grade intelligence.
+
+### Input & Context
+
+- **Context @-Mentions** — Reference `@file:`, `@folder:`, `@url:`, `@git-diff`, `@problems`, `@terminal`, or `@selection` in chat. Autocomplete suggestions appear as you type. Resolved content is injected into agent context with token budgets.
+- **Speech-to-Text** — Microphone capture with local Whisper ONNX or cloud transcription (OpenAI/Google). Push-to-talk and continuous dictation modes. Completes the voice loop with existing TTS output.
+- **Prompt Enhancement** — Short/vague prompts are automatically rewritten into detailed specs before execution. Show-and-confirm UI. Preserves intent while adding specificity.
+
+### Git & Workflow
+
+- **Smart Commit Messages** — LLM-generated conventional commits (`type(scope): description`) from staged changes. Detects feat/fix/refactor/docs/test/chore automatically.
+- **Git Worktree Isolation** — Each agent task in Ultra mode runs in its own worktree. No conflicts between parallel agents. Merge, create PR, or discard when done.
+- **Diff Viewer with Turn-Level Revert** — See exactly what changed per agent turn. Revert a single file or an entire turn without affecting subsequent changes. Three-way merge logic for safety.
+- **Checkpoint Visual Timeline** — Horizontal scrollable timeline of auto-created checkpoints. One-click restore. Star important checkpoints to prevent pruning.
+
+### Review & Security
+
+- **Automated Code Review Pipeline** — Multi-agent review (security, performance, style) running in parallel. Produces scored findings with inline comments. Optional GitHub PR posting.
+- **Network Sandbox** — Intercepts all outbound HTTP/HTTPS from agent tools. 3 policy presets (permissive, standard, strict). Per-project overrides via `.neuronest/network-policy.json`.
+- **Cost Controls** — Per-session budget enforcement with real-time ticker. Warning at 80%, automatic model downgrade at 90%, abort at 100%. Subagent costs propagate to parent.
+
+### Runtime & Processes
+
+- **Background Process Manager** — Start named processes (dev servers, watchers) that survive chat turns. Port conflict detection, auto-stop on exit, last-1000-line log capture.
+- **Interactive Terminal** — PTY-based agent terminal with full ANSI emulation. Agents observe output and respond to prompts. Credential injection via vault (never types passwords directly).
+- **Subagent Task Spawning** — Any agent can dynamically spawn focused subagents for decomposed work. Permission inheritance, 3-level nesting limit, scoped context.
+
+### Ecosystem & Extensibility
+
+- **Plugin System** — Third-party extensions via `neuronest-plugin.json` manifests. Register agents, providers, tools, panels, or commands. Sandboxed execution with firewall-gated inputs.
+- **MCP Marketplace** — Browse, search, and one-click install MCP servers. Auto-detects relevant MCPs from your project's tech stack. Daily catalog sync from registry.
+- **Notebook Integration** — Jupyter-compatible `.ipynb` notebooks with kernel management (Python, JavaScript, R). Create, edit, and execute cells. Inline output display.
+- **Session Export & Import** — Export sessions as compressed JSON archives with sensitive data scrubbing (API keys, tokens, credentials). Import and optionally replay in new context. Shareable links with expiration.
+
+### Platform & Enterprise
+
+- **Headless CLI** — `neuronest run "<task>"` for CI/CD pipelines. Flags: `--auto`, `--mode`, `--json`, `--max-cost`, `--provider`, `--model`. Structured JSON event output. Published as `@neuronest/cli`.
+- **Cloud Agent** — Always-on remote agent deployed via Docker. REST API, webhook triggers (HMAC-verified), cron schedules, Slack/Discord/GitHub integrations. Multi-tenant isolation.
+- **Adoption Dashboard** — Team analytics: active users, sessions/day, tasks completed, estimated time saved, cost per task, per-agent effectiveness. CSV/JSON export. Configurable retention.
+- **Internationalization (i18n)** — Full locale management with ICU MessageFormat. 9 languages shipped (English, Chinese, Japanese, Korean, German, Spanish, French, Portuguese-BR, Russian). Runtime switching without restart.
+
+---
+
 ## Security
 
-NeuroNest implements a 7-layer defense-in-depth security model. Each layer operates independently.
+NeuroNest implements an 8-layer defense-in-depth security model. Each layer operates independently.
 
 | Layer | Protection |
 |-------|-----------|
@@ -140,6 +251,7 @@ NeuroNest implements a 7-layer defense-in-depth security model. Each layer opera
 | Runtime Protection | Anti-tamper, anti-debug, file integrity verification (production builds) |
 | Secure Communication | HTTPS enforcement, certificate pinning, request signing, replay protection |
 | Edit Lock Manager | Directory-scoped file edit restrictions with glob pattern enforcement |
+| Network Sandbox | Policy-based network access control — domain/IP/port allow/deny rules with 3 presets (permissive, standard, strict) |
 
 Policy presets: Standard, Strict, Enterprise. Per-agent and per-project policy overrides. Security policies can only be tightened (standard → strict → enterprise), never loosened. Full configuration UI in the dashboard.
 
@@ -153,7 +265,7 @@ Policy presets: Standard, Strict, Enterprise. Per-agent and per-project policy o
 │  Chat UI · Monaco Editor · Knowledge Graphs · Loop Run Panel         │
 │  Harness Health Widget · LoopSpec Editor · File Tree                 │
 └────────────────────────────────┬─────────────────────────────────────┘
-                                 │ IPC Bridge (~400 channels, Zod-validated)
+                                 │ IPC Bridge (~200+ channels, type-safe handlers)
 ┌────────────────────────────────▼─────────────────────────────────────┐
 │                      Main Process (Node.js)                          │
 │                                                                      │
@@ -189,7 +301,7 @@ Policy presets: Standard, Strict, Enterprise. Per-agent and per-project policy o
 │                                                                      │
 │  ┌──────────────────────────────────────────────────────────────-┐   │
 │  │ Infrastructure                                                │   │
-│  │ SQLite (WAL, 42 migrations) · Event Bus · Checkpoint Service  │   │
+│  │ SQLite (WAL, 52 migrations) · Event Bus · Checkpoint Service  │   │
 │  │ Cost Tracking · Feature Gate System · Cron Scheduler          │   │
 │  │ Firewall · Action Analyzer · Credential Vault · Graph Manager │   │
 │  └─────────────────────────────────────────────────────────────-─┘   │
@@ -201,7 +313,7 @@ Policy presets: Standard, Strict, Enterprise. Per-agent and per-project policy o
 - Loop mode: LoopSpec → Runner state machine → Pass execution → Verification → Feedback → Receipt
 - Provider resolution: Registry lookup → Priority selection → Rate-limit fallback → Failover chain
 
-**Persistence:** SQLite with 42 migrations covering sessions, messages, skills, agent tasks, cost records, security scans, long-term memory, loop specs, loop runs, loop passes, condensation logs, and more.
+**Persistence:** SQLite with 52 migrations covering sessions, messages, skills, agent tasks, cost records, security scans, long-term memory, loop specs, loop runs, loop passes, condensation logs, semantic indexes, worktree sessions, code reviews, network policies, session exports, adoption metrics, and more.
 
 ---
 
@@ -259,7 +371,7 @@ Policy presets: Standard, Strict, Enterprise. Per-agent and per-project policy o
 | Document | Description |
 |----------|------------|
 | [Architecture](https://neuronest.cc/docs) | System design, pipeline flow, component reference |
-| [Security](https://neuronest.cc/security) | 7-layer security model, firewall tiers, threat model |
+| [Security](https://neuronest.cc/security) | 8-layer security model, firewall tiers, threat model |
 | [Online Docs](https://neuronest.cc/docs) | Full documentation site |
 
 ---
@@ -268,15 +380,18 @@ Policy presets: Standard, Strict, Enterprise. Per-agent and per-project policy o
 
 - **Runtime:** Electron 43, Node.js 22+
 - **Language:** TypeScript (main process), Vanilla JS (renderer)
-- **Database:** SQLite via better-sqlite3 (WAL mode, 42 migrations)
+- **Database:** SQLite via better-sqlite3 (WAL mode, 52 migrations)
 - **Editor:** Monaco Editor
 - **Graphs:** Cytoscape.js
-- **Voice:** ONNX Runtime (Supertonic TTS, on-device)
+- **Voice:** ONNX Runtime (Supertonic TTS + Whisper STT, on-device)
 - **Auth:** WebAuthn / Passkeys (local HTTPS)
 - **Payments:** Stripe
 - **Native:** C++ addon via Node-API (macOS CommonCrypto)
 - **Testing:** Vitest + fast-check (property-based)
 - **Validation:** Zod (IPC schemas, LoopSpec, config)
+- **Embeddings:** LanceDB (vector search for semantic code indexing)
+- **Terminal:** node-pty (interactive PTY for agent terminal sessions)
+- **i18n:** ICU MessageFormat (20+ locales)
 
 ---
 

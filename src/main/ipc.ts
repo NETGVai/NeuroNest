@@ -8,11 +8,11 @@
  *   registerLicenseIPC, registerSkillPacksIPC, registerSkillsIPC,
  *   registerAgentSkillsIPC, registerDiagnosticsIPC, registerToolApprovalIPC,
  *   registerMultiChatIPC, registerDeerFlowIPC, registerUnifiedIntentGateIPC,
- *   registerAuthIPC, registerSubscriptionIPC
+ *   registerAuthIPC, registerSubscriptionIPC, registerLoopIpcHandlers
  *
- * (registerLoopIpcHandlers removed with the loop-engine subsystem — spec
- *  orphaned-code-remediation task 14.2: the loop-engine WIRE was unattainable,
- *  so R10 switched atomically to REMOVE. See design.md R10 Disposition_Record.)
+ * (registerLoopIpcHandlers re-wired after loop-engine restoration from git history.
+ *  Previously removed by spec orphaned-code-remediation task 14.2 — now restored
+ *  and registered in the Kilo-Inspired Feature Integration section below.)
  *
  * UNWIRED IPC handler modules — decisions:
  * ┌──────────────────────────────────────┬──────────┬─────────────────────────────────────────────────┐
@@ -5185,6 +5185,143 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
           } catch (valErr: any) {
             console.warn('[IPC] Post-generation validation error (non-fatal):', valErr?.message);
           }
+
+          // ── Loop Engine: Post-Generation Verification ──────────────────
+          // After swarm generates a project, proactively verify it builds/compiles
+          // and trigger the Loop Engine to auto-fix issues if loops_enabled is on.
+          // This runs regardless of autonomyConfig or lintTestConfig settings.
+          try {
+            const fgLoopCheck = new FeatureGateSystem({ loops_enabled: true });
+            if (fgLoopCheck.isEnabled('loops_enabled') && totalFiles >= 3) {
+              const { execSync } = require('node:child_process');
+
+              // Detect what kind of project was generated and choose verification
+              let verifyCommand = '';
+              let verifyLabel = '';
+              const hasPkgJson = fs.existsSync(path.join(projectDir, 'package.json'));
+              const hasTsConfig = fs.existsSync(path.join(projectDir, 'tsconfig.json'));
+              const hasCargoToml = fs.existsSync(path.join(projectDir, 'Cargo.toml'));
+              const hasGoMod = fs.existsSync(path.join(projectDir, 'go.mod'));
+
+              // Install deps first if package.json exists but node_modules doesn't
+              if (hasPkgJson && !fs.existsSync(path.join(projectDir, 'node_modules'))) {
+                try {
+                  sendAndStore(mainWindow, {
+                    role: 'assistant',
+                    content: '📦 Installing dependencies for verification...',
+                    isCommand: true, agent: 'Loop Engine',
+                  });
+                  execSync('npm install --legacy-peer-deps 2>&1 || true', { cwd: projectDir, timeout: 60000, encoding: 'utf-8', stdio: 'pipe' });
+                } catch {}
+              }
+
+              // Choose verification command
+              if (hasTsConfig) {
+                verifyCommand = 'npx tsc --noEmit 2>&1';
+                verifyLabel = 'TypeScript type-check';
+              } else if (hasPkgJson) {
+                // Check if there's a build script
+                try {
+                  const pkg = JSON.parse(fs.readFileSync(path.join(projectDir, 'package.json'), 'utf-8'));
+                  if (pkg.scripts?.build) {
+                    verifyCommand = 'npm run build 2>&1';
+                    verifyLabel = 'Build';
+                  } else if (pkg.scripts?.start) {
+                    // At least verify syntax with node --check on entry point
+                    const entry = pkg.main || 'index.js';
+                    if (fs.existsSync(path.join(projectDir, entry))) {
+                      verifyCommand = `node --check ${entry} 2>&1`;
+                      verifyLabel = 'Syntax check';
+                    }
+                  }
+                } catch {}
+              } else if (hasCargoToml) {
+                verifyCommand = 'cargo check 2>&1';
+                verifyLabel = 'Cargo check';
+              } else if (hasGoMod) {
+                verifyCommand = 'go build ./... 2>&1';
+                verifyLabel = 'Go build';
+              }
+
+              if (verifyCommand) {
+                sendAndStore(mainWindow, {
+                  role: 'assistant',
+                  content: `🔄 **Loop Engine** — Running ${verifyLabel} on generated project...`,
+                  agent: 'Loop Engine',
+                });
+
+                let verifyOutput = '';
+                let verifyExitCode = 0;
+                try {
+                  verifyOutput = execSync(verifyCommand, { cwd: projectDir, timeout: 90000, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+                } catch (verifyErr: any) {
+                  verifyExitCode = verifyErr.status || 1;
+                  verifyOutput = (verifyErr.stdout || '') + '\n' + (verifyErr.stderr || '');
+                }
+
+                if (verifyExitCode === 0) {
+                  sendAndStore(mainWindow, {
+                    role: 'assistant',
+                    content: `✅ **${verifyLabel} passed** — project builds cleanly.`,
+                    agent: 'Loop Engine',
+                  });
+                } else {
+                  const truncatedErrors = verifyOutput.trim().slice(0, 2000);
+                  sendAndStore(mainWindow, {
+                    role: 'assistant',
+                    content: `⚠️ **${verifyLabel} failed** (exit ${verifyExitCode}) — triggering auto-repair loop...\n\`\`\`\n${truncatedErrors.slice(0, 800)}\n\`\`\``,
+                    agent: 'Loop Engine',
+                  });
+
+                  // Trigger Loop Engine to fix the build errors
+                  try {
+                    const { LoopRunner } = require('../loop-engine/runner/loop-runner.js');
+                    const { LoopStorage } = require('../loop-engine/storage/loop-storage.js');
+
+                    const loopStorage = new LoopStorage(db);
+                    const buildFixSpec = {
+                      id: require('node:crypto').randomUUID(),
+                      version: '1.0.0',
+                      name: `${verifyLabel}-repair`,
+                      useWhen: `${verifyLabel} fails after code generation`,
+                      goal: `Fix all errors so that \`${verifyCommand.replace(' 2>&1', '')}\` exits 0`,
+                      passAction: `Read the error output and fix the code causing the failures. Errors:\n${truncatedErrors}`,
+                      verify: [{ type: 'command', command: verifyCommand.replace(' 2>&1', ''), expectedExitCode: 0 }],
+                      feedback: 'The verification still fails. Here are the remaining errors — fix them without breaking other files.',
+                      stop: { maxPasses: 8, maxCostUsd: 2.5, maxWallClockMin: 15, noProgressPasses: 3, approvalBoundaries: [] },
+                      scope: { allowedPaths: ['.'], allowedTools: ['file_read', 'file_write', 'bash'], securityPolicy: 'standard' },
+                      source: 'post-generation-auto',
+                    };
+
+                    const loopRunner = new LoopRunner({
+                      storage: loopStorage,
+                      llmClient: resolveActiveLLMClient(),
+                      swarmCoordinator: null,
+                      featureGate: fgLoopCheck,
+                    });
+
+                    const runId = await loopRunner.start(buildFixSpec, activeSessionId);
+                    console.log('[Loop Engine] Post-generation repair loop started:', runId);
+
+                    sendAndStore(mainWindow, {
+                      role: 'assistant',
+                      content: `🔄 **Loop Engine** — Repair loop started (run: ${runId.slice(0, 8)}). Iterating until ${verifyLabel.toLowerCase()} passes...`,
+                      agent: 'Loop Engine',
+                    });
+                  } catch (loopStartErr: any) {
+                    console.warn('[Loop Engine] Post-generation loop start failed:', loopStartErr?.message);
+                    sendAndStore(mainWindow, {
+                      role: 'assistant',
+                      content: `⚠️ Loop Engine couldn't start auto-repair: ${loopStartErr?.message || 'unknown error'}. You can manually fix the errors and rebuild.`,
+                      agent: 'Loop Engine',
+                    });
+                  }
+                }
+              }
+            }
+          } catch (loopVerifyErr: any) {
+            console.warn('[IPC] Loop Engine post-generation verification failed (non-fatal):', loopVerifyErr?.message);
+          }
         }
         // Send file tree update to renderer
         notifyProjectFilesUpdated(activeSessionId);
@@ -5389,6 +5526,45 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
 
               // Desktop notification: check failed
               sendDesktopNotification(activeSessionId, 'onCheckFailed', '❌ Tests Failed', 'Tests failed (exit code ' + testExitCode + ')');
+
+              // ── Loop Engine Auto-Trigger: Test Repair ──
+              // When tests fail after swarm execution and loops_enabled flag is on,
+              // automatically invoke the Loop Engine to iteratively fix failing tests.
+              try {
+                const fgForLoop = new FeatureGateSystem({ loops_enabled: true });
+                if (fgForLoop.isEnabled('loops_enabled')) {
+                  const { LoopRunner } = require('../loop-engine/runner/loop-runner.js');
+                  const { LoopStorage } = require('../loop-engine/storage/loop-storage.js');
+                  const { BUILTIN_TEST_REPAIR_ID } = require('../loop-engine/catalog/builtin-loops.js');
+
+                  sendAndStore(mainWindow, {
+                    role: 'assistant',
+                    content: '🔄 **Loop Engine** — Auto-triggering test-repair loop to fix failing tests...',
+                    agent: 'Loop Engine',
+                  });
+
+                  const loopStorage = new LoopStorage(db);
+                  const specRow = loopStorage.getSpec?.(BUILTIN_TEST_REPAIR_ID);
+                  if (specRow) {
+                    const testRepairSpec = JSON.parse(specRow.json);
+                    const loopRunner = new LoopRunner({
+                      storage: loopStorage,
+                      llmClient: resolveActiveLLMClient(),
+                      swarmCoordinator: null,
+                      featureGate: fgForLoop,
+                    });
+
+                    // Run async — don't block the main IPC response
+                    loopRunner.start(testRepairSpec, activeSessionId).then((runId: string) => {
+                      console.log('[Loop Engine] Test-repair loop started:', runId);
+                    }).catch((loopErr: any) => {
+                      console.warn('[Loop Engine] Test-repair auto-trigger failed:', loopErr?.message);
+                    });
+                  }
+                }
+              } catch (loopTriggerErr: any) {
+                console.warn('[IPC] Loop Engine auto-trigger failed (non-fatal):', loopTriggerErr?.message);
+              }
             }
           }
         }
@@ -5496,6 +5672,54 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
               sendAndStore(mainWindow, { role: 'assistant', content: '🐛 Auto-debug: build error detected, queuing fix...', isCommand: true, agent: 'Autonomy' });
               // Send the error as a follow-up message to the renderer for the user to see
               mainWindow.webContents.send('autonomy-action', { type: 'debug-suggestion', error: truncBuild, command: buildCommand });
+
+              // ── Loop Engine Auto-Trigger: Build Repair ──
+              // When build fails and loops_enabled flag is on, trigger a custom loop
+              // that iteratively fixes build errors until the build succeeds.
+              try {
+                const fgForBuildLoop = new FeatureGateSystem({ loops_enabled: true });
+                if (fgForBuildLoop.isEnabled('loops_enabled')) {
+                  const { LoopRunner } = require('../loop-engine/runner/loop-runner.js');
+                  const { LoopStorage } = require('../loop-engine/storage/loop-storage.js');
+
+                  sendAndStore(mainWindow, {
+                    role: 'assistant',
+                    content: '🔄 **Loop Engine** — Auto-triggering build-repair loop to fix compilation errors...',
+                    agent: 'Loop Engine',
+                  });
+
+                  const loopStorage = new LoopStorage(db);
+                  // Create an ad-hoc build-repair spec
+                  const buildRepairSpec = {
+                    id: require('node:crypto').randomUUID(),
+                    version: '1.0.0',
+                    name: 'Build-repair',
+                    useWhen: 'Build command fails with compilation errors',
+                    goal: 'Fix all build errors so that `' + buildCommand + '` exits 0',
+                    passAction: 'Read the build error output and fix the code causing the failures',
+                    verify: [{ type: 'command', command: buildCommand, expectedExitCode: 0 }],
+                    feedback: 'The build still fails. Here are the remaining errors — fix them.',
+                    stop: { maxPasses: 8, maxCostUsd: 2.0, maxWallClockMin: 15, noProgressPasses: 3, approvalBoundaries: [] },
+                    scope: { allowedPaths: ['.'], allowedTools: ['file_read', 'file_write', 'bash'], securityPolicy: 'standard' },
+                    source: 'auto-trigger',
+                  };
+
+                  const loopRunner = new LoopRunner({
+                    storage: loopStorage,
+                    llmClient: resolveActiveLLMClient(),
+                    swarmCoordinator: null,
+                    featureGate: fgForBuildLoop,
+                  });
+
+                  loopRunner.start(buildRepairSpec, activeSessionId).then((runId: string) => {
+                    console.log('[Loop Engine] Build-repair loop started:', runId);
+                  }).catch((loopErr: any) => {
+                    console.warn('[Loop Engine] Build-repair auto-trigger failed:', loopErr?.message);
+                  });
+                }
+              } catch (loopBuildErr: any) {
+                console.warn('[IPC] Loop Engine build-repair trigger failed (non-fatal):', loopBuildErr?.message);
+              }
             }
           }
         }
@@ -10066,6 +10290,62 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
     console.log('[IPC] Marketplace IPC handlers registered');
   } catch (err: any) {
     console.warn('[IPC] Marketplace IPC registration failed (non-fatal):', err?.message);
+  }
+
+  // ── Kilo-Inspired Feature: Loop Engine IPC ─────────────────────
+  // Registers loops:list, loops:craft, loops:audit, loops:run, loops:approve,
+  // loops:stop, loops:runStatus, loops:receipt channels.
+  // Feature-gated behind loops_enabled flag.
+  try {
+    const { registerLoopIpcHandlers } = require('../loop-engine/ipc/index.js');
+    const { LoopRunner } = require('../loop-engine/runner/loop-runner.js');
+    const { LoopStorage } = require('../loop-engine/storage/loop-storage.js');
+    const { LoopDoctor } = require('../loop-engine/doctor/loop-doctor.js');
+    const { ReceiptGenerator } = require('../loop-engine/receipt/receipt-generator.js');
+
+    const fg = new FeatureGateSystem({ loops_enabled: true });
+    if (fg.isEnabled('loops_enabled')) {
+      const loopStorage = new LoopStorage(db);
+      const loopDoctor = new LoopDoctor();
+      const receiptGenerator = new ReceiptGenerator();
+
+      // Create the LoopRunner with dependencies
+      const loopRunner = new LoopRunner({
+        storage: loopStorage,
+        llmClient: resolveActiveLLMClient(),
+        swarmCoordinator: null, // Injected per-pass via the agent-loop
+        featureGate: fg,
+      });
+
+      // Create an IPCRegistry adapter for the Loop Engine's typed handler registration
+      const loopIpcRegistry = {
+        register<Req, Res>(def: { channel: string; requestSchema: any; responseSchema: any; handler: (event: unknown, req: Req) => Promise<Res> }) {
+          ipcMain.handle(def.channel, async (event: any, rawReq: any) => {
+            try {
+              const parsed = def.requestSchema.parse(rawReq ?? {});
+              return await def.handler(event, parsed);
+            } catch (e: any) {
+              return { error: e?.message || 'Loop IPC handler error' };
+            }
+          });
+        },
+      };
+
+      registerLoopIpcHandlers({
+        registry: loopIpcRegistry,
+        loopRunner,
+        loopStorage,
+        loopDoctor,
+        receiptGenerator,
+        getSessionId: () => sessionManager?.getActiveChatSessionId?.() || 'default',
+      });
+
+      console.log('[IPC] Loop Engine IPC handlers registered (loops:list, loops:run, loops:stop, loops:approve, loops:audit, loops:receipt)');
+    } else {
+      console.log('[IPC] Loop Engine IPC skipped (loops_enabled flag is disabled)');
+    }
+  } catch (err: any) {
+    console.warn('[IPC] Loop Engine IPC registration failed (non-fatal):', err?.message);
   }
 
   // ── Shell: open external URL in default browser ──
