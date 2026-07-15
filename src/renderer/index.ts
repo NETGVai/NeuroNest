@@ -809,6 +809,12 @@ function _nnDetectAndRenderActionButtons(messageEl, text) {
     var body = messageEl.querySelector('.message-body') || messageEl.querySelector('.message-content') || messageEl;
     body.appendChild(container);
     _nnActionButtonsActive.push(container);
+
+    // Scroll to make buttons visible — buttons render AFTER the auto-scroll triggered
+    // by message content, so without this the buttons are below the visible viewport.
+    requestAnimationFrame(function() {
+      container.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    });
   } catch (err) {
     // Silent fail — action buttons are a UX enhancement, never block chat
     console.warn('[ActionButtons] Detection/render failed:', err);
