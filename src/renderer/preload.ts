@@ -378,6 +378,8 @@ const RECEIVE_CHANNELS = [
   'sandbox:activity-update',
   // Loop Engine pass progress and state updates (Main → Renderer)
   'loop:pass-completed', 'loop:state-changed', 'loop:run-completed',
+  // Drift Management real-time signals (Main → Renderer)
+  'drift:signal', 'drift:state-update',
 ];
 
 contextBridge.exposeInMainWorld('electronAPI', {

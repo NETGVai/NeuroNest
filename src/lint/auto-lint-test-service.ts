@@ -38,8 +38,8 @@ export class AutoLintTestService {
     const row = this.db.prepare('SELECT * FROM lint_test_config WHERE project_id = ?').get(projectId) as any;
     if (row) return this.mapConfig(row);
     return {
-      projectId, lintEnabled: false, testEnabled: false,
-      autoFix: false, runOnAiChange: true, updatedAt: new Date().toISOString(),
+      projectId, lintEnabled: true, testEnabled: true,
+      autoFix: true, runOnAiChange: true, updatedAt: new Date().toISOString(),
     };
   }
 

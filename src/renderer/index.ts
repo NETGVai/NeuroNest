@@ -2718,6 +2718,25 @@ function setupIPC() {
     }
   });
 
+  // Drift Management — display drift status in chat panel
+  api.on('drift:state-update', function(data) {
+    if (!data) return;
+    if (data.active && data.message && !data.paused) {
+      // Show drift activation as a subtle system message
+      addMsg('assistant', '🛡️ **Drift Management** — ' + data.message, { label: 'Drift Monitor', isCommand: true });
+    } else if (data.paused) {
+      // Show critical drift pause as a warning
+      addMsg('assistant', '⚠️ **Drift Management** — ' + data.message, { label: 'Drift Monitor', isCommand: true });
+    }
+  });
+
+  api.on('drift:signal', function(data) {
+    if (!data) return;
+    var icon = data.type === 'critical' ? '🚨' : data.type === 'warning' ? '⚠️' : '🛡️';
+    var confidence = data.confidence != null ? ' (confidence: ' + Math.round(data.confidence * 100) + '%)' : '';
+    addMsg('assistant', icon + ' **Drift Signal** [' + (data.type || 'info') + '] — ' + (data.message || 'scope deviation detected') + confidence, { label: 'Drift Monitor', isCommand: true });
+  });
+
   api.on('chat-response', function(data) {
     removeThinkingIndicator();
     hideTyping();
@@ -16345,9 +16364,9 @@ function populateInspectorTools() {
     if (activeProjectId) {
       eapi().invoke('lint-test:get-config', activeProjectId).then(function(config) {
         renderInlineLintTest(config);
-      }).catch(function() { renderInlineLintTest(null); });
+      }).catch(function() { renderInlineLintTest({ lintEnabled: true, testEnabled: true, autoFix: true }); });
     } else {
-      renderInlineLintTest(null);
+      renderInlineLintTest({ lintEnabled: true, testEnabled: true, autoFix: true });
     }
   }
 

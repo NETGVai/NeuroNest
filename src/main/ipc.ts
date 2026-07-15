@@ -4498,7 +4498,22 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
           planMode: false,
           turboEditsEnabled: false,
           smartContextEnabled: false,
+          // Enable drift management when lint/test/fix is active for the project —
+          // drift monitors whether the agent is staying on-task and prevents scope creep.
+          driftConfig: (lintTestServiceRef && lintTestServiceRef.getConfig(activeSessionId)?.lintEnabled)
+            ? { enabled: true, sensitivity: 'balanced' as const, driftPauseOnCritical: true, scopeViolationMode: 'warn' as const }
+            : undefined,
         };
+
+        // Notify user that drift management is active
+        if (phasedConfig.driftConfig?.enabled) {
+          sendAndStore(mainWindow, {
+            role: 'assistant',
+            content: '🛡️ **Drift Management** — Active (balanced sensitivity). Monitoring task focus and scope boundaries.',
+            isCommand: true,
+            agent: 'Drift Monitor',
+          });
+        }
         const phasedController = new AgentLoopController(phasedConfig);
         const phasedResult: AgentLoopResult = await phasedController.run(trimmed);
 
@@ -5137,6 +5152,56 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
                 isCommand: true, agent: 'Code Quality',
               });
               totalFiles += scaffolded.length;
+            }
+
+            // 1b. Auto-generate NEURONEST.md if it doesn't exist
+            const neuronestMdPath = path.join(projectDir, 'NEURONEST.md');
+            if (!fs.existsSync(neuronestMdPath) && activeSessionId) {
+              try {
+                // Analyze project and generate context file
+                const entries = fs.readdirSync(projectDir, { withFileTypes: true });
+                const dirs = entries.filter((e: any) => e.isDirectory() && !e.name.startsWith('.') && e.name !== 'node_modules' && e.name !== 'docs').map((e: any) => e.name);
+                const files = entries.filter((e: any) => e.isFile()).map((e: any) => e.name);
+
+                let stack = 'Unknown';
+                let framework = '';
+                if (files.includes('package.json')) {
+                  stack = 'Node.js';
+                  try {
+                    const pkg = JSON.parse(fs.readFileSync(path.join(projectDir, 'package.json'), 'utf-8'));
+                    const deps = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) };
+                    if (deps.react || deps['react-dom']) framework = 'React';
+                    else if (deps.vue) framework = 'Vue';
+                    else if (deps.next) framework = 'Next.js';
+                    else if (deps.express) framework = 'Express';
+                  } catch {}
+                } else if (files.includes('requirements.txt') || files.includes('pyproject.toml')) {
+                  stack = 'Python';
+                } else if (files.includes('go.mod')) { stack = 'Go'; }
+                else if (files.includes('Cargo.toml')) { stack = 'Rust'; }
+
+                let md = '# Project Context\n\n';
+                md += '## Overview\n\n';
+                md += '- **Tech Stack:** ' + stack + (framework ? ' + ' + framework : '') + '\n';
+                md += '- **Structure:** ' + dirs.join(', ') + '\n';
+                md += '- **Key Files:** ' + files.filter((f: string) => !f.startsWith('.')).slice(0, 10).join(', ') + '\n\n';
+                md += '## Coding Conventions\n\n';
+                md += '- Follow existing code style and patterns\n';
+                md += '- Use descriptive variable and function names\n';
+                md += '- Add comments for complex logic\n';
+                md += '- Keep functions small and focused\n\n';
+                md += '## Instructions for AI Agents\n\n';
+                md += '- Always read existing code before making changes\n';
+                md += '- Do not remove existing functionality unless explicitly asked\n';
+                md += '- Maintain backward compatibility\n';
+                md += '- Add error handling for edge cases\n';
+                md += '- If unsure about a pattern, follow what already exists in the codebase\n';
+
+                fs.writeFileSync(neuronestMdPath, md, 'utf-8');
+                totalFiles++;
+              } catch (neuronestErr: any) {
+                console.warn('[IPC] NEURONEST.md auto-generation failed (non-fatal):', neuronestErr?.message);
+              }
             }
 
             // 2. Validate the generated project
@@ -8366,14 +8431,18 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
   }
 
   // registerDriftIPC — serves the live drift:get-state channel for
-  // drift-dashboard-panel.ts. No live DriftMonitor instance is tracked at the
-  // registerIPCHandlers level (DriftMonitor is created per agent-loop run
-  // inside AgentLoopController), so the getter returns null and the handler
-  // degrades to its documented INACTIVE_STATE rather than throwing.
+  // drift-dashboard-panel.ts. The DriftMonitor instance is created per agent-loop run
+  // inside AgentLoopController. When lint/test/fix is enabled in the panel,
+  // drift management is active and monitors agent scope during iterative execution.
   try {
     registerDriftIPC({
       getMainWindow: () => mainWindow,
-      getDriftMonitor: () => null,
+      getDriftMonitor: () => {
+        // Return any active DriftMonitor from a running agent loop.
+        // The monitor is transient (lives only during a run), so this returns
+        // null between runs — the IPC handler degrades to INACTIVE_STATE.
+        return (global as any).__activeDriftMonitor || null;
+      },
     });
     console.log('[IPC] Drift Dashboard IPC handlers registered');
   } catch (error) {

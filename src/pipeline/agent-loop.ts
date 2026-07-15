@@ -2419,6 +2419,18 @@ export class AgentLoopController {
           // Default classification when AutoTuner is not configured
           driftMonitor.initialize({ type: 'code-generation', confidence: 0.5 }, message);
         }
+        // Expose globally so drift:get-state IPC can return live state
+        (global as any).__activeDriftMonitor = driftMonitor;
+
+        // Notify renderer that drift management is active for this execution
+        if (this.config.ipcSend) {
+          this.config.ipcSend('drift:state-update', {
+            active: true,
+            confidence: 1.0,
+            sensitivity: this.config.driftConfig.sensitivity || 'balanced',
+            message: 'Drift management active — monitoring task focus and scope boundaries',
+          });
+        }
       } catch (err) {
         console.warn('[DriftMonitor] Initialization failed, drift disabled:', err);
         driftMonitor = null;
@@ -2581,6 +2593,15 @@ export class AgentLoopController {
           const elapsedMs = Date.now() - loopStartTime;
           const driftResult = driftMonitor.evaluateConfidence(iteration, elapsedMs);
           if (driftResult.paused && this.config.driftConfig?.driftPauseOnCritical) {
+            // Notify renderer that drift management paused execution
+            if (this.config.ipcSend) {
+              this.config.ipcSend('drift:state-update', {
+                active: true,
+                confidence: driftResult.confidence,
+                paused: true,
+                message: `⚠️ Drift management paused execution — confidence dropped to ${Math.round(driftResult.confidence * 100)}% (critical threshold). Agent may be going off-task.`,
+              });
+            }
             // Pause execution: emit progress with paused state and break
             onProgress?.({
               iteration,
@@ -2589,6 +2610,18 @@ export class AgentLoopController {
               driftConfidence: driftResult.confidence,
             });
             break;
+          }
+          // Emit warning-level drift signals as progress updates
+          if (driftResult.signals && driftResult.signals.length > 0) {
+            for (const signal of driftResult.signals) {
+              if (this.config.ipcSend) {
+                this.config.ipcSend('drift:signal', {
+                  type: signal.severity,
+                  confidence: signal.currentConfidence,
+                  message: signal.message || `Drift signal: ${signal.category}`,
+                });
+              }
+            }
           }
         } catch (err) {
           console.warn('[DriftMonitor] Confidence evaluation failed, disabling drift:', err);
@@ -3346,6 +3379,11 @@ export class AgentLoopController {
       } catch {
         // Graceful degradation: continue with recommended params if override callback fails
       }
+    }
+
+    // Cleanup: clear global drift monitor reference when run completes
+    if ((global as any).__activeDriftMonitor) {
+      (global as any).__activeDriftMonitor = null;
     }
 
     return result;
