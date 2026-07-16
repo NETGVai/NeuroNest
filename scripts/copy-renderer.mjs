@@ -157,6 +157,50 @@ if (existsSync(metricsPanelSrc)) {
   console.log('Copied renderer/metrics-panel.js (parse-checked)');
 }
 
+// ── Panel Registry and Panel Registrations ────────────────────────
+// These files follow the same plain-JS contract as metrics-panel.ts.
+// They are copied with the same parse-check guardrail.
+const panelRendererFiles = [
+  'panel-registry.ts',
+  'panel-registrations.ts',
+  'interactive-terminal-panel.ts',
+  'network-activity-panel.ts',
+  'plugin-panel.ts',
+  'worktree-panel.ts',
+  'cost-controls-panel.ts',
+  'diff-viewer-panel.ts',
+  'checkpoint-timeline-panel.ts',
+  'marketplace-panel.ts',
+  'process-manager-panel.ts',
+  'analytics-dashboard-panel.ts',
+  'notebook-panel.ts',
+];
+
+for (const fileName of panelRendererFiles) {
+  const src = join(root, 'src', 'renderer', fileName);
+  const dst = join(root, 'dist', 'renderer', fileName.replace(/\.ts$/, '.js'));
+  if (existsSync(src)) {
+    let js = readFileSync(src, 'utf-8');
+    js = js.replace(/\/\/\s*@ts-nocheck\s*\n?/g, '');
+    js = js.replace(/^export\s+/gm, '');
+    // Remove TypeScript type casts: (window as any)
+    js = js.replace(/\((\w+)\s+as\s+\w+\)/g, '$1');
+
+    try {
+      new Function(js);
+    } catch (err) {
+      const msg = err && err.message ? err.message : String(err);
+      console.error(`✘ Renderer parse-check FAILED (${fileName}): ${msg}`);
+      process.exit(1);
+    }
+
+    writeFileSync(dst, js, 'utf-8');
+    console.log(`Copied renderer/${fileName.replace(/\.ts$/, '.js')} (parse-checked)`);
+  } else {
+    console.warn(`${fileName} not found, skipping`);
+  }
+}
+
 // Copy bundled data files (skills catalog and design templates)
 const dataSrc = join(root, 'src', 'data');
 const dataDst = join(root, 'dist', 'data');

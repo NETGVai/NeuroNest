@@ -1,0 +1,22 @@
+[package]
+name = "neuronest-native-hashline"
+version = "0.1.0"
+edition = "2021"
+license = "BUSL-1.1"
+description = "Content-addressed line hashing for NeuroNest anchored editing using xxhash"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+napi = { version = "2", features = ["napi6", "serde"] }
+napi-derive = "2"
+serde = { version = "1", features = ["derive"] }
+xxhash-rust = { version = "0.8", features = ["xxh32"] }
+
+[build-dependencies]
+napi-build = "2"
+
+[profile.release]
+lto = true
+strip = "symbols"

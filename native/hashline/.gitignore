@@ -1,0 +1,11 @@
+# Rust build artifacts
+target/
+
+# napi-rs generated binaries
+*.node
+
+# Node artifacts
+node_modules/
+
+# OS files
+.DS_Store

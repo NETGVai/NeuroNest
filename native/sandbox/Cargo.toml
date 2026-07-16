@@ -1,0 +1,30 @@
+[package]
+name = "neuronest-native-sandbox"
+version = "0.1.0"
+edition = "2021"
+license = "BUSL-1.1"
+description = "Native process confinement for NeuroNest using Landlock/seccomp (Linux) and Seatbelt (macOS)"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+napi = { version = "2", features = ["napi6", "serde"] }
+napi-derive = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock = "0.4"
+syscalls = "0.6"
+libc = "0.2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+
+[build-dependencies]
+napi-build = "2"
+
+[profile.release]
+lto = true
+strip = "symbols"

@@ -184,7 +184,7 @@ const INVOKE_CHANNELS = [
   // Config Profiles
   'profiles:list', 'profiles:create', 'profiles:activate', 'profiles:delete',
   // Team Personas
-  'personas:list', 'personas:create', 'personas:delete',
+  'personas:list', 'personas:create', 'personas:update', 'personas:delete', 'personas:preview', 'personas:activate',
   // Session Status
   'session-status:get', 'session-status:set',
   // File-Session Links
@@ -280,6 +280,8 @@ const INVOKE_CHANNELS = [
   'diff:get-turns', 'diff:get-files', 'diff:revert-turn', 'diff:revert-file',
   // CheckpointTimeline (Kilo-Inspired Feature Integration)
   'checkpoint:timeline', 'checkpoint:restore', 'checkpoint:star',
+  // CheckpointTimeline v2 — extended with hunk attribution and rewind (Req 14.9, 14.10, 14.11)
+  'checkpoint:timeline-v2', 'checkpoint:rewind-preview', 'checkpoint:rewind-execute',
   // Code Review Pipeline (Kilo-Inspired Feature Integration)
   'review:start', 'review:status', 'review:comments', 'review:post-to-github',
   // Cost Controls (Kilo-Inspired Feature Integration)
@@ -303,11 +305,15 @@ const INVOKE_CHANNELS = [
   // Production UX — steering file management
   'steering:list', 'steering:create',
   // Production UX — hooks management
-  'hooks:list', 'hooks:get-history',
+  'hooks:list', 'hooks:get-history', 'hooks:enable', 'hooks:disable', 'hooks:history', 'hooks:run-now',
   // Production UX — powers management
   'powers:list', 'powers:activate', 'powers:deactivate',
   // Production UX — focus mode
   'focus-mode:toggle',
+  // Feature Gate Management (Task 1.3 / 1.6)
+  'feature-gate:get-all', 'feature-gate:set', 'feature-gate:audit', 'feature-gate:reset', 'feature-gate:export', 'feature-gate:import',
+  // Plan Mode (Task 3.4 — Req 11.8)
+  'plan-mode:get-state', 'plan-mode:toggle',
 ];
 
 const RECEIVE_CHANNELS = [
@@ -370,6 +376,8 @@ const RECEIVE_CHANNELS = [
   'diff:turn-updated',
   // CheckpointTimeline updates (Main → Renderer)
   'checkpoint:timeline-updated',
+  // CheckpointTimeline v2 updates (Main → Renderer) — Req 14.9
+  'checkpoint:timeline-v2-updated',
   // Cost Controls real-time budget events (Main → Renderer)
   'cost:budget-event',
   // Background Process Manager status updates (Main → Renderer)
@@ -380,6 +388,8 @@ const RECEIVE_CHANNELS = [
   'loop:pass-completed', 'loop:state-changed', 'loop:run-completed',
   // Drift Management real-time signals (Main → Renderer)
   'drift:signal', 'drift:state-update',
+  // Plan Mode state updates (Main → Renderer)
+  'plan-mode:state-update',
 ];
 
 contextBridge.exposeInMainWorld('electronAPI', {

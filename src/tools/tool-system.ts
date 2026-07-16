@@ -3,19 +3,27 @@
  *
  * Implements register, unregister, get, list, search, execute with:
  * - Zod schema validation on tool registration
- * - Permission checks before every tool execution
+ * - AuthorizationPipeline as sole authorization gate before execution (Req 1.3)
  * - Lazy loading pattern (tools registered but not loaded until first use)
  *
- * Requirements: 15.1, 15.12, 15.15
+ * ToolSystem.execute is the SINGLE invocation path for every tool capability (Req 1.1).
+ * No tool-execution side channel bypasses this method (Req 1.2).
+ *
+ * Requirements: 1.1, 1.2, 1.3, 10.9, 15.1, 15.12, 15.15
  */
 
 import { z } from 'zod';
 import { PermissionSystem } from '../security/permission-system.js';
+import {
+  AuthorizationPipeline,
+  type AuthorizationPipelineConfig,
+  type AuthDecision,
+} from '../security/authorization-pipeline.js';
 import type {
   ToolDefinition,
+  ToolCall,
   ToolContext,
   ToolResult,
-  RiskLevel,
 } from '../shared/types.js';
 
 // ─── Extended ToolDefinition with execute function ──────────────
@@ -35,8 +43,6 @@ interface LazyTool {
 
 // ─── Validation schema for ToolDefinition registration ──────────
 
-const validRiskLevels: RiskLevel[] = ['read-only', 'write', 'execute', 'destructive'];
-
 const toolDefinitionValidationSchema = z.object({
   id: z.string().min(1, 'Tool id is required'),
   name: z.string().min(1, 'Tool name is required'),
@@ -52,10 +58,23 @@ const toolDefinitionValidationSchema = z.object({
 
 export class ToolSystem {
   private tools = new Map<string, LazyTool>();
-  private permissionSystem: PermissionSystem;
+  private readonly _permissionSystem: PermissionSystem;
+  private authorizationPipeline: AuthorizationPipeline;
 
-  constructor(permissionSystem: PermissionSystem) {
-    this.permissionSystem = permissionSystem;
+  constructor(permissionSystem: PermissionSystem, pipelineConfig?: AuthorizationPipelineConfig) {
+    this._permissionSystem = permissionSystem;
+
+    // Wire PermissionSystem as the audit sink for all pipeline decisions (Req 10.9).
+    // Every decision records: verdict, stage, reason, project, session, agent, tool, args, timestamp.
+    this.authorizationPipeline = new AuthorizationPipeline({
+      ...pipelineConfig,
+      auditSink: permissionSystem,
+    });
+  }
+
+  /** Access the underlying PermissionSystem (audit sink for the pipeline). */
+  get permissionSystem(): PermissionSystem {
+    return this._permissionSystem;
   }
 
   /**
@@ -139,8 +158,16 @@ export class ToolSystem {
   }
 
   /**
-   * Execute a tool by id. Checks permissions first, then runs the tool.
-   * Lazy-loaded tools are loaded on first execution.
+   * Execute a tool by id. Authorization decisions flow through the AuthorizationPipeline
+   * (Req 1.3) — this is the SOLE authorization gate in front of tool execution.
+   *
+   * ToolSystem.execute is the SINGLE invocation path for all tool capabilities (Req 1.1).
+   * No side channel bypasses this method (Req 1.2).
+   *
+   * Possible pipeline verdicts:
+   *   - 'deny'  → return error with reason
+   *   - 'allow' → proceed to execution
+   *   - 'ask'   → route to existing approval flow via approvalHandler
    */
   async execute(toolId: string, input: unknown, context: ToolContext): Promise<ToolResult> {
     const tool = this.tools.get(toolId);
@@ -148,21 +175,59 @@ export class ToolSystem {
       return { success: false, output: null, error: `Tool not found: ${toolId}` };
     }
 
-    // Permission check
-    const decision = await this.permissionSystem.check({
-      toolId,
-      agentId: context.agentId,
-      input,
+    // Build the ToolCall structure expected by the pipeline
+    const call: ToolCall = {
+      id: `${toolId}-${Date.now()}`,
+      name: toolId,
+      arguments: typeof input === 'string' ? input : JSON.stringify(input),
+    };
+
+    // Authorize through the pipeline — the ONLY authorization gate (Req 1.3)
+    const decision: AuthDecision = await this.authorizationPipeline.authorize(call, {
+      ...context,
       riskLevel: tool.definition.riskLevel,
-      modeOverride: context.permissionMode,
     });
 
-    if (!decision.allowed) {
-      return {
-        success: false,
-        output: null,
-        error: `Permission denied: ${decision.reason}`,
-      };
+    // Handle decision verdicts
+    switch (decision.verdict) {
+      case 'deny':
+        return {
+          success: false,
+          output: null,
+          error: `Permission denied: ${decision.reason}`,
+        };
+
+      case 'ask': {
+        // Route 'ask' decisions to the existing approval flow (AWAITING_APPROVAL)
+        const { promptContext } = decision;
+        if (context.approvalHandler) {
+          const approved = await context.approvalHandler(
+            `${promptContext.toolName}: ${promptContext.reason}`,
+          );
+          if (!approved) {
+            return {
+              success: false,
+              output: null,
+              error: `Permission denied: user rejected ${promptContext.toolName} (${promptContext.reason})`,
+            };
+          }
+          // User approved — fall through to execution
+        } else if (context.permissionMode !== 'auto-approve') {
+          // No approval handler and not in auto-approve mode: deny
+          return {
+            success: false,
+            output: null,
+            error: `Permission denied: ${promptContext.reason} (no approval handler available)`,
+          };
+        }
+        // If auto-approve mode with no handler, allow (shouldn't normally reach here
+        // since mode-policy would have returned 'allow', but defensive)
+        break;
+      }
+
+      case 'allow':
+        // Proceed to execution
+        break;
     }
 
     // Lazy load if needed

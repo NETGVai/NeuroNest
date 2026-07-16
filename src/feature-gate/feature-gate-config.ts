@@ -100,6 +100,10 @@ export interface FeatureGateFlags {
   trajectory_recording: boolean;             // Session export/replay
   efficiency_kpi_instrumentation: boolean;   // KPI metrics
 
+  // ─── Platform Hardening Flags ─────────────────────────────────────
+  kernel_sandbox: boolean;                   // Kernel-level process confinement (Landlock/Seatbelt)
+  fast_worktree: boolean;                    // Native fast worktree creation/pooling (libgit2)
+
   // ─── GCF Expansion Flags ────────────────────────────────────────
   gcf_expanded_handoffs: boolean;            // Gates GCF on new handoff surfaces
 
@@ -232,6 +236,10 @@ export const DEFAULT_FEATURE_FLAGS: FeatureGateFlags = {
   trigger_gated_knowledge: false,
   trajectory_recording: false,
   efficiency_kpi_instrumentation: false,
+
+  // ─── Platform Hardening Flags ─────────────────────────────────────
+  kernel_sandbox: false,
+  fast_worktree: false,
 
   // ─── GCF Expansion Flags ────────────────────────────────────────
   gcf_expanded_handoffs: false,
@@ -391,6 +399,10 @@ export const ENHANCED_FEATURE_DEPENDENCIES: FeatureDependency[] = [
   {
     feature: 'test_drift_detection',
     requires: ['test_health_analytics'],
+  },
+  {
+    feature: 'fast_worktree',
+    requires: ['worktree_isolation'],
   },
 ];
 

@@ -190,6 +190,9 @@ import { CallbackEngine } from '../pipeline/callback-engine';
 import { AgentLoopMetricsStore } from '../metrics/agent-loop-metrics.js';
 import { ApprovalGate } from '../services/approval-gate.js';
 import { FeatureGateSystem } from '../feature-gate/feature-gate-system.js';
+import { FeatureGateStore } from '../feature-gate/feature-gate-store.js';
+import { DEFAULT_FEATURE_FLAGS, FEATURE_DEPENDENCIES, ENHANCED_FEATURE_DEPENDENCIES, RUNTIME_SECURITY_DEPENDENCIES, LOOP_ENGINE_DEPENDENCIES, type FeatureGateFlags } from '../feature-gate/feature-gate-config.js';
+import { FEATURE_FLAG_METADATA } from '../feature-gate/feature-gate-metadata.js';
 import { loadProjectConfig } from '../config/project-config';
 
 // Agent status simulation - in a real system this would come from agent manager
@@ -315,6 +318,7 @@ export interface IPCDependencies {
 
 // Subsystem singletons — initialized once
 let db: ReturnType<typeof initDatabase>;
+let featureGateStore: FeatureGateStore;
 let sessionManager: SessionManager;
 let commandSystem: CommandSystem;
 let agentManager: SuperAgentManager;
@@ -365,7 +369,55 @@ function getDataDirectoryForBenchmark(): string {
   return getDataDirectory();
 }
 
-/** Get or create the ToolSystem singleton for the agent loop. */
+/**
+ * Create a FeatureGateSystem-compatible adapter backed by the shared FeatureGateStore.
+ * Subsystems that accept a FeatureGateSystem instance (with isEnabled/disableAtRuntime)
+ * can use this adapter to read effective state from the centralized store.
+ * This replaces fragmented `new FeatureGateSystem({...})` instances with the shared store.
+ * Requirements: 2.9, 30.1
+ */
+function getFeatureGateAdapter(): FeatureGateSystem {
+  if (!featureGateStore) {
+    // Fallback: if store isn't initialized yet, return a default-configured system
+    return new FeatureGateSystem({});
+  }
+  // Create a proxy-like adapter that delegates isEnabled() to the store
+  const adapter = new FeatureGateSystem({});
+  // Override isEnabled to delegate to the shared store
+  (adapter as any).isEnabled = (flag: string) => {
+    try {
+      const state = featureGateStore.getEffective(flag as any);
+      return state.enabled && state.available;
+    } catch {
+      return false;
+    }
+  };
+  // Override disableAtRuntime to delegate to the store
+  (adapter as any).disableAtRuntime = (flag: string, reason: string) => {
+    try {
+      featureGateStore.disableAtRuntime(flag as any, reason);
+    } catch {}
+  };
+  return adapter;
+}
+
+/**
+ * Check if a feature flag is enabled via the shared FeatureGateStore.
+ * Replaces `new FeatureGateSystem({flag: true}).isEnabled('flag')` pattern.
+ * Requirements: 2.9, 30.1
+ */
+function isFeatureEnabled(flag: string): boolean {
+  if (!featureGateStore) return false;
+  try {
+    const state = featureGateStore.getEffective(flag as any);
+    return state.enabled && state.available;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Get or create the ToolSystem singleton for the agent loop. */
 function getAgentLoopToolSystem(): InstanceType<typeof AgentToolSystem> {
   if (!agentLoopToolSystem) {
     agentLoopToolSystem = new AgentToolSystem(new PermissionSystem());
@@ -864,6 +916,7 @@ function initCriticalModules(): void {
   console.log('[IPC] Initializing critical subsystems...');
   try {
     db = initDatabase();
+    featureGateStore = new FeatureGateStore(db);
     sessionManager = new SessionManager(db);
     commandSystem = new CommandSystem();
     agentManager = new SuperAgentManager();
@@ -935,9 +988,8 @@ async function initDeferredModules(): Promise<void> {
     // Initialize ProviderRegistry with formal adapter wrapping
     try {
       const { ProviderRegistry } = require('../providers/provider-registry.impl');
-      const { FeatureGateSystem } = require('../feature-gate/feature-gate-system');
       const { createAdaptersFromConfigs } = require('../providers/llm-client-adapter');
-      const featureGate = new FeatureGateSystem();
+      const featureGate = getFeatureGateAdapter();
       const registry = new ProviderRegistry(db, featureGate);
       const provJson = getCachedConfig('providers');
       if (provJson) {
@@ -1135,6 +1187,7 @@ function initWithLazyLoader(): void {
   moduleLoader.initCritical().then(() => {
     // Assign critical module instances to the existing variables for backward compatibility
     db = moduleLoader!.get('Database');
+    featureGateStore = new FeatureGateStore(db);
     sessionManager = moduleLoader!.get('SessionManager');
     commandSystem = moduleLoader!.get('CommandSystem');
 
@@ -1231,6 +1284,7 @@ function ensureInit() {
       console.log('[IPC] Initializing subsystems (lazy mode)...');
       try {
         db = initDatabase();
+        featureGateStore = new FeatureGateStore(db);
         sessionManager = new SessionManager(db);
         commandSystem = new CommandSystem();
         agentManager = new SuperAgentManager();
@@ -1340,6 +1394,7 @@ function ensureInit() {
       console.log('[IPC] Initializing subsystems (eager mode)...');
       try {
         db = initDatabase();
+        featureGateStore = new FeatureGateStore(db);
         sessionManager = new SessionManager(db);
         commandSystem = new CommandSystem();
         agentManager = new SuperAgentManager();
@@ -2452,6 +2507,8 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
     'load-older-messages', 'persist-overflow-messages', 'get-overflow-count', 'clear-overflow-session',
     // Multi-Chat IPC handlers
     'create-chat-session', 'list-chat-sessions', 'switch-chat-session',
+    // Feature Gate Management
+    'feature-gate:get-all', 'feature-gate:set', 'feature-gate:audit', 'feature-gate:reset', 'feature-gate:export', 'feature-gate:import',
     // Note: License & Referral handlers are registered separately at the top of registerIPCHandlers
   ];
   for (const h of handlersToRemove) {
@@ -2729,9 +2786,14 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
     // flag: a fresh interview is ONLY kicked off in spec mode. Plain `send`
     // mode goes straight to the orchestrator (pre-grill-me behavior).
     const isSpecMode = !!(typeof arg === 'object' && arg !== null && arg.spec);
+    // `actionContext` is set by the renderer when the message originates from
+    // a Confirm/Cancel button click. Contains the preceding agent proposal so
+    // the pipeline can interpret "confirm" as approval of that proposal rather
+    // than an ambiguous freeform prompt.
+    const actionContext = (typeof arg === 'object' && arg !== null && arg.actionContext) || null;
     const trimmed = (message || '').trim();
     if (!trimmed) return;
-    console.log('[IPC] chat-message received:', trimmed, isSteerRedirect ? '(steer redirect)' : '', isSpecMode ? '(spec mode)' : '');
+    console.log('[IPC] chat-message received:', trimmed, isSteerRedirect ? '(steer redirect)' : '', isSpecMode ? '(spec mode)' : '', actionContext ? '(action-context)' : '');
 
     // ── No project selected: respond with NeuroNest info or instruct to select a project ──
     if (!activeSessionId) {
@@ -3209,7 +3271,20 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
 
     // If grill produced a spec, treat it as the new effective message so the
     // downstream classifier + orchestrator pipeline run against it.
-    const effectiveMessage = grilledSpec ?? trimmed;
+    let effectiveMessage = grilledSpec ?? trimmed;
+
+    // ── Action Context Resolution ──
+    // When the user clicked a Confirm/Cancel button on a prior agent response,
+    // the renderer passes actionContext with the agent's proposal. We enrich
+    // the bare "confirm"/"cancel" text so the pipeline treats it as approval
+    // or rejection of the specific proposal rather than an ambiguous prompt.
+    if (actionContext && actionContext.action === 'confirm' && actionContext.proposal) {
+      effectiveMessage = `User approved the following proposal. Proceed with execution:\n\n${actionContext.proposal}`;
+      console.log('[IPC] Action context resolved: confirm → executing agent proposal');
+    } else if (actionContext && actionContext.action === 'cancel') {
+      effectiveMessage = 'User cancelled the proposed action. Acknowledge and ask what they would like to do instead.';
+      console.log('[IPC] Action context resolved: cancel → aborting proposal');
+    }
 
     // ── Intent Classification and Message Routing ──
     const { routeMessageWithLLM, routeMessage, routeMessageUnified } = require('../pipeline/message-router');
@@ -5256,7 +5331,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
           // and trigger the Loop Engine to auto-fix issues if loops_enabled is on.
           // This runs regardless of autonomyConfig or lintTestConfig settings.
           try {
-            const fgLoopCheck = new FeatureGateSystem({ loops_enabled: true });
+            const fgLoopCheck = getFeatureGateAdapter();
             if (fgLoopCheck.isEnabled('loops_enabled') && totalFiles >= 3) {
               const { execSync } = require('node:child_process');
 
@@ -5596,7 +5671,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
               // When tests fail after swarm execution and loops_enabled flag is on,
               // automatically invoke the Loop Engine to iteratively fix failing tests.
               try {
-                const fgForLoop = new FeatureGateSystem({ loops_enabled: true });
+                const fgForLoop = getFeatureGateAdapter();
                 if (fgForLoop.isEnabled('loops_enabled')) {
                   const { LoopRunner } = require('../loop-engine/runner/loop-runner.js');
                   const { LoopStorage } = require('../loop-engine/storage/loop-storage.js');
@@ -5742,7 +5817,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
               // When build fails and loops_enabled flag is on, trigger a custom loop
               // that iteratively fixes build errors until the build succeeds.
               try {
-                const fgForBuildLoop = new FeatureGateSystem({ loops_enabled: true });
+                const fgForBuildLoop = getFeatureGateAdapter();
                 if (fgForBuildLoop.isEnabled('loops_enabled')) {
                   const { LoopRunner } = require('../loop-engine/runner/loop-runner.js');
                   const { LoopStorage } = require('../loop-engine/storage/loop-storage.js');
@@ -8389,7 +8464,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
   // in preload.ts SEND_CHANNELS) used by approval-gate-panel.ts.
   try {
     if (db) {
-      const liveFeatureGateForApproval = new FeatureGateSystem({});
+      const liveFeatureGateForApproval = getFeatureGateAdapter();
       const approvalGate = new ApprovalGate(db, liveFeatureGateForApproval, (channel, data) => {
         if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, data);
       });
@@ -8958,6 +9033,90 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
     });
     console.log('[IPC] Hooks Manager registered');
   } catch (error) { console.warn('[IPC] Hooks Manager not available:', error); }
+
+  // ── Hooks v2 Management (IPC channels for hooks-management-panel) ──
+  try {
+    const { HookEngineV2 } = require('../events/hook-engine-v2.js');
+    const { HookExecutor } = require('../events/hook-executor.js');
+
+    // hooks:list — list all hooks (v2 file-based + legacy DB hooks)
+    ipcMain.handle('hooks:list', async (_ev, arg: any) => {
+      try {
+        const projectRoot = arg && arg.projectId ? arg.projectId : undefined;
+        const engine = new HookEngineV2({ projectRoot });
+        engine.load();
+        const hooks = engine.listHooks();
+        return { success: true, hooks };
+      } catch (e: any) { return { success: false, error: e.message }; }
+    });
+
+    // hooks:enable — enable a hook by name
+    ipcMain.handle('hooks:enable', async (_ev, arg: any) => {
+      try {
+        const projectRoot = arg && arg.projectId ? arg.projectId : undefined;
+        const engine = new HookEngineV2({ projectRoot });
+        engine.load();
+        const result = engine.enableHook(arg.hookId);
+        return { success: result };
+      } catch (e: any) { return { success: false, error: e.message }; }
+    });
+
+    // hooks:disable — disable a hook by name
+    ipcMain.handle('hooks:disable', async (_ev, arg: any) => {
+      try {
+        const projectRoot = arg && arg.projectId ? arg.projectId : undefined;
+        const engine = new HookEngineV2({ projectRoot });
+        engine.load();
+        const result = engine.disableHook(arg.hookId);
+        return { success: result };
+      } catch (e: any) { return { success: false, error: e.message }; }
+    });
+
+    // hooks:history — get execution history from hook_executions table
+    ipcMain.handle('hooks:history', async (_ev, arg: any) => {
+      try {
+        const limit = (arg && arg.limit) || 100;
+        const rows = db.prepare(
+          'SELECT * FROM hook_executions ORDER BY timestamp DESC LIMIT ?'
+        ).all(limit) as any[];
+        const history = rows.map((r: any) => ({
+          hookName: r.hook_name || r.hookName,
+          event: r.event,
+          verdict: r.verdict,
+          durationMs: r.duration_ms,
+          output: r.output,
+          timestamp: r.timestamp,
+        }));
+        return { success: true, history };
+      } catch (e: any) {
+        // Table may not exist yet — return empty
+        return { success: true, history: [] };
+      }
+    });
+
+    // hooks:run-now — test-execute a hook
+    ipcMain.handle('hooks:run-now', async (_ev, arg: any) => {
+      try {
+        const projectRoot = arg && arg.projectId ? arg.projectId : undefined;
+        const engine = new HookEngineV2({ projectRoot });
+        engine.load();
+        const hook = engine.getHook(arg.hookId);
+        if (!hook) return { success: false, error: 'Hook not found: ' + arg.hookId };
+
+        const executor = new HookExecutor({
+          getMatchingHooks: () => [hook],
+        });
+        const result = await executor.executeHook(hook, {
+          event: hook.events[0] || 'TurnStart',
+          toolName: '__test__',
+          sessionId: 'test-run',
+        });
+        return { success: true, verdict: result.verdict, durationMs: result.durationMs, reason: result.reason, error: result.error };
+      } catch (e: any) { return { success: false, error: e.message }; }
+    });
+
+    console.log('[IPC] Hooks v2 Management registered');
+  } catch (error) { console.warn('[IPC] Hooks v2 Management not available:', error); }
 
   // ── Diff Manager ──
   try {
@@ -10057,7 +10216,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
   try {
     registerAutocompleteIPC({
       mainWindow,
-      featureGate: new FeatureGateSystem({}),
+      featureGate: getFeatureGateAdapter(),
       firewallEvaluator: firewallEngine || undefined,
     });
   } catch (err: any) {
@@ -10067,7 +10226,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
   // ── Kilo-Inspired Feature: Semantic Index IPC ───────────────────
   try {
     registerSemanticIPC({
-      featureGate: new FeatureGateSystem({}),
+      featureGate: getFeatureGateAdapter(),
       getIndexingPipeline: () => indexingPipelineController,
       getVectorStore: () => {
         // The vector store is accessed through the indexing pipeline controller
@@ -10088,8 +10247,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
     registerMentionIPC({
       isFeatureEnabled: () => {
         try {
-          const fg = new FeatureGateSystem({});
-          return fg.isEnabled('context_mentions');
+          return isFeatureEnabled('context_mentions');
         } catch {
           return true; // Default to enabled if gate system is unavailable
         }
@@ -10102,7 +10260,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
   // ── Kilo-Inspired Feature: Prompt Enhancement IPC ────────────────
   try {
     registerPromptEnhancerIPC({
-      featureGate: new FeatureGateSystem({}),
+      featureGate: getFeatureGateAdapter(),
       resolveLLMClient: () => resolveActiveLLMClient(),
     });
   } catch (err: any) {
@@ -10112,7 +10270,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
   // ── Kilo-Inspired Feature: Commit Message Generator IPC ─────────
   try {
     registerCommitIPC({
-      featureGate: new FeatureGateSystem({}),
+      featureGate: getFeatureGateAdapter(),
       resolveLLMClient: () => {
         const client = resolveActiveLLMClient();
         if (!client) return null;
@@ -10137,8 +10295,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
     registerSubagentIPC({
       isFeatureEnabled: () => {
         try {
-          const fg = new FeatureGateSystem({});
-          return fg.isEnabled('subagent_spawning');
+          return isFeatureEnabled('subagent_spawning');
         } catch {
           return false; // Default to disabled if gate system is unavailable
         }
@@ -10183,8 +10340,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
     registerLspIPC({
       isFeatureEnabled: () => {
         try {
-          const fg = new FeatureGateSystem({});
-          return fg.isEnabled('lsp_intelligence');
+          return isFeatureEnabled('lsp_intelligence');
         } catch {
           return false; // Default to disabled if gate system is unavailable
         }
@@ -10205,8 +10361,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
     registerReviewIPC({
       isFeatureEnabled: () => {
         try {
-          const fg = new FeatureGateSystem({});
-          return fg.isEnabled('code_review_pipeline');
+          return isFeatureEnabled('code_review_pipeline');
         } catch {
           return false;
         }
@@ -10241,7 +10396,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
   try {
     registerCostIPC({
       mainWindow,
-      featureGate: new FeatureGateSystem({}),
+      featureGate: getFeatureGateAdapter(),
       getDb: () => db,
       getActiveSessionId: () => activeSessionId,
     });
@@ -10254,7 +10409,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
     registerProcessIPC({
       mainWindow,
       featureGate: (() => {
-        try { return new FeatureGateSystem({}); } catch { return undefined; }
+        try { return getFeatureGateAdapter(); } catch { return undefined; }
       })(),
     });
   } catch (err: any) {
@@ -10266,8 +10421,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
     registerNetworkSandboxIPC({
       isFeatureEnabled: () => {
         try {
-          const fg = new FeatureGateSystem({});
-          return fg.isEnabled('network_sandbox');
+          return isFeatureEnabled('network_sandbox');
         } catch {
           return false;
         }
@@ -10282,8 +10436,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
     registerTerminalIPC({
       isFeatureEnabled: () => {
         try {
-          const fg = new FeatureGateSystem({});
-          return fg.isEnabled('interactive_terminal');
+          return isFeatureEnabled('interactive_terminal');
         } catch {
           return false;
         }
@@ -10305,7 +10458,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
   try {
     registerCheckpointTimelineIPC({
       mainWindow,
-      featureGate: new FeatureGateSystem({}),
+      featureGate: getFeatureGateAdapter(),
       getActiveSessionId: () => activeSessionId,
       getCheckpointService: () => {
         const os = require('node:os');
@@ -10327,8 +10480,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
       mainWindow,
       isFeatureEnabled: () => {
         try {
-          const fg = new FeatureGateSystem({});
-          return fg.isEnabled('notebook_integration');
+          return isFeatureEnabled('notebook_integration');
         } catch {
           return false;
         }
@@ -10372,7 +10524,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
     const { LoopDoctor } = require('../loop-engine/doctor/loop-doctor.js');
     const { ReceiptGenerator } = require('../loop-engine/receipt/receipt-generator.js');
 
-    const fg = new FeatureGateSystem({ loops_enabled: true });
+    const fg = getFeatureGateAdapter();
     if (fg.isEnabled('loops_enabled')) {
       const loopStorage = new LoopStorage(db);
       const loopDoctor = new LoopDoctor();
@@ -10557,19 +10709,16 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
   // the corresponding flag is off, matching R12.7/pre-remediation parity.
   try {
     const diffReviewCallbackEngine = new CallbackEngine();
-    const sessionForkingFeatureGate = new FeatureGateSystem({ session_forking: true });
-    const diffReviewFeatureGate = new FeatureGateSystem({ diff_review: true });
-    const agentRacingFeatureGate = new FeatureGateSystem({ agent_racing: true, worktree_isolation: true, parallel_agents: true });
-    const testPlanningFeatureGate = new FeatureGateSystem({ test_planning: true });
-    const testGenerationFeatureGate = new FeatureGateSystem({ test_generation: true });
-    const testHealthFeatureGate = new FeatureGateSystem({ test_health_analytics: true });
-    const testDriftFeatureGate = new FeatureGateSystem({ test_drift_detection: true, test_health_analytics: true });
-    const enhancedDriftFeatureGate = new FeatureGateSystem({ enhanced_drift_classification: true });
-    const verificationAgentFeatureGate = new FeatureGateSystem({ verification_agent: true });
-    const driftAwareOrchestratorFeatureGate = new FeatureGateSystem({
-      drift_aware_orchestration: true, enhanced_drift_classification: true,
-      session_forking: true, worktree_checkpoints: true, parallel_agents: true, worktree_isolation: true,
-    });
+    const sessionForkingFeatureGate = getFeatureGateAdapter();
+    const diffReviewFeatureGate = getFeatureGateAdapter();
+    const agentRacingFeatureGate = getFeatureGateAdapter();
+    const testPlanningFeatureGate = getFeatureGateAdapter();
+    const testGenerationFeatureGate = getFeatureGateAdapter();
+    const testHealthFeatureGate = getFeatureGateAdapter();
+    const testDriftFeatureGate = getFeatureGateAdapter();
+    const enhancedDriftFeatureGate = getFeatureGateAdapter();
+    const verificationAgentFeatureGate = getFeatureGateAdapter();
+    const driftAwareOrchestratorFeatureGate = getFeatureGateAdapter();
 
     // session-forker.impl — WIRE: facade instantiates .impl for the live
     // parallel:create-adjacent session-forking capability.
@@ -11868,6 +12017,23 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
     } catch (e: any) { return { error: e.message }; }
   });
 
+  // Worktree GC — manual diagnostics action (Req 13.5, 13.6)
+  ipcMain.handle('worktree:gc-run', async (_ev: any, args?: { baseDir?: string; ttlSeconds?: number }) => {
+    try {
+      const { WorktreeGcScheduler } = require('../orchestration/worktree-gc-scheduler');
+      const baseDir = args?.baseDir || process.cwd();
+      const scheduler = new WorktreeGcScheduler({
+        baseDir,
+        ttlSeconds: args?.ttlSeconds,
+        fastWorktreeEnabled: true,
+      });
+      const result = await scheduler.runGc();
+      return result;
+    } catch (e: any) {
+      return { removed: 0, freedBytes: 0, skipped: 0, error: e.message };
+    }
+  });
+
   // Notifications
   ipcMain.handle('notifications:get-config', async (_ev: any, projectId: string) => { try { return notificationService.getConfig(projectId); } catch { return null; } });
   ipcMain.handle('notifications:set-config', async (_ev: any, args: { projectId: string; updates: any }) => { try { return notificationService.setConfig(args.projectId, args.updates); } catch (e: any) { return { error: e.message }; } });
@@ -13139,6 +13305,170 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
 
   console.log('[IPC] BoundedMessageStore handlers registered');
 
+  // ═══════════════════════════════════════════════════════════════
+  // ── Feature Gate Management IPC (Task 1.6) ────────────────────
+  // ═══════════════════════════════════════════════════════════════
+  // Channels: feature-gate:get-all, feature-gate:set, feature-gate:audit,
+  //           feature-gate:reset, feature-gate:export, feature-gate:import
+  // Requirements: 2.3, 2.10
+
+  ipcMain.handle('feature-gate:get-all', async (_ev: any, args: any) => {
+    try {
+      if (!featureGateStore) return { success: false, error: 'Feature gate store not initialized' };
+      const projectId = args?.projectId;
+      const allFlags = Object.keys(DEFAULT_FEATURE_FLAGS) as (keyof FeatureGateFlags)[];
+      const allDeps = [
+        ...FEATURE_DEPENDENCIES,
+        ...ENHANCED_FEATURE_DEPENDENCIES,
+        ...RUNTIME_SECURITY_DEPENDENCIES,
+        ...LOOP_ENGINE_DEPENDENCIES,
+      ];
+
+      const flags = allFlags.map((flag) => {
+        const effective = featureGateStore.getEffective(flag, projectId);
+        const meta = FEATURE_FLAG_METADATA[flag] || { description: flag, stability: 'experimental', group: 'experimental' };
+
+        // Resolve global and project values separately
+        let globalValue: boolean | null = null;
+        let projectValue: boolean | null = null;
+        try {
+          const globalRow = (featureGateStore as any).stmtGetGlobal.get(flag) as { value: number } | undefined;
+          globalValue = globalRow !== undefined ? globalRow.value === 1 : null;
+        } catch { /* no global override */ }
+        if (projectId) {
+          try {
+            const projectRow = (featureGateStore as any).stmtGetProject.get(flag, projectId) as { value: number } | undefined;
+            projectValue = projectRow !== undefined ? projectRow.value === 1 : null;
+          } catch { /* no project override */ }
+        }
+
+        // Gather dependency info
+        const flagDeps = allDeps.filter((d) => d.feature === flag);
+        const dependencies = flagDeps.flatMap((d) => [
+          ...(d.requires || []),
+          ...(d.requiresAny || []),
+        ]);
+
+        return {
+          flag,
+          description: meta.description,
+          stability: meta.stability,
+          group: meta.group,
+          effective: effective.enabled,
+          available: effective.available,
+          source: effective.source,
+          reason: effective.reason,
+          globalValue,
+          projectValue,
+          defaultValue: DEFAULT_FEATURE_FLAGS[flag] ?? false,
+          dependencies,
+        };
+      });
+
+      return { success: true, flags };
+    } catch (e: any) {
+      return { success: false, error: e?.message || 'Failed to get feature flags' };
+    }
+  });
+
+  ipcMain.handle('feature-gate:set', async (_ev: any, args: any) => {
+    try {
+      if (!featureGateStore) return { success: false, error: 'Feature gate store not initialized' };
+      const { flag, value, scope, projectId } = args || {};
+      if (!flag || typeof value !== 'boolean' || !scope) {
+        return { success: false, error: 'Missing required fields: flag, value, scope' };
+      }
+      if (!(flag in DEFAULT_FEATURE_FLAGS)) {
+        return { success: false, error: `Unknown flag: ${flag}` };
+      }
+
+      // Validate dependencies before enabling
+      if (value === true) {
+        const depResult = featureGateStore.validateDependencies(flag as keyof FeatureGateFlags);
+        if (!depResult.valid) {
+          const reason = depResult.missing.length > 0
+            ? `Cannot enable: missing prerequisites ${depResult.missing.join(', ')}`
+            : depResult.incompatible.length > 0
+              ? `Cannot enable: incompatible with ${depResult.incompatible.join(', ')}`
+              : 'Cannot enable: dependency validation failed';
+          return { success: false, error: reason };
+        }
+      }
+
+      if (scope === 'global') {
+        featureGateStore.setGlobal(flag as keyof FeatureGateFlags, value, 'user');
+      } else if (scope === 'project') {
+        if (!projectId) return { success: false, error: 'projectId required for project scope' };
+        featureGateStore.setProject(flag as keyof FeatureGateFlags, projectId, value, 'user');
+      } else {
+        return { success: false, error: `Invalid scope: ${scope}. Use 'global' or 'project'` };
+      }
+
+      return { success: true };
+    } catch (e: any) {
+      return { success: false, error: e?.message || 'Failed to set feature flag' };
+    }
+  });
+
+  ipcMain.handle('feature-gate:audit', async (_ev: any, args: any) => {
+    try {
+      if (!featureGateStore) return { success: false, error: 'Feature gate store not initialized' };
+      const filter: any = {};
+      if (args?.flag) filter.flag = args.flag;
+      if (args?.scope) filter.scope = args.scope;
+      if (args?.projectId) filter.projectId = args.projectId;
+      if (args?.since) filter.since = args.since;
+      if (args?.limit) filter.limit = args.limit;
+
+      const entries = featureGateStore.getAuditLog(filter);
+      return { success: true, entries };
+    } catch (e: any) {
+      return { success: false, error: e?.message || 'Failed to get audit log' };
+    }
+  });
+
+  ipcMain.handle('feature-gate:reset', async (_ev: any, args: any) => {
+    try {
+      if (!featureGateStore) return { success: false, error: 'Feature gate store not initialized' };
+      const { flag, scope, projectId } = args || {};
+      if (!flag || !scope) {
+        return { success: false, error: 'Missing required fields: flag, scope' };
+      }
+      if (!(flag in DEFAULT_FEATURE_FLAGS)) {
+        return { success: false, error: `Unknown flag: ${flag}` };
+      }
+
+      featureGateStore.resetToDefault(flag as keyof FeatureGateFlags, scope, projectId);
+      return { success: true };
+    } catch (e: any) {
+      return { success: false, error: e?.message || 'Failed to reset feature flag' };
+    }
+  });
+
+  ipcMain.handle('feature-gate:export', async (_ev: any) => {
+    try {
+      if (!featureGateStore) return { success: false, error: 'Feature gate store not initialized' };
+      const profile = featureGateStore.exportProfile();
+      return { success: true, profile };
+    } catch (e: any) {
+      return { success: false, error: e?.message || 'Failed to export profile' };
+    }
+  });
+
+  ipcMain.handle('feature-gate:import', async (_ev: any, args: any) => {
+    try {
+      if (!featureGateStore) return { success: false, error: 'Feature gate store not initialized' };
+      const { profile } = args || {};
+      if (!profile) return { success: false, error: 'Missing profile data' };
+      const result = featureGateStore.importProfile(profile);
+      return { success: true, imported: result.imported, skipped: result.skipped, errors: result.errors };
+    } catch (e: any) {
+      return { success: false, error: e?.message || 'Failed to import profile' };
+    }
+  });
+
+  console.log('[IPC] Feature Gate Management IPC handlers registered');
+
   // ─── DiffViewer IPC Handlers (Kilo-Inspired Feature Integration) ────────
   // Serves diff:get-turns, diff:get-files, diff:revert-turn, diff:revert-file
   // Gated behind `diff_viewer` feature flag (requires `diff_review`).
@@ -13147,7 +13477,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
     const { TurnTracker, SqliteTurnTrackerStore } = require('../diff/turn-tracker');
     const { RevertEngine } = require('../diff/revert-engine');
 
-    const diffViewerGate = new FeatureGateSystem({ diff_viewer: true, diff_review: true });
+    const diffViewerGate = getFeatureGateAdapter();
     let diffTurnStore: any = null;
     let diffTurnTracker: any = null;
     let diffRevertEngine: any = null;
@@ -13256,7 +13586,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
   }
 }
 
-export { runtimeManager, activeLlmClient, providerRegistryRef };
+export { runtimeManager, activeLlmClient, providerRegistryRef, featureGateStore };
 
 export function notifyThemeChange(win: BrowserWindow, theme: 'light' | 'dark'): void {
   win.webContents.send('theme-changed', theme);

@@ -310,7 +310,11 @@ export class LLMClient {
     const baseUrl = proxyMode
       ? this.config.professionalMode!.endpoint
       : (this.config.baseUrl || PROVIDER_URLS[this.config.provider] || PROVIDER_URLS.openai);
-    const url = baseUrl + '/chat/completions';
+    // Anthropic uses /messages endpoint, all others use /chat/completions
+    const chatEndpoint = (!proxyMode && this.config.provider === 'anthropic')
+      ? '/messages'
+      : '/chat/completions';
+    const url = baseUrl + chatEndpoint;
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
 
     if (proxyMode) {
@@ -364,7 +368,23 @@ export class LLMClient {
       messages: messages,
       stream: false,
     };
-    if (needsCompletionTokens) {
+    // ─── Anthropic Messages API format (direct mode only) ────────────
+    // Anthropic requires: system as top-level param, messages without system role,
+    // max_tokens is required. When going through the proxy, the proxy handles
+    // format conversion so we use the standard OpenAI format.
+    const isDirectAnthropic = !proxyMode && this.config.provider === 'anthropic';
+    if (isDirectAnthropic) {
+      // Extract system messages into the top-level 'system' parameter
+      const systemMessages = messages.filter(m => m.role === 'system');
+      const nonSystemMessages = messages.filter(m => m.role !== 'system');
+      if (systemMessages.length > 0) {
+        bodyObj.system = systemMessages.map(m => m.content).join('\n\n');
+      }
+      bodyObj.messages = nonSystemMessages.map(m => ({ role: m.role, content: m.content }));
+      bodyObj.max_tokens = safeMaxTokens;
+      bodyObj.temperature = options?.temperature ?? 0.7;
+      delete bodyObj.stream; // Anthropic doesn't use stream: false in the same way
+    } else if (needsCompletionTokens) {
       bodyObj.max_completion_tokens = safeMaxTokens;
     } else {
       bodyObj.temperature = options?.temperature ?? 0.7;
@@ -445,12 +465,50 @@ export class LLMClient {
                   reject(new Error(errorMsg));
                   return;
                 }
-                const content = parsed.choices?.[0]?.message?.content || '';
-                const reasoning = parsed.choices?.[0]?.message?.reasoning_content || undefined;
-                const toolCalls = parsed.choices?.[0]?.message?.tool_calls || undefined;
-                const tokens = parsed.usage?.total_tokens || 0;
-                const promptTokens = parsed.usage?.prompt_tokens || undefined;
-                const completionTokens = parsed.usage?.completion_tokens || undefined;
+                // ─── Response format handling ────────────────────────────
+                // OpenAI format: { choices: [{ message: { content } }] }
+                // Anthropic format: { content: [{ type: "text", text: "..." }], usage: {...} }
+                let content = '';
+                let tokens = 0;
+                let promptTokens: number | undefined;
+                let completionTokens: number | undefined;
+                let reasoning: string | undefined;
+                let toolCalls: any;
+
+                if (parsed.choices && parsed.choices[0]?.message) {
+                  // OpenAI / OpenAI-compatible format
+                  content = parsed.choices[0].message.content || '';
+                  reasoning = parsed.choices[0].message.reasoning_content || undefined;
+                  toolCalls = parsed.choices[0].message.tool_calls || undefined;
+                  tokens = parsed.usage?.total_tokens || 0;
+                  promptTokens = parsed.usage?.prompt_tokens || undefined;
+                  completionTokens = parsed.usage?.completion_tokens || undefined;
+                } else if (parsed.content && Array.isArray(parsed.content)) {
+                  // Anthropic Messages API format
+                  content = parsed.content
+                    .filter((block: any) => block.type === 'text')
+                    .map((block: any) => block.text)
+                    .join('');
+                  tokens = (parsed.usage?.input_tokens || 0) + (parsed.usage?.output_tokens || 0);
+                  promptTokens = parsed.usage?.input_tokens || undefined;
+                  completionTokens = parsed.usage?.output_tokens || undefined;
+                  // Check for tool_use blocks
+                  const toolUseBlocks = parsed.content.filter((block: any) => block.type === 'tool_use');
+                  if (toolUseBlocks.length > 0) {
+                    toolCalls = toolUseBlocks.map((block: any) => ({
+                      id: block.id,
+                      type: 'function',
+                      function: { name: block.name, arguments: JSON.stringify(block.input) },
+                    }));
+                  }
+                } else if (typeof parsed.content === 'string') {
+                  // Simple string content (some providers)
+                  content = parsed.content;
+                } else {
+                  // Unknown format — try to extract something useful
+                  content = parsed.text || parsed.output || parsed.response || '';
+                  console.warn('[LLMClient] Unknown response format from', this.config.provider, '— keys:', Object.keys(parsed).join(', '));
+                }
 
                 // Sanitize output — strip special tokens that local models may leak
                 const sanitizedContent = sanitizeModelOutput(content).trim();
@@ -459,12 +517,19 @@ export class LLMClient {
                 const garbageError = detectGarbageOutput(content);
                 if (garbageError) {
                   console.error('[LLMClient] Garbage output detected from', this.config.provider + '/' + this.config.model);
-                  resolve({ content: garbageError, reasoning, tokensUsed: tokens, promptTokens, completionTokens });
+                  const garbageResult: LLMResponse = { content: garbageError, tokensUsed: tokens };
+                  if (reasoning) garbageResult.reasoning = reasoning;
+                  if (promptTokens) garbageResult.promptTokens = promptTokens;
+                  if (completionTokens) garbageResult.completionTokens = completionTokens;
+                  resolve(garbageResult);
                   return;
                 }
 
                 console.log(`[LLMClient] Success - ${sanitizedContent.length} chars, ${tokens} tokens${reasoning ? ', reasoning: ' + reasoning.length + ' chars' : ''}${toolCalls ? ', tool_calls: ' + toolCalls.length : ''}`);
-                const llmResult: LLMResponse = { content: sanitizedContent, reasoning, tokensUsed: tokens, promptTokens, completionTokens };
+                const llmResult: LLMResponse = { content: sanitizedContent, tokensUsed: tokens };
+                if (reasoning) llmResult.reasoning = reasoning;
+                if (promptTokens) llmResult.promptTokens = promptTokens;
+                if (completionTokens) llmResult.completionTokens = completionTokens;
                 if (toolCalls && toolCalls.length > 0) {
                   llmResult.tool_calls = toolCalls;
                 }

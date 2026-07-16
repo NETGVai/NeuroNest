@@ -2726,8 +2726,21 @@
   <!-- Dashboard_Metrics_Panel renderer (12-factor-agent-improvements task 33).
        Exposes window.MetricsPanel and window.renderMetricsPanel for the
        inspector hook in index.ts (task 34). Must load before index.js so the
-       dashboard view can attach the panel on first render. -->
+       dashboard view can attach the panel on first render.
+       NOTE: metrics-panel is now registered through the PanelRegistry
+       (see panel-registrations.js). The script tag is retained only for
+       backward compatibility during migration — the registry is the
+       authoritative load path per Requirement 3.7. -->
   <script src="./metrics-panel.js"></script>
+
+  <!-- Panel Registry and Registrations — centralized lazy-load panel management.
+       panel-registry.js must load before panel-registrations.js.
+       Registers all orphaned panels (interactive-terminal, network-activity, plugin,
+       worktree, cost-controls, diff-viewer, checkpoint-timeline, marketplace,
+       process-manager, analytics-dashboard, notebook) plus metrics-panel through
+       the common registry path. Requirements: 3.2, 3.7, 3.8 -->
+  <script src="./panel-registry.js"></script>
+  <script src="./panel-registrations.js"></script>
 
   <script src="./index.js"></script>
 

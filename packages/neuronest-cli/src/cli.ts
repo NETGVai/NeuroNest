@@ -16,6 +16,10 @@
 
 import yargs from 'yargs';
 import { HeadlessRunner, type HeadlessRunnerOptions } from './headless-runner.js';
+import {
+  parseAndBuildPermissionConfig,
+  type CliPermissionFlags,
+} from './cli/cli-pattern-injection.js';
 
 // ─── Exit Codes ─────────────────────────────────────────────────
 
@@ -192,6 +196,21 @@ export function createHeadlessCli(deps: HeadlessCliDeps = {}) {
               .option('model', {
                 describe: 'Model identifier (e.g., gpt-4o, claude-sonnet-4-20250514)',
                 type: 'string',
+              })
+              .option('allow', {
+                describe: 'Allow pattern(s) injected as user-tier rules, e.g. "file_read(*)"',
+                type: 'string',
+                array: true,
+              })
+              .option('deny', {
+                describe: 'Deny pattern(s) injected as user-tier rules, e.g. "bash(rm *)"',
+                type: 'string',
+                array: true,
+              })
+              .option('ask', {
+                describe: 'Ask pattern(s) — prompt before allowing, e.g. "file_write(**)"',
+                type: 'string',
+                array: true,
               }),
           async (parsed) => {
             dispatched = true;
@@ -205,6 +224,25 @@ export function createHeadlessCli(deps: HeadlessCliDeps = {}) {
               const mode = validateMode(parsed.mode);
               const provider = parsed.provider ? String(parsed.provider) : undefined;
               const model = parsed.model ? String(parsed.model) : undefined;
+
+              // ── Validate --allow/--deny/--ask patterns (Req 10.12) ──
+              const permFlags: CliPermissionFlags = {
+                allow: parsed.allow,
+                deny: parsed.deny,
+                ask: parsed.ask,
+              };
+              const permResult = parseAndBuildPermissionConfig(permFlags);
+              if (!permResult.ok) {
+                for (const err of permResult.errors) {
+                  if (jsonOutput) {
+                    emitJsonEvent(stdout, 'error', { message: err, type: 'config_error' });
+                  } else {
+                    stderr.write(`error: ${err}\n`);
+                  }
+                }
+                exitCode = EXIT_CONFIG_ERROR;
+                return;
+              }
 
               const cliArgs: HeadlessCliArgs = {
                 task,
@@ -225,6 +263,9 @@ export function createHeadlessCli(deps: HeadlessCliDeps = {}) {
                   maxCost: maxCost ?? null,
                   provider: provider ?? null,
                   model: model ?? null,
+                  allowPatterns: permResult.config.allow,
+                  denyPatterns: permResult.config.deny,
+                  askPatterns: permResult.askPatterns,
                 });
               }
 
@@ -240,6 +281,8 @@ export function createHeadlessCli(deps: HeadlessCliDeps = {}) {
                 model: cliArgs.model,
                 stdout,
                 stderr,
+                permissionPatterns: permResult.config,
+                askPatterns: permResult.askPatterns,
               };
 
               const result = await runner.run(runnerOptions);
@@ -327,6 +370,9 @@ function buildHeadlessUsage(): string {
     '  --max-cost     Maximum cost in USD before aborting',
     '  --provider     LLM provider (openai, anthropic, deepseek, etc.)',
     '  --model        Model identifier (e.g., gpt-4o, claude-sonnet-4-20250514)',
+    '  --allow        Allow pattern(s) as user-tier rules, e.g. "file_read(*)"',
+    '  --deny         Deny pattern(s) as user-tier rules, e.g. "bash(rm *)"',
+    '  --ask          Ask pattern(s) — prompt before allowing, e.g. "file_write(**)"',
     '  --help, -h     Show this help message',
     '',
     'Exit codes:',
@@ -337,6 +383,7 @@ function buildHeadlessUsage(): string {
     'Examples:',
     '  neuronest run "implement user auth" --auto --json',
     '  neuronest run "fix the login bug" --provider openai --model gpt-4o --max-cost 2.00',
+    '  neuronest run "fix the bug" --allow "file_read(*)" --deny "bash(rm *)" --ask "file_write(**)"',
   ].join('\n');
 }
 

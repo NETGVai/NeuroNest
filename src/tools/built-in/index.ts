@@ -21,6 +21,9 @@ import { createSendMessageExecute } from './send-message.js';
 import { createTaskCreateExecute } from './task-create.js';
 import { createTaskUpdateExecute } from './task-update.js';
 import { createToolSearchExecute } from './tool-search.js';
+import { registerAnchoredEditTool } from './anchored-edit-tool.js';
+import { registerBackgroundTaskTools } from './background-task-tools.js';
+import { getBackgroundTaskRegistry } from '../../tasks/background-task-registry.js';
 
 // ─── Constants ──────────────────────────────────────────────────
 
@@ -172,7 +175,7 @@ async function globExecute(input: unknown, context: ToolContext): Promise<ToolRe
 // ─── BashTool execute implementation ────────────────────────────
 
 async function bashExecute(input: unknown, context: ToolContext): Promise<ToolResult> {
-  const { command, timeout, cwd } = input as { command?: string; timeout?: number; cwd?: string };
+  const { command, timeout, cwd, background } = input as { command?: string; timeout?: number; cwd?: string; background?: boolean };
 
   // Validate input
   if (!command || typeof command !== 'string') {
@@ -224,6 +227,35 @@ async function bashExecute(input: unknown, context: ToolContext): Promise<ToolRe
     }
   }
 
+  // ─── Background mode: delegate to BackgroundTaskRegistry (Req 15.2, 15.4) ───
+  if (background === true) {
+    const registry = getBackgroundTaskRegistry();
+    const sessionId = context.sessionId || 'default';
+
+    try {
+      const taskId = registry.spawn(command, [], {
+        cwd: workingDir,
+        sessionId,
+      });
+
+      return {
+        success: true,
+        output: {
+          taskId,
+          message: 'Task started in background',
+        },
+      };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Failed to spawn background task';
+      return {
+        success: false,
+        output: null,
+        error: message,
+      };
+    }
+  }
+
+  // ─── Blocking mode: existing behavior (Req 15.4) ───────────────────────────
   // Execute the command
   const timeoutMs = typeof timeout === 'number' && timeout > 0 ? timeout : DEFAULT_BASH_TIMEOUT;
 
@@ -300,6 +332,7 @@ export const BashTool: ExecutableToolDefinition = {
       command: { type: 'string', description: 'Shell command to execute' },
       timeout: { type: 'number', description: 'Timeout in milliseconds (default: 60000)' },
       cwd: { type: 'string', description: 'Working directory relative to project dir' },
+      background: { type: 'boolean', description: 'When true, spawn as background task and return taskId immediately (Req 15.2)' },
     },
     required: ['command'],
   },
@@ -898,4 +931,10 @@ export function registerBuiltInTools(deps: ToolDependencies, toolSystem: ToolSys
   toolSystem.register({ ...TaskCreateTool, execute: taskCreateExecute });
   toolSystem.register({ ...TaskUpdateTool, execute: taskUpdateExecute });
   toolSystem.register({ ...ToolSearchTool, execute: toolSearchExecute });
+
+  // Register anchored_edit tool (Req 12.2, 12.3, 12.4, 12.5)
+  registerAnchoredEditTool(toolSystem);
+
+  // Register background task tools (Req 15.3, 15.6, 15.7, 15.8, 15.9)
+  registerBackgroundTaskTools(toolSystem);
 }

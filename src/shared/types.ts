@@ -86,6 +86,23 @@ export interface ToolContext {
    *  Returns true if the action is approved, false otherwise.
    *  If not provided and permissionMode is not 'auto-approve', commands are rejected. */
   approvalHandler?: (command: string) => Promise<boolean>;
+  /**
+   * The effective sandbox profile for process-spawning tools (Req 9.9).
+   * Process-spawning tools SHALL read this field rather than deriving the profile independently.
+   * Assigned by the execution context creation layer based on execution mode.
+   */
+  sandboxProfile?: SandboxProfileAssignment;
+}
+
+/**
+ * Sandbox profile assignment carried in ToolContext (Req 9.9).
+ * Contains the resolved profile name and optional worktree root for strict mode.
+ */
+export interface SandboxProfileAssignment {
+  /** The sandbox profile name to apply: off, workspace, read-only, or strict */
+  profileName: 'off' | 'workspace' | 'read-only' | 'strict';
+  /** For 'strict' profile: the worktree root that serves as the writable root (Req 9.6) */
+  worktreeRoot?: string;
 }
 
 export interface ToolResult {

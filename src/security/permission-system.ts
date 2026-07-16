@@ -1,10 +1,16 @@
 /**
- * Permission System — Tool invocation authorization, audit logging.
+ * Permission System — Tool invocation audit logging and legacy authorization.
  *
- * Implements risk level categorization, configurable permission modes,
- * per-agent allow lists, and in-memory audit logging.
+ * As of task 2.4, this module's primary role is as the **AuthAuditSink** for
+ * the Authorization Pipeline. Every pipeline decision (deny, allow, ask) is
+ * recorded here with full context: verdict, stage, reason, project, session,
+ * agent, tool, args, and timestamp (Req 10.9).
  *
- * Requirements: 21.1–21.9
+ * The `check()` method is retained for backward compatibility but is no longer
+ * called from `ToolSystem.execute`. The Authorization Pipeline is now the ONLY
+ * authorization gate (Req 1.3).
+ *
+ * Requirements: 10.9, 1.1, 1.2, 1.3
  */
 
 import type {
@@ -13,6 +19,7 @@ import type {
   PermissionMode,
   RiskLevel,
 } from '../shared/types.js';
+import type { AuthAuditEntry, AuthAuditSink } from './authorization-pipeline.js';
 
 // ─── Additional types ───────────────────────────────────────────
 
@@ -25,6 +32,20 @@ export interface AuditEntry {
   mode: PermissionMode;
 }
 
+/** Extended audit entry that captures full pipeline decision context (Req 10.9) */
+export interface PipelineAuditEntry {
+  timestamp: Date;
+  verdict: 'deny' | 'allow' | 'ask';
+  stage: string;
+  reason: string;
+  projectId: string | undefined;
+  sessionId: string;
+  agentId: string;
+  toolId: string;
+  toolName: string;
+  args: unknown;
+}
+
 export interface AuditFilter {
   agentId?: string;
   toolId?: string;
@@ -35,11 +56,81 @@ export interface AuditFilter {
 
 // ─── PermissionSystem ───────────────────────────────────────────
 
-export class PermissionSystem {
+/**
+ * PermissionSystem now implements AuthAuditSink so it can be wired into
+ * the AuthorizationPipeline as the audit recorder for all stages (Req 10.9).
+ *
+ * Every decision from any pipeline stage is recorded with:
+ * verdict, stage, reason, project, session, agent, tool, args, timestamp.
+ */
+export class PermissionSystem implements AuthAuditSink {
   private globalMode: PermissionMode = 'prompt';
   private agentModes = new Map<string, PermissionMode>();
   private allowList = new Map<string, Set<string>>(); // agentId -> Set<toolId>
   private auditLog: AuditEntry[] = [];
+  private pipelineAuditLog: PipelineAuditEntry[] = [];
+
+  // ── AuthAuditSink implementation (Req 10.9) ─────────────────
+
+  /**
+   * Record an authorization pipeline decision.
+   * Every decision records: verdict, stage, reason, project, session, agent, tool, args, timestamp.
+   */
+  record(entry: AuthAuditEntry): void {
+    this.pipelineAuditLog.push({
+      timestamp: entry.timestamp,
+      verdict: entry.verdict,
+      stage: entry.stage,
+      reason: entry.reason,
+      projectId: entry.projectId,
+      sessionId: entry.sessionId,
+      agentId: entry.agentId,
+      toolId: entry.toolId,
+      toolName: entry.toolName,
+      args: entry.args,
+    });
+  }
+
+  /**
+   * Retrieve pipeline audit entries with optional filtering.
+   */
+  getPipelineAuditLog(filter?: {
+    agentId?: string;
+    toolId?: string;
+    verdict?: 'deny' | 'allow' | 'ask';
+    stage?: string;
+    since?: Date;
+    until?: Date;
+  }): PipelineAuditEntry[] {
+    let entries = this.pipelineAuditLog;
+
+    if (filter?.agentId) {
+      const agentId = filter.agentId;
+      entries = entries.filter((e) => e.agentId === agentId);
+    }
+    if (filter?.toolId) {
+      const toolId = filter.toolId;
+      entries = entries.filter((e) => e.toolId === toolId);
+    }
+    if (filter?.verdict) {
+      const verdict = filter.verdict;
+      entries = entries.filter((e) => e.verdict === verdict);
+    }
+    if (filter?.stage) {
+      const stage = filter.stage;
+      entries = entries.filter((e) => e.stage === stage);
+    }
+    if (filter?.since) {
+      const since = filter.since;
+      entries = entries.filter((e) => e.timestamp >= since);
+    }
+    if (filter?.until) {
+      const until = filter.until;
+      entries = entries.filter((e) => e.timestamp <= until);
+    }
+
+    return entries;
+  }
 
   // ── Permission check ────────────────────────────────────────
 

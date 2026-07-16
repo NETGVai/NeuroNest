@@ -45,6 +45,11 @@ import {
   handleSnapshotListCommand,
   type OrchestrationCommandDeps,
 } from './orchestration-commands.js';
+import {
+  parseAndBuildPermissionConfig,
+  type CliPermissionFlags,
+} from './cli-pattern-injection.js';
+import { startACPStdioServer } from './acp-stdio-server.js';
 import type {
   AgentArgv,
   CliExitCode,
@@ -62,7 +67,7 @@ const SUBCOMMAND_DESCRIPTIONS = Object.freeze({
   sync: 'Emit typed-skill bindings for installed skills',
   run: 'Run the named spec via the headless agent',
   skills: 'Inspect installed skills',
-  agent: 'One-shot agent invocation against the headless instance',
+  agent: 'Agent invocation or ACP stdio server',
   mcp: 'Start the outbound MCP server',
   task: 'Run a task through the agent loop (standalone, no headless)',
   race: 'Race multiple providers on a prompt and select the best result',
@@ -277,30 +282,49 @@ export function createMain(deps: MainDeps = {}): NeuronestCli {
             // matches; included for type completeness.
           },
         )
-        // ─ agent <prompt..> ─────────────────────────────────
+        // ─ agent ────────────────────────────────────────────
         //
-        // Variadic positional — yargs collects the trailing tokens
-        // into an array, which we join with a single space (Req 5.6).
+        // The `agent` subcommand has two modes:
+        //   - `agent stdio` — starts the ACP JSON-RPC server (Req 20.1)
+        //   - `agent <prompt..>` — one-shot agent invocation (Req 5.6)
         .command(
-          'agent <prompt..>',
+          'agent',
           SUBCOMMAND_DESCRIPTIONS.agent,
           (y) =>
-            y.positional('prompt', {
-              describe: 'Prompt to send to the agent',
-              type: 'string',
-              array: true,
-              demandOption: true,
-            }),
-          async (parsed) => {
-            dispatched = true;
-            const promptParts = parsed.prompt;
-            const prompt = Array.isArray(promptParts)
-              ? promptParts.map(String).join(' ')
-              : String(promptParts ?? '');
-            const argvShape: AgentArgv = { _: ['agent', prompt] };
-            exitCode = await withTransport(factory, stderr, (transport) =>
-              CliSubcommands.agent(argvShape, transport),
-            );
+            y
+              .command(
+                'stdio',
+                'Start the ACP JSON-RPC server over stdin/stdout',
+                (yy) => yy,
+                async () => {
+                  dispatched = true;
+                  exitCode = await startACPStdioServer();
+                },
+              )
+              .command(
+                '$0 <prompt..>',
+                'One-shot agent invocation against the headless instance',
+                (yy) =>
+                  yy.positional('prompt', {
+                    describe: 'Prompt to send to the agent',
+                    type: 'string',
+                    array: true,
+                    demandOption: true,
+                  }),
+                async (parsed) => {
+                  dispatched = true;
+                  const promptParts = parsed.prompt;
+                  const prompt = Array.isArray(promptParts)
+                    ? promptParts.map(String).join(' ')
+                    : String(promptParts ?? '');
+                  const argvShape: AgentArgv = { _: ['agent', prompt] };
+                  exitCode = await withTransport(factory, stderr, (transport) =>
+                    CliSubcommands.agent(argvShape, transport),
+                  );
+                },
+              ),
+          () => {
+            // Top-level handler — sub-commands handle dispatch.
           },
         )
         // ─ mcp ──────────────────────────────────────────────
@@ -322,6 +346,8 @@ export function createMain(deps: MainDeps = {}): NeuronestCli {
         // Does NOT use headless transport — it initializes the same
         // ToolSystem and AgentLoopController as the GUI, running the
         // loop in-process and streaming output to stdout.
+        //
+        // Supports --allow, --deny, --ask pattern injection (Req 10.12).
         .command(
           'task <description..>',
           SUBCOMMAND_DESCRIPTIONS.task,
@@ -347,6 +373,21 @@ export function createMain(deps: MainDeps = {}): NeuronestCli {
               .option('args', {
                 describe: 'Additional arguments to pass to the agent',
                 type: 'string',
+              })
+              .option('allow', {
+                describe: 'Allow pattern(s) injected as user-tier rules, e.g. "file_read(*)"',
+                type: 'string',
+                array: true,
+              })
+              .option('deny', {
+                describe: 'Deny pattern(s) injected as user-tier rules, e.g. "bash(rm *)"',
+                type: 'string',
+                array: true,
+              })
+              .option('ask', {
+                describe: 'Ask pattern(s) — prompt before allowing, e.g. "file_write(**)"',
+                type: 'string',
+                array: true,
               }),
           async (parsed) => {
             dispatched = true;
@@ -357,11 +398,29 @@ export function createMain(deps: MainDeps = {}): NeuronestCli {
             const mode = (parsed.mode || 'auto') as AgentRunnerMode;
             const projectDir = parsed['project-dir'] || parsed.projectDir || process.cwd();
 
+            // ── Validate and build permission patterns (Req 10.12) ──
+            const permFlags: CliPermissionFlags = {
+              allow: parsed.allow,
+              deny: parsed.deny,
+              ask: parsed.ask,
+            };
+
+            const permResult = parseAndBuildPermissionConfig(permFlags);
+            if (!permResult.ok) {
+              for (const err of permResult.errors) {
+                stderr.write(`error: ${err}\n`);
+              }
+              exitCode = 1;
+              return;
+            }
+
             exitCode = await runAgentTask({
               task: description,
               mode,
               projectDir: String(projectDir),
               args: parsed.args ? String(parsed.args) : undefined,
+              permissionPatterns: permResult.config,
+              askPatterns: permResult.askPatterns,
             });
           },
         )

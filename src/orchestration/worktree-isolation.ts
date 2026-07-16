@@ -5,7 +5,11 @@
  * each parallel sub-agent operates in its own isolated directory without
  * creating file conflicts during concurrent execution.
  *
- * Requirements: 7.1, 7.2, 7.3, 7.4, 7.5, 7.6
+ * When the `fast_worktree` feature gate is enabled and the native module is
+ * available, uses libgit2-based creation for ≤100ms latency. Otherwise falls
+ * back to child_process git commands (~400ms).
+ *
+ * Requirements: 7.1, 7.2, 7.3, 7.4, 7.5, 7.6, 13.1, 13.2, 13.3, 13.4, 13.5, 13.7
  */
 
 import { execFile } from 'node:child_process';
@@ -13,6 +17,7 @@ import { promisify } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
+import { NativeWorktreeAdapter, type WorktreeCreationMetadata } from './native-worktree-adapter.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -24,6 +29,8 @@ export interface WorktreeHandle {
   branch: string;
   agentId: string;
   createdAt: string;
+  /** Metadata about how this worktree was created */
+  metadata?: WorktreeCreationMetadata;
 }
 
 export interface ValidateResult {
@@ -36,49 +43,41 @@ export interface MergeResult {
   conflicts?: string[];
 }
 
+export interface WorktreeIsolationOptions {
+  /** Whether the fast_worktree feature gate is enabled */
+  fastWorktreeEnabled?: boolean;
+}
+
 // ─── Implementation ─────────────────────────────────────────────
 
 export class WorktreeIsolation {
   private activeWorktrees: Map<string, WorktreeHandle> = new Map();
+  private nativeAdapter: NativeWorktreeAdapter;
 
-  constructor(private projectDir: string) {}
+  constructor(
+    private projectDir: string,
+    options?: WorktreeIsolationOptions,
+  ) {
+    this.nativeAdapter = new NativeWorktreeAdapter(options?.fastWorktreeEnabled ?? false);
+  }
 
   /**
    * Create an isolated git worktree for a sub-agent.
    *
-   * Spawns a new worktree with a unique branch name following the pattern
-   * `agent/{agentId}/{timestamp}` and returns a handle for lifecycle management.
+   * When the native fast-worktree module is available and the feature gate is
+   * enabled, uses libgit2 for sub-100ms creation. Otherwise falls back to
+   * shell git commands.
    */
   async create(agentId: string): Promise<WorktreeHandle> {
     const id = randomUUID();
     const timestamp = Date.now();
     const branch = `agent/${agentId}/${timestamp}`;
-    const worktreePath = join(this.projectDir, '.worktrees', id);
 
-    // Get the current HEAD ref to base the new branch on
-    const { stdout: headRef } = await execFileAsync(
-      'git',
-      ['rev-parse', 'HEAD'],
-      { cwd: this.projectDir },
-    );
+    if (this.nativeAdapter.isAvailable()) {
+      return this.createNative(id, agentId, branch);
+    }
 
-    // Create a new worktree with a new branch based on current HEAD
-    await execFileAsync(
-      'git',
-      ['worktree', 'add', '-b', branch, worktreePath, headRef.trim()],
-      { cwd: this.projectDir },
-    );
-
-    const handle: WorktreeHandle = {
-      id,
-      path: worktreePath,
-      branch,
-      agentId,
-      createdAt: new Date().toISOString(),
-    };
-
-    this.activeWorktrees.set(id, handle);
-    return handle;
+    return this.createShell(id, agentId, branch);
   }
 
   /**
@@ -164,10 +163,156 @@ export class WorktreeIsolation {
   /**
    * Clean up a worktree on agent completion or failure.
    *
+   * Uses native removal when available, otherwise falls back to shell git.
    * Removes the worktree directory, prunes git's worktree tracking,
    * and deletes the temporary branch.
    */
   async cleanup(handle: WorktreeHandle): Promise<void> {
+    if (this.nativeAdapter.isAvailable()) {
+      await this.cleanupNative(handle);
+    } else {
+      await this.cleanupShell(handle);
+    }
+
+    // Remove from active tracking
+    this.activeWorktrees.delete(handle.id);
+  }
+
+  /**
+   * Get all currently active worktree handles.
+   */
+  getActiveWorktrees(): WorktreeHandle[] {
+    return Array.from(this.activeWorktrees.values());
+  }
+
+  /**
+   * Get a specific worktree handle by ID.
+   */
+  getWorktree(id: string): WorktreeHandle | undefined {
+    return this.activeWorktrees.get(id);
+  }
+
+  /**
+   * Check whether native fast-worktree is active for this instance.
+   */
+  isNativeAvailable(): boolean {
+    return this.nativeAdapter.isAvailable();
+  }
+
+  /**
+   * Update the feature gate state at runtime.
+   */
+  setFastWorktreeEnabled(enabled: boolean): void {
+    this.nativeAdapter.setFeatureGateEnabled(enabled);
+  }
+
+  // ─── Native Path ────────────────────────────────────────────────
+
+  /**
+   * Create a worktree using the native libgit2 module.
+   */
+  private async createNative(id: string, agentId: string, branch: string): Promise<WorktreeHandle> {
+    const startTime = performance.now();
+
+    // Get current branch to use as base
+    const baseBranch = await this.getMainBranch();
+
+    const result = this.nativeAdapter.createWorktree(this.projectDir, id, baseBranch);
+
+    const durationMs = performance.now() - startTime;
+
+    const handle: WorktreeHandle = {
+      id,
+      path: result.worktreePath,
+      branch: result.branch || branch,
+      agentId,
+      createdAt: new Date().toISOString(),
+      metadata: {
+        engine: 'native',
+        method: 'libgit2',
+        sourceRef: baseBranch,
+        dirty: false,
+        durationMs,
+      },
+    };
+
+    this.activeWorktrees.set(id, handle);
+    return handle;
+  }
+
+  /**
+   * Remove a worktree using the native libgit2 module.
+   */
+  private async cleanupNative(handle: WorktreeHandle): Promise<void> {
+    try {
+      this.nativeAdapter.removeWorktree(this.projectDir, handle.id);
+    } catch {
+      // If native removal fails, try shell fallback
+      await this.cleanupShell(handle);
+      return;
+    }
+
+    // Delete the temporary branch (native removeWorktree handles worktree cleanup
+    // but we still need to delete the branch ref)
+    try {
+      await execFileAsync(
+        'git',
+        ['branch', '-D', handle.branch],
+        { cwd: this.projectDir },
+      );
+    } catch {
+      // Branch may already be deleted; ignore
+    }
+  }
+
+  // ─── Shell Fallback Path ────────────────────────────────────────
+
+  /**
+   * Create a worktree using shell git commands (fallback path).
+   */
+  private async createShell(id: string, agentId: string, branch: string): Promise<WorktreeHandle> {
+    const startTime = performance.now();
+    const worktreePath = join(this.projectDir, '.worktrees', id);
+
+    // Get the current HEAD ref to base the new branch on
+    const { stdout: headRef } = await execFileAsync(
+      'git',
+      ['rev-parse', 'HEAD'],
+      { cwd: this.projectDir },
+    );
+
+    // Create a new worktree with a new branch based on current HEAD
+    await execFileAsync(
+      'git',
+      ['worktree', 'add', '-b', branch, worktreePath, headRef.trim()],
+      { cwd: this.projectDir },
+    );
+
+    const durationMs = performance.now() - startTime;
+
+    const handle: WorktreeHandle = {
+      id,
+      path: worktreePath,
+      branch,
+      agentId,
+      createdAt: new Date().toISOString(),
+      metadata: {
+        engine: 'shell',
+        method: 'child_process',
+        sourceRef: headRef.trim(),
+        dirty: false,
+        durationMs,
+      },
+    };
+
+    this.activeWorktrees.set(id, handle);
+    return handle;
+  }
+
+  /**
+   * Clean up a worktree using shell git commands (fallback path).
+   */
+  private async cleanupShell(handle: WorktreeHandle): Promise<void> {
     // Remove the worktree from git's tracking
     try {
       await execFileAsync(
@@ -199,23 +344,6 @@ export class WorktreeIsolation {
     } catch {
       // Branch may already be deleted or not exist; ignore
     }
-
-    // Remove from active tracking
-    this.activeWorktrees.delete(handle.id);
-  }
-
-  /**
-   * Get all currently active worktree handles.
-   */
-  getActiveWorktrees(): WorktreeHandle[] {
-    return Array.from(this.activeWorktrees.values());
-  }
-
-  /**
-   * Get a specific worktree handle by ID.
-   */
-  getWorktree(id: string): WorktreeHandle | undefined {
-    return this.activeWorktrees.get(id);
   }
 
   // ─── Private Helpers ────────────────────────────────────────────

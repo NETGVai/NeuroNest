@@ -44,6 +44,20 @@ import * as productionUxAudit from './migrations/039-production-ux-audit.js';
 import * as unifiedIntentGate from './migrations/040-unified-intent-gate.js';
 import * as loopStorage from './migrations/041-loop-storage.js';
 import * as accessibilityFriction from './migrations/042-accessibility-friction.js';
+import * as semanticIndex from './migrations/043-semantic-index.js';
+import * as worktreeSessions from './migrations/044-worktree-sessions.js';
+import * as codeReviews from './migrations/045-code-reviews.js';
+import * as backgroundProcesses from './migrations/046-background-processes.js';
+import * as networkPolicyLog from './migrations/047-network-policy-log.js';
+import * as sessionExports from './migrations/048-session-exports.js';
+import * as pluginSystem from './migrations/049-plugin-system.js';
+import * as adoptionMetrics from './migrations/050-adoption-metrics.js';
+import * as mcpMarketplace from './migrations/051-mcp-marketplace.js';
+import * as diffTurns from './migrations/052-diff-turns.js';
+import * as featureGateStore from './migrations/053-feature-gate-store.js';
+import * as rememberedGrants from './migrations/054-remembered-grants.js';
+import * as hookDefinitionsV2 from './migrations/055-hook-definitions-v2.js';
+import * as crossSessionMemory from './migrations/056-cross-session-memory.js';
 
 export interface Migration {
   version: number;
@@ -51,7 +65,7 @@ export interface Migration {
   up: (db: Database.Database) => void;
 }
 
-const migrations: Migration[] = [initialSchema, skillsSchema, multicaIntegration, agentSkillsIntegration, costRecords, securityScans, longTermMemory, sandboxSessions, mcpServers, memoryFts, diffReview, multiSession, extensions, newFeatures, plandexFeatures, advancedFeatures, remainingFeatures, gooseFeatures, sentruxFeatures, sreFeatures, helmorFeatures, factoryFeatures, coderFeatures, groundingAudit, incrementalIndexing, chatMessagesOverflow, runtimeSandboxGuardrails, errorSizeSamples, pipelineEvents, metricSamples, errorSizeSamplesBackfill, specMessageMode, secretsV2, multiChatSessions, agentLoopMetrics, featureIntegration, traceProvenanceColumns, neuronestEnhanced, productionUxAudit, unifiedIntentGate, loopStorage, accessibilityFriction];
+const migrations: Migration[] = [initialSchema, skillsSchema, multicaIntegration, agentSkillsIntegration, costRecords, securityScans, longTermMemory, sandboxSessions, mcpServers, memoryFts, diffReview, multiSession, extensions, newFeatures, plandexFeatures, advancedFeatures, remainingFeatures, gooseFeatures, sentruxFeatures, sreFeatures, helmorFeatures, factoryFeatures, coderFeatures, groundingAudit, incrementalIndexing, chatMessagesOverflow, runtimeSandboxGuardrails, errorSizeSamples, pipelineEvents, metricSamples, errorSizeSamplesBackfill, specMessageMode, secretsV2, multiChatSessions, agentLoopMetrics, featureIntegration, traceProvenanceColumns, neuronestEnhanced, productionUxAudit, unifiedIntentGate, loopStorage, accessibilityFriction, semanticIndex, worktreeSessions, codeReviews, backgroundProcesses, networkPolicyLog, sessionExports, pluginSystem, adoptionMetrics, mcpMarketplace, diffTurns, featureGateStore, rememberedGrants, hookDefinitionsV2, crossSessionMemory];
 
 /**
  * Validates the migration registry is contiguous (versions 1..N) and the

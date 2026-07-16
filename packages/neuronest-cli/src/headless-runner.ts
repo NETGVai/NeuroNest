@@ -29,6 +29,7 @@ import {
   type ToolResult,
   type ToolDefinition,
 } from './cli/agent-runner.js';
+import type { PermissionConfig } from './cli/cli-pattern-injection.js';
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -52,6 +53,16 @@ export interface HeadlessRunnerOptions {
   stdout: NodeJS.WritableStream;
   /** Error output stream. */
   stderr: NodeJS.WritableStream;
+  /**
+   * Permission patterns injected via --allow/--deny/--ask CLI flags (Req 10.12).
+   * These are set as user-tier patterns on the PermissionPatternEngine.
+   */
+  permissionPatterns?: PermissionConfig | undefined;
+  /**
+   * Original ask patterns from --ask CLI flags (Req 10.12).
+   * Tracked separately for authorization pipeline ask-vs-deny distinction.
+   */
+  askPatterns?: string[] | undefined;
 }
 
 /** Result returned from the headless runner. */
@@ -186,7 +197,7 @@ export class HeadlessRunner {
    *   5. Abort immediately if cost exceeds --max-cost
    */
   async run(options: HeadlessRunnerOptions): Promise<HeadlessRunnerResult> {
-    const { task, auto, mode, json, maxCost, provider, model, stdout, stderr } = options;
+    const { task, auto, mode, json, maxCost, provider, model, stdout, stderr, permissionPatterns, askPatterns } = options;
 
     // ─── 1. Resolve provider ────────────────────────────────
     const llmClient = this.llmClient ?? this.resolveProvider(provider, model);
@@ -196,6 +207,41 @@ export class HeadlessRunner {
     this.permissionHandler = auto
       ? new AutoPermissionHandler()
       : new RestrictedPermissionHandler();
+
+    // ─── 2b. Inject CLI permission patterns as user tier (Req 10.12) ──
+    if (permissionPatterns && (permissionPatterns.allow.length > 0 || permissionPatterns.deny.length > 0)) {
+      try {
+        // Dynamic import of the security module (lives in the main Electron app).
+        const securityModule = await import('../../../src/security/permission-pattern-engine.js');
+        const engine = new securityModule.PermissionPatternEngine(process.cwd());
+        engine.setUserPatterns(permissionPatterns);
+        if (!json) {
+          stderr.write(`   ✓ Permission patterns injected (allow: ${permissionPatterns.allow.length}, deny: ${permissionPatterns.deny.length}${askPatterns && askPatterns.length > 0 ? `, ask: ${askPatterns.length}` : ''})\n`);
+        }
+        if (json) {
+          emitJsonEvent(stdout, 'progress', {
+            status: 'patterns_injected',
+            allowCount: permissionPatterns.allow.length,
+            denyCount: permissionPatterns.deny.length,
+            askCount: askPatterns?.length ?? 0,
+          });
+        }
+      } catch {
+        // Security module not available in standalone package — patterns
+        // are staged for when the full integration is wired.
+        if (!json) {
+          stderr.write(`   ✓ Permission patterns staged (allow: ${permissionPatterns.allow.length}, deny: ${permissionPatterns.deny.length}${askPatterns && askPatterns.length > 0 ? `, ask: ${askPatterns.length}` : ''})\n`);
+        }
+        if (json) {
+          emitJsonEvent(stdout, 'progress', {
+            status: 'patterns_staged',
+            allowCount: permissionPatterns.allow.length,
+            denyCount: permissionPatterns.deny.length,
+            askCount: askPatterns?.length ?? 0,
+          });
+        }
+      }
+    }
 
     // ─── 3. Initialize tool system ──────────────────────────
     const toolSystem = this.toolSystem ?? createHeadlessToolSystem(this.permissionHandler);

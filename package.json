@@ -1,6 +1,6 @@
 {
   "name": "neuronest",
-  "version": "0.1.624",
+  "version": "0.1.630",
   "description": "NeuroNest - The AI Coding SuperAgent",
   "author": "NeuroNest <admin@neuronest.cc>",
   "license": "BUSL-1.1",
@@ -29,6 +29,7 @@
     "bench:tick": "npm run build:nobump && node bench/event-log-tick.mjs",
     "bench:reducer-warm": "npm run build:nobump && node bench/reducer-warm.mjs",
     "bench:reducer-cold": "npm run build:nobump && node bench/reducer-cold.mjs",
+    "bench:hashline": "node bench/hashline-perf.mjs",
     "bench:all": "node scripts/check-benchmarks.mjs",
     "bench:update": "node scripts/check-benchmarks.mjs --update",
     "dev:vite": "electron-vite dev",
