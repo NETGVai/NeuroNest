@@ -321,6 +321,50 @@
     }
   };
 
+  // ─── Runtime Agent Helper ──────────────────────────────────────
+
+  /**
+   * Get active agents from the runtime pipeline state (global vars from index.ts).
+   * Converts them into a session-like format for the dashboard to display.
+   */
+  function _adGetRuntimeAgents() {
+    var sessions = [];
+
+    // Get active agents (currently executing)
+    var active = window.activeAgents || (typeof activeAgents !== 'undefined' ? activeAgents : []);
+    for (var i = 0; i < active.length; i++) {
+      var a = active[i];
+      var name = typeof a === 'string' ? a : (a.name || a.agent || 'Agent');
+      sessions.push({
+        id: 'runtime-active-' + i,
+        name: name,
+        status: 'running',
+        task: typeof a === 'object' ? (a.task || a.model || '') : '',
+        provider: typeof a === 'object' ? a.provider : undefined,
+        model: typeof a === 'object' ? a.model : undefined,
+        createdAt: Date.now()
+      });
+    }
+
+    // Get completed agents (recently finished)
+    var completed = window.completedAgents || (typeof completedAgents !== 'undefined' ? completedAgents : []);
+    for (var j = 0; j < completed.length; j++) {
+      var c = completed[j];
+      var cname = typeof c === 'string' ? c : (c.name || c.agent || 'Agent');
+      sessions.push({
+        id: 'runtime-completed-' + j,
+        name: cname,
+        status: 'completed',
+        task: typeof c === 'object' ? (c.task || c.model || '') : '',
+        provider: typeof c === 'object' ? c.provider : undefined,
+        model: typeof c === 'object' ? c.model : undefined,
+        createdAt: Date.now() - 60000 // Show as recent
+      });
+    }
+
+    return sessions;
+  }
+
   // ─── Data Loading ────────────────────────────────────────────────
 
   AgentDashboardV2Panel.prototype.loadSessions = function () {
@@ -332,15 +376,43 @@
       return;
     }
 
-    a.invoke('parallel:list', {}).then(function (result) {
+    var projectId = window._neuronestActiveProject || 'default';
+
+    a.invoke('parallel:list', projectId).then(function (result) {
       var sessions = Array.isArray(result) ? result : (result && result.sessions) || [];
+
+      // Merge in active pipeline agents from the runtime state
+      // These are agents currently streaming responses (shown in right sidebar)
+      var runtimeAgents = _adGetRuntimeAgents();
+
+      // Avoid duplicates: only add runtime agents that aren't already in the DB sessions
+      var existingIds = {};
+      for (var i = 0; i < sessions.length; i++) {
+        existingIds[sessions[i].id] = true;
+        if (sessions[i].name) existingIds[sessions[i].name] = true;
+      }
+      for (var j = 0; j < runtimeAgents.length; j++) {
+        if (!existingIds[runtimeAgents[j].id] && !existingIds[runtimeAgents[j].name]) {
+          sessions.push(runtimeAgents[j]);
+        }
+      }
+
       self.sessions = sessions;
       self.lastRefresh = Date.now();
       self.renderSessionList();
       self.updateRefreshBadge();
     }).catch(function (err) {
-      self.listEl.innerHTML = '';
-      self.listEl.appendChild(window.wk.emptyState('\u274C', 'Failed to load sessions', String(err && err.message || err || 'Unknown error')));
+      // Even if parallel:list fails, still show runtime agents
+      var runtimeAgents = _adGetRuntimeAgents();
+      if (runtimeAgents.length > 0) {
+        self.sessions = runtimeAgents;
+        self.lastRefresh = Date.now();
+        self.renderSessionList();
+        self.updateRefreshBadge();
+      } else {
+        self.listEl.innerHTML = '';
+        self.listEl.appendChild(window.wk.emptyState('\u274C', 'Failed to load sessions', String(err && err.message || err || 'Unknown error')));
+      }
     });
   };
 
@@ -581,7 +653,7 @@
     disableBtn(self.dispatchBtn);
     window.wk.toast('Dispatching session...', 'info');
 
-    a.invoke('parallel:create', { task: task }).then(function () {
+    a.invoke('parallel:create', { task: task, projectId: window._neuronestActiveProject || 'default', name: task }).then(function () {
       window.wk.toast('Session dispatched', 'success');
       self.dispatchInput.value = '';
       enableBtn(self.dispatchBtn);
