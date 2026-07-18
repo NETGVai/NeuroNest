@@ -15,27 +15,11 @@
 
 // ─── Types ──────────────────────────────────────────────────────
 
-export interface MermaidRenderResult {
-  /** Whether rendering succeeded */
-  success: boolean;
-  /** Rendered SVG string (if success) */
-  svg: string | null;
-  /** Original source text (always preserved) */
-  source: string;
-  /** Error message if rendering failed */
-  error: string | null;
-  /** Whether content was blocked for safety */
-  blocked: boolean;
-}
-
-export interface MermaidRendererOptions {
-  /** Maximum source length to attempt rendering. Default: 50000 */
-  maxSourceLength?: number;
-  /** Theme: 'dark' | 'light' | 'neutral'. Default: 'dark' */
-  theme?: 'dark' | 'light' | 'neutral';
-  /** Security level: 'strict' | 'loose'. Default: 'strict' */
-  securityLevel?: 'strict' | 'loose';
-}
+// ─── Types (documentation only) ─────────────────────────────────
+//
+// MermaidRenderResult: { success, svg, source, error, blocked }
+// MermaidRendererOptions: { maxSourceLength, theme, securityLevel }
+//
 
 // ─── Constants ──────────────────────────────────────────────────
 

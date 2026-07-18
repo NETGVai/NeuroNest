@@ -4,7 +4,7 @@
  */
 
 /** Identifies which panel is currently active in the layout. */
-export type PanelId = 'chat' | 'editor' | 'graph' | 'terminal' | 'settings';
+export type PanelId = 'chat' | 'editor' | 'graph' | 'terminal' | 'workspaces' | 'settings';
 
 /** Theme variants supported by the application. */
 export type ThemeMode = 'dark' | 'light';

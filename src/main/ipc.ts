@@ -10569,6 +10569,22 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
     console.warn('[IPC] Loop Engine IPC registration failed (non-fatal):', err?.message);
   }
 
+  // ── Workspace Panel Fallback IPC Handlers ──────────────────────────────
+  // Only registers handlers for channels that genuinely have no handler.
+  // Most workspace channels are already registered by their subsystems above.
+
+  // Powers fallback (no subsystem registers these yet)
+  try {
+    ipcMain.handle('powers:list', async () => []);
+    ipcMain.handle('powers:activate', async () => ({ success: false, error: 'No powers available' }));
+    ipcMain.handle('powers:deactivate', async () => ({ success: false }));
+  } catch {
+    // Already registered — skip
+  }
+
+  console.log('[IPC] Workspace panel fallback handlers registered');
+
+
   // ── Shell: open external URL in default browser ──
   ipcMain.handle('shell:open-external', async (_event: any, url: string) => {
     const { shell } = require('electron');

@@ -3,6 +3,7 @@ var typingActive = false;
 var PK = 'neuronest_providers';
 var GH_ICON = '<svg width="14" height="14" viewBox="0 0 98 96" xmlns="http://www.w3.org/2000/svg" style="vertical-align:middle;"><path fill-rule="evenodd" clip-rule="evenodd" d="M48.854 0C21.839 0 0 22 0 49.217c0 21.756 13.993 40.172 33.405 46.69 2.427.49 3.316-1.059 3.316-2.362 0-1.141-.08-5.052-.08-9.127-13.59 2.934-16.42-5.867-16.42-5.867-2.184-5.704-5.42-7.17-5.42-7.17-4.448-3.015.324-3.015.324-3.015 4.934.326 7.523 5.052 7.523 5.052 4.367 7.496 11.404 5.378 14.235 4.074.404-3.178 1.699-5.378 3.074-6.6-10.839-1.141-22.243-5.378-22.243-24.283 0-5.378 1.94-9.778 5.014-13.2-.485-1.222-2.184-6.275.486-13.038 0 0 4.125-1.304 13.426 5.052a46.97 46.97 0 0 1 12.214-1.63c4.125 0 8.33.571 12.213 1.63 9.302-6.356 13.427-5.052 13.427-5.052 2.67 6.763.97 11.816.485 13.038 3.155 3.422 5.015 7.822 5.015 13.2 0 18.905-11.404 23.06-22.324 24.283 1.78 1.548 3.316 4.481 3.316 9.126 0 6.6-.08 11.897-.08 13.526 0 1.304.89 2.853 3.316 2.364 19.412-6.52 33.405-24.935 33.405-46.691C97.707 22 75.788 0 48.854 0z" fill="currentColor"/></svg>';
 var activeProjectId = null;
+window._neuronestActiveProject = null;
 var chatMessageStore = [];
 var activeView = 'chat';
 var chatUnreadCount = 0;
@@ -529,6 +530,8 @@ function showThemedToast(message, type) {
     setTimeout(function() { toast.remove(); }, 300);
   }, 3500);
 }
+
+window.showThemedToast = showThemedToast;
 
 /** Build the orbital system HTML for the welcome screen */
 function buildOrbitalWelcome() {
@@ -1652,6 +1655,10 @@ function appendMsgEl(role, text, meta) {
   if (welcome) {
     welcome.remove();
   }
+  var emptyState = area.querySelector('.chat-empty-state');
+  if (emptyState) {
+    emptyState.remove();
+  }
   var div = document.createElement('div');
   var cls = role === 'user' ? 'user' : 'assistant';
   if (meta && meta.type === 'command') cls = 'assistant command-result';
@@ -1787,10 +1794,7 @@ function sendChat(text) {
   }
   _nnActionButtonsActive = [];
 
-  if (!activeProjectId) {
-    addMsg('assistant', 'Please select or create a project first.', { label: 'System' });
-    return false;
-  }
+  // (activeProjectId check removed — handled below with auto-select logic)
 
   // Snapshot pending attachments so the buffer can be cleared on a
   // successful dispatch. Forward them on the IPC payload (`images`) so the
@@ -1904,7 +1908,27 @@ function sendChat(text) {
       if (pending.length) clearPendingAttachments();
       return true;
     }
-    addMsg('assistant', '👋 **Please select a project first**\n\nTo start building, coding, or working with AI agents:\n\n1. **Select an existing project** from the project tree in the left sidebar, or\n2. **Create a new project** by clicking **"+ New"**\n\nOnce a project is active, I can help you build apps, write code, run tests, and more.\n\n💡 *You can ask me about NeuroNest features, pricing, or capabilities without a project — just ask!*', { label: 'NeuroNest' });
+    // Auto-select the first available project instead of showing error
+    var _autoSelectPipelineText = pipelineText;
+    var _autoSelectPending = pending;
+    var _autoSelectSpecMode = specMode;
+    eapi().invoke('get-projects').then(function(projects) {
+      if (projects && projects.length > 0) {
+        var proj = projects[0];
+        activeProjectId = proj.id;
+        window._neuronestActiveProject = proj.id;
+        eapi().send('project-open', { projectId: proj.id });
+        showThemedToast('Auto-selected project: ' + (proj.name || proj.id), 'info');
+        // Now send the message with the newly selected project
+        eapi().send('chat-message', { projectId: activeProjectId, message: _autoSelectPipelineText, images: _autoSelectPending, spec: _autoSelectSpecMode });
+        if (_autoSelectPending.length) clearPendingAttachments();
+      } else {
+        // No projects exist at all — show the original error
+        addMsg('assistant', '👋 **Please select a project first**\n\nTo start building, coding, or working with AI agents:\n\n1. **Select an existing project** from the project tree in the left sidebar, or\n2. **Create a new project** by clicking **"+ New"**\n\nOnce a project is active, I can help you build apps, write code, run tests, and more.\n\n💡 *You can ask me about NeuroNest features, pricing, or capabilities without a project — just ask!*', { label: 'NeuroNest' });
+      }
+    }).catch(function() {
+      addMsg('assistant', '👋 **Please select a project first**\n\nTo start building, coding, or working with AI agents:\n\n1. **Select an existing project** from the project tree in the left sidebar, or\n2. **Create a new project** by clicking **"+ New"**\n\nOnce a project is active, I can help you build apps, write code, run tests, and more.\n\n💡 *You can ask me about NeuroNest features, pricing, or capabilities without a project — just ask!*', { label: 'NeuroNest' });
+    });
     return false;
   }
   addMsg('user', specMode ? '📝 [Spec] ' + displayText : displayText);
@@ -8044,6 +8068,7 @@ function selectProjectById(pid) {
   }
   
   activeProjectId = pid;
+  window._neuronestActiveProject = pid;
   eapi().send('project-open', { projectId: pid });
   var allLi = $$('#project-list').querySelectorAll('li');
   for (var i = 0; i < allLi.length; i++) {
@@ -8695,6 +8720,126 @@ function showView(view) {
   if (view === 'search') {
     showProjectSearchView();
     return;
+  }
+  if (view === 'workspaces') {
+    showWorkspacesView();
+    return;
+  }
+}
+
+// ── Workspaces View ──
+
+function showWorkspacesView() {
+  var mc = $$('#main-content');
+  if (!mc) return;
+  mc.innerHTML = '';
+  mc.style.padding = '0';
+
+  var container = document.createElement('div');
+  container.style.cssText = 'height:100%;display:flex;flex-direction:column;overflow:hidden;background:var(--bg-primary,#1e1e1e);';
+
+  // Header
+  var header = document.createElement('div');
+  header.style.cssText = 'padding:20px 24px 12px;flex-shrink:0;';
+  header.innerHTML = '<h2 style="margin:0;font-size:20px;font-weight:700;color:var(--text-primary,#cdd6f4);">Workspaces</h2>' +
+    '<p style="margin:6px 0 0;font-size:13px;color:var(--text-dim,#a6adc8);">Click a workspace to open it</p>';
+  container.appendChild(header);
+
+  // Grid
+  var grid = document.createElement('div');
+  grid.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;padding:12px 24px 24px;overflow-y:auto;flex:1;';
+
+  var panels = [
+    { id: 'automation-workspace', label: 'Automation', icon: '\uD83D\uDD04', desc: 'Loops, Pipelines, Scheduler, Missions' },
+    { id: 'drift-intelligence-workspace', label: 'Drift & Intelligence', icon: '\uD83C\uDFAF', desc: 'Drift, Semantic, LSP, Vision' },
+    { id: 'extensions-workspace', label: 'Extensions & Skills', icon: '\uD83D\uDD0C', desc: 'MCP, Skill Packs, Powers' },
+    { id: 'quality-review-security-workspace', label: 'Quality & Security', icon: '\uD83D\uDD12', desc: 'Architecture, Review, Benchmarks' },
+    { id: 'management-surfaces', label: 'Management', icon: '\u2699', desc: 'Steering, Hooks, Specs, Wiki' },
+    { id: 'agent-dashboard-v2', label: 'Agent Dashboard', icon: '\uD83D\uDC65', desc: 'Sessions, Fleet, Subagents' },
+    { id: 'cross-session-memory', label: 'Cross-Session Memory', icon: '\uD83E\uDDE0', desc: 'Learn, Search, Recall' },
+    { id: 'interactive-terminal', label: 'Interactive Terminal', icon: '\u2328', desc: 'PTY Terminal' },
+    { id: 'cost-controls', label: 'Cost Controls', icon: '\uD83D\uDCB0', desc: 'Budgets, Usage, Limits' },
+    { id: 'analytics-dashboard', label: 'Analytics', icon: '\uD83D\uDCCA', desc: 'Metrics, Adoption' },
+    { id: 'marketplace', label: 'MCP Marketplace', icon: '\uD83D\uDED2', desc: 'Browse, Install, Manage' },
+    { id: 'network-activity', label: 'Network Activity', icon: '\uD83C\uDF10', desc: 'Requests, Sandbox' },
+    { id: 'worktree-manager', label: 'Worktree Manager', icon: '\uD83C\uDF33', desc: 'Git Worktrees' },
+  ];
+
+  for (var i = 0; i < panels.length; i++) {
+    (function(p) {
+      var card = document.createElement('button');
+      card.style.cssText = 'display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;' +
+        'padding:20px 12px;border-radius:10px;border:1px solid var(--border-color,#45475a);' +
+        'background:var(--bg-sidebar,#252526);cursor:pointer;transition:all 0.15s;min-height:120px;';
+      card.setAttribute('aria-label', 'Open ' + p.label);
+      card.innerHTML = '<span style="font-size:28px;">' + p.icon + '</span>' +
+        '<span style="font-size:12px;font-weight:600;color:var(--text-primary,#cdd6f4);text-align:center;">' + p.label + '</span>' +
+        '<span style="font-size:10px;color:var(--text-dim,#6c7086);text-align:center;">' + p.desc + '</span>';
+      card.onmouseenter = function() { card.style.borderColor = 'var(--accent,#89b4fa)'; card.style.background = 'var(--surface-hover,#2a2d3e)'; };
+      card.onmouseleave = function() { card.style.borderColor = 'var(--border-color,#45475a)'; card.style.background = 'var(--bg-sidebar,#252526)'; };
+      card.onclick = function() { openWorkspacePanel(p.id, p.label); };
+      grid.appendChild(card);
+    })(panels[i]);
+  }
+
+  container.appendChild(grid);
+  mc.appendChild(container);
+}
+
+function openWorkspacePanel(panelId, label) {
+  var mc = $$('#main-content');
+  if (!mc) return;
+  mc.innerHTML = '';
+  mc.style.padding = '0';
+
+  var wrapper = document.createElement('div');
+  wrapper.style.cssText = 'height:100%;display:flex;flex-direction:column;overflow:hidden;';
+
+  // Back bar
+  var backBar = document.createElement('div');
+  backBar.style.cssText = 'padding:8px 16px;border-bottom:1px solid var(--border-color,#2d2d2d);flex-shrink:0;display:flex;align-items:center;gap:8px;';
+  var backBtn = document.createElement('button');
+  backBtn.style.cssText = 'font-size:12px;padding:4px 12px;border-radius:4px;border:1px solid var(--border-color,#45475a);background:transparent;color:var(--text-dim,#a6adc8);cursor:pointer;';
+  backBtn.textContent = '\u2190 Back';
+  backBtn.onclick = function() { showWorkspacesView(); };
+  backBar.appendChild(backBtn);
+  var titleEl = document.createElement('span');
+  titleEl.style.cssText = 'font-size:13px;font-weight:600;color:var(--text-primary,#cdd6f4);';
+  titleEl.textContent = label;
+  backBar.appendChild(titleEl);
+  wrapper.appendChild(backBar);
+
+  // Panel container
+  var panelContainer = document.createElement('div');
+  panelContainer.style.cssText = 'flex:1;overflow-y:auto;';
+  wrapper.appendChild(panelContainer);
+  mc.appendChild(wrapper);
+
+  // Mount the panel via PanelRegistry
+  var registry = window.getPanelRegistry ? window.getPanelRegistry() : null;
+  if (registry && registry._definitions && registry._definitions[panelId]) {
+    var def = registry._definitions[panelId];
+    // Show loading indicator
+    panelContainer.innerHTML = '<div style="padding:24px;text-align:center;color:var(--text-dim,#a6adc8);"><div style="font-size:24px;margin-bottom:8px;">\u23F3</div>Loading ' + label + '...</div>';
+    // Load the panel module directly (bypass feature gate for workspace panels)
+    var loadPromise = registry._loadCache[panelId] || def.load();
+    registry._loadCache[panelId] = loadPromise;
+    loadPromise.then(function(panelModule) {
+      panelContainer.innerHTML = '';
+      if (panelModule && typeof panelModule.render === 'function') {
+        var innerContainer = document.createElement('div');
+        innerContainer.style.cssText = 'width:100%;height:100%;';
+        panelContainer.appendChild(innerContainer);
+        panelModule.render(innerContainer, { projectId: activeProjectId || 'default' });
+      } else {
+        panelContainer.innerHTML = '<div style="padding:24px;color:#f38ba8;text-align:center;">Panel module loaded but has no render function.</div>';
+      }
+    }).catch(function(err) {
+      panelContainer.innerHTML = '<div style="padding:24px;color:#f38ba8;text-align:center;"><div style="font-size:24px;margin-bottom:8px;">\u26A0</div><p>Failed to load panel: ' + (err && err.message || err || 'Unknown error') + '</p><p style="font-size:11px;color:var(--text-dim,#6c7086);margin-top:8px;">Check the console for details.</p></div>';
+      console.error('[Workspaces] Failed to load panel "' + panelId + '":', err);
+    });
+  } else {
+    panelContainer.innerHTML = '<div style="padding:24px;color:#f38ba8;text-align:center;"><div style="font-size:24px;margin-bottom:8px;">\u26A0</div><p>Panel "' + panelId + '" is not registered in the Panel Registry.</p><p style="font-size:11px;color:var(--text-dim,#6c7086);margin-top:8px;">Available panels: ' + (registry && registry._definitions ? Object.keys(registry._definitions).join(', ') : 'none') + '</p></div>';
   }
 }
 
@@ -16784,6 +16929,13 @@ function startGuidedWalkthrough() {
       text: 'View project stats, token usage, cost tracking, firewall events, and system health. The dashboard updates in real-time as you use the app.',
       position: 'right',
     },
+    // ── Left Sidebar: Workspaces ──
+    {
+      target: '.activity-btn[data-view="workspaces"]',
+      title: '📋 Workspaces',
+      text: 'Access all workspace panels: Automation (Loops, Pipelines), Drift & Intelligence, Extensions & Skills, Quality & Security, Management, Agent Dashboard, Memory, and more.',
+      position: 'right',
+    },
     // ── Left Sidebar: Settings ──
     {
       target: '.activity-btn[data-view="settings"]',
@@ -21741,7 +21893,7 @@ function initActivityBar() {
       var viewName = this.dataset.view;
       setActiveView(viewName);
       // Navigate to the corresponding view in the middle panel
-      if (viewName === 'settings' || viewName === 'dashboard' || viewName === 'search' || viewName === 'agents' || viewName === 'channels' || viewName === 'skills' || viewName === 'design') {
+      if (viewName === 'settings' || viewName === 'dashboard' || viewName === 'search' || viewName === 'agents' || viewName === 'channels' || viewName === 'skills' || viewName === 'design' || viewName === 'workspaces') {
         if (typeof showView === 'function') {
           showView(viewName);
         }

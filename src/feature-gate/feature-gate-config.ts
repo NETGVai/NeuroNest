@@ -248,9 +248,9 @@ export const DEFAULT_FEATURE_FLAGS: FeatureGateFlags = {
   quality_workers: false,
 
   // ─── Loop Engine & Harness Flags ────────────────────────────────
-  harness_permission_patterns: false,
-  harness_hooks: false,
-  harness_subagents: false,
+  harness_permission_patterns: true,
+  harness_hooks: true,
+  harness_subagents: true,
   harness_mcp_scoping: false,
   loops_enabled: true,
   loops_catalog_import: false,

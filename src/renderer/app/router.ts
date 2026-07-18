@@ -12,6 +12,7 @@ export const PANEL_ROUTES: PanelRoute[] = [
   { id: 'editor', label: 'Editor', icon: '📝' },
   { id: 'graph', label: 'Graph', icon: '🔗', lazy: true },
   { id: 'terminal', label: 'Terminal', icon: '⬛' },
+  { id: 'workspaces', label: 'Workspaces', icon: '📋', lazy: true },
   { id: 'settings', label: 'Settings', icon: '⚙️' },
 ];
 

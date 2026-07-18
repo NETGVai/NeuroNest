@@ -17,6 +17,7 @@ import { mountApp } from './app/App';
 import { registerPanel } from './app/router';
 import { chatPanel } from './panels/chat';
 import { graphPanelModule } from './panels/graph';
+import { createWorkspacesPanel } from './app/workspaces-panel';
 import type { PanelId, PanelModule } from './types';
 
 /**
@@ -61,6 +62,7 @@ function bootstrap(): void {
   registerPanel('editor', createPlaceholderPanel('editor', 'Editor'));
   registerPanel('graph', graphPanelModule);
   registerPanel('terminal', createPlaceholderPanel('terminal', 'Terminal'));
+  registerPanel('workspaces', createWorkspacesPanel());
   registerPanel('settings', createPlaceholderPanel('settings', 'Settings'));
 
   // Mount the application shell

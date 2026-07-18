@@ -161,6 +161,8 @@ if (existsSync(metricsPanelSrc)) {
 // These files follow the same plain-JS contract as metrics-panel.ts.
 // They are copied with the same parse-check guardrail.
 const panelRendererFiles = [
+  'event-stream-bus.ts',
+  'workspace-ui-kit.ts',
   'panel-registry.ts',
   'panel-registrations.ts',
   'interactive-terminal-panel.ts',
@@ -174,6 +176,24 @@ const panelRendererFiles = [
   'process-manager-panel.ts',
   'analytics-dashboard-panel.ts',
   'notebook-panel.ts',
+  'memory-panel.ts',
+  'automation-workspace-panel.ts',
+  'drift-intelligence-workspace-panel.ts',
+  'extensions-workspace-panel.ts',
+  'quality-review-security-workspace-panel.ts',
+  'management-surfaces-panel.ts',
+  'agent-dashboard-v2-panel.ts',
+  'mermaid-renderer.ts',
+  'chat-enhancements.ts',
+  'chat-input-enhanced.ts',
+  'chat-streaming.ts',
+  'agent-state-bar.ts',
+  'chat-scroll-controller.ts',
+  'chat-empty-state.ts',
+  'chat-message-actions.ts',
+  'chat-theming.ts',
+  'diff-viewer-component.ts',
+  'terminal-output-component.ts',
 ];
 
 for (const fileName of panelRendererFiles) {
