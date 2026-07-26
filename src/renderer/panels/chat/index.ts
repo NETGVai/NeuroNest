@@ -20,6 +20,25 @@ const DEFAULT_ROOM_ID: RoomId = 'default';
 const MESSAGE_BATCH_SIZE = 50;
 
 /**
+ * Typed wrapper for accessing the preload-exposed IPC bridge.
+ * Falls back to no-op if the bridge is unavailable (e.g. in unit tests).
+ */
+function getIpcBridge(): {
+  on: (channel: string, callback: (...args: unknown[]) => void) => void;
+  removeListener: (channel: string, callback: (...args: unknown[]) => void) => void;
+} {
+  const bridge = (window as unknown as Record<string, unknown>).electronAPI as {
+    on?: (channel: string, callback: (...args: unknown[]) => void) => void;
+    removeListener?: (channel: string, callback: (...args: unknown[]) => void) => void;
+  } | undefined;
+
+  return {
+    on: bridge?.on ?? (() => {}),
+    removeListener: bridge?.removeListener ?? (() => {}),
+  };
+}
+
+/**
  * Chat panel implementing the PanelModule lifecycle.
  * Manages message display, user input, and communication with the main process via IPC.
  */
@@ -33,6 +52,7 @@ class ChatPanel implements PanelModule {
   private messages: ChatMessage[] = [];
   private hasMoreMessages = false;
   private streamingMessageContent: Map<MessageId, string> = new Map();
+  private activeProjectHandler: ((...args: unknown[]) => void) | null = null;
 
   constructor() {
     this.chatList = new ChatList({ batchSize: MESSAGE_BATCH_SIZE, autoScroll: true });
@@ -63,12 +83,29 @@ class ChatPanel implements PanelModule {
     this.chatService.start();
     this.unsubscribeService = this.chatService.subscribe(this.handleServiceEvent);
 
+    // Subscribe to active-project IPC event for project switching (Req 3.1, 3.2, 3.3)
+    const bridge = getIpcBridge();
+    this.activeProjectHandler = (...args: unknown[]) => {
+      const payload = args[0] as { id?: string; name?: string } | undefined;
+      if (payload && payload.id) {
+        this.setCurrentRoom(payload.id);
+      }
+    };
+    bridge.on('active-project', this.activeProjectHandler);
+
     // Load initial messages
     this.loadInitialMessages();
   }
 
   /** Unmount the chat panel and clean up resources. */
   unmount(): void {
+    // Remove active-project IPC listener
+    if (this.activeProjectHandler) {
+      const bridge = getIpcBridge();
+      bridge.removeListener('active-project', this.activeProjectHandler);
+      this.activeProjectHandler = null;
+    }
+
     if (this.unsubscribeService) {
       this.unsubscribeService();
       this.unsubscribeService = null;
@@ -233,6 +270,29 @@ class ChatPanel implements PanelModule {
       this.chatList.hideLoadMore();
     }
   };
+
+  /**
+   * Switch to a different project room.
+   * Clears current message list and streaming state, updates the room ID,
+   * and loads persisted messages for the new project from SQLite.
+   * Only messages with matching session_id (projectId) are displayed.
+   * (Requirements 3.1, 3.2, 3.3)
+   */
+  private setCurrentRoom(projectId: RoomId): void {
+    if (projectId === this.currentRoomId) return;
+
+    // Clear current message list and streaming state
+    this.messages = [];
+    this.streamingMessageContent.clear();
+    this.hasMoreMessages = false;
+
+    // Update currentRoomId to new projectId
+    this.currentRoomId = projectId;
+    this.chatService.currentProjectId = projectId;
+
+    // Fetch persisted messages (including dispatch-sourced) for the new project
+    this.loadInitialMessages();
+  }
 }
 
 /** Generate a unique local ID for optimistic messages. */

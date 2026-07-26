@@ -14,6 +14,7 @@ import type {
   RoomId,
   SendMessageRequest,
   SendMessageResponse,
+  StreamChunkPayload,
 } from './types';
 
 /** IPC channels used by the chat service. */
@@ -58,6 +59,10 @@ export class ChatService {
   private ipcMessageHandler: ((...args: unknown[]) => void) | null = null;
   private ipcStreamHandler: ((...args: unknown[]) => void) | null = null;
   private started = false;
+  /** Tracks msgIds that have received a `start` event. */
+  private startedStreams: Set<string> = new Set();
+  /** The current project/room ID, used when creating placeholder messages. */
+  currentProjectId: RoomId = 'default';
 
   /** Start listening for incoming IPC events from the main process. */
   start(): void {
@@ -74,10 +79,59 @@ export class ChatService {
     };
 
     this.ipcStreamHandler = (...args: unknown[]) => {
-      const data = args[0] as { messageId: string; chunk: string } | undefined;
-      if (data && data.messageId && data.chunk) {
-        this.emit({ type: 'stream-chunk', messageId: data.messageId, chunk: data.chunk });
+      const data = args[0] as StreamChunkPayload | undefined;
+      if (!data || !data.messageId) return;
+
+      if (data.done) {
+        this.startedStreams.delete(data.messageId);
+        this.emit({ type: 'message-status-changed', messageId: data.messageId, status: 'sent' });
+        return;
       }
+
+      if (data.error) {
+        this.startedStreams.delete(data.messageId);
+        this.emit({ type: 'message-status-changed', messageId: data.messageId, status: 'error' });
+        return;
+      }
+
+      if (data.start) {
+        this.startedStreams.add(data.messageId);
+        this.emit({
+          type: 'message-received',
+          message: {
+            id: data.messageId,
+            roomId: this.currentProjectId,
+            sender: 'assistant',
+            content: '',
+            timestamp: Date.now(),
+            status: 'sending',
+            metadata: {
+              source: data.source,
+              agent: data.agent,
+              agentEmoji: data.agentEmoji,
+            },
+          },
+        });
+        return;
+      }
+
+      // Regular token — if no start event was received for this msgId, create a placeholder first (Req 2.7)
+      if (!this.startedStreams.has(data.messageId)) {
+        this.startedStreams.add(data.messageId);
+        this.emit({
+          type: 'message-received',
+          message: {
+            id: data.messageId,
+            roomId: this.currentProjectId,
+            sender: 'assistant',
+            content: '',
+            timestamp: Date.now(),
+            status: 'sending',
+          },
+        });
+      }
+
+      this.emit({ type: 'stream-chunk', messageId: data.messageId, chunk: data.chunk });
     };
 
     bridge.on(IPC_CHANNELS.MESSAGE_RECEIVED, this.ipcMessageHandler);
@@ -99,6 +153,8 @@ export class ChatService {
       bridge.off(IPC_CHANNELS.STREAM_CHUNK, this.ipcStreamHandler);
       this.ipcStreamHandler = null;
     }
+
+    this.startedStreams.clear();
   }
 
   /** Subscribe to chat service events. Returns an unsubscribe function. */

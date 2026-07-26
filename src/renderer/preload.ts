@@ -343,6 +343,8 @@ const RECEIVE_CHANNELS = [
   'subscription-status-update',
   // LLM streaming
   'chat:stream', 'chat:done', 'chat:error',
+  // Dashboard session lifecycle (agent routing from dashboard dispatch)
+  'dashboard:session-started',
   // OpenMythos integration
   'openmythos-status-update',
   // Multi-Session Parallel Agents

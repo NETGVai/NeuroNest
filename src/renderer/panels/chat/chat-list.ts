@@ -142,6 +142,27 @@ function injectStyles(): void {
       color: var(--text-secondary, #666666);
       font-size: 14px;
     }
+    .nn-chat-badge-dispatch {
+      display: inline-block;
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      background: var(--chat-badge-dispatch-bg, #3a6b35);
+      color: var(--chat-badge-dispatch-text, #c8e6c9);
+      padding: 2px 6px;
+      border-radius: 4px;
+      margin-bottom: 4px;
+      line-height: 1;
+    }
+    .nn-chat-agent-label {
+      display: block;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--chat-agent-label-text, #9cdcfe);
+      margin-bottom: 4px;
+      line-height: 1.2;
+    }
   `;
   document.head.appendChild(style);
 }
@@ -345,6 +366,36 @@ export class ChatList {
     // Bubble
     const bubble = document.createElement('div');
     bubble.className = CSS.messageBubble;
+
+    // Dispatch source badge (inserted before content so it doesn't obscure text)
+    if (message.metadata?.source === 'dashboard') {
+      const badge = document.createElement('span');
+      badge.className = 'nn-chat-badge-dispatch';
+      badge.textContent = 'Dashboard';
+      badge.setAttribute('aria-label', 'Dispatched from Agent Dashboard');
+      bubble.appendChild(badge);
+    }
+
+    // Agent label for assistant messages with agent metadata or orchestrator fallback
+    if (message.sender === 'assistant') {
+      let agentDisplayName: string | undefined;
+      let agentEmoji: string | undefined;
+
+      if (message.metadata?.agent) {
+        agentDisplayName = message.metadata.agent;
+        agentEmoji = message.metadata.agentEmoji;
+      } else if (message.metadata?.source === 'dashboard') {
+        // Fallback: no agent name but dispatched from dashboard → show "Orchestrator"
+        agentDisplayName = 'Orchestrator';
+      }
+
+      if (agentDisplayName) {
+        const agentLabel = document.createElement('span');
+        agentLabel.className = 'nn-chat-agent-label';
+        agentLabel.textContent = ((agentEmoji || '') + ' ' + agentDisplayName).trim();
+        bubble.appendChild(agentLabel);
+      }
+    }
 
     const content = document.createElement('span');
     content.className = CSS.messageContent;

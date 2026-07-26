@@ -24,7 +24,15 @@ export interface ChatMessage {
   timestamp: number;
   status: MessageStatus;
   /** Optional metadata attached by the assistant (e.g. model info). */
-  metadata?: Record<string, unknown>;
+  metadata?: {
+    /** Dispatch attribution — indicates where the message originated. */
+    source?: 'dashboard' | 'direct';
+    /** Agent display name (for dispatch-originated assistant messages). */
+    agent?: string;
+    /** Agent emoji from the registry (for dispatch-originated assistant messages). */
+    agentEmoji?: string;
+    [key: string]: unknown;
+  };
 }
 
 /** Represents a chat room / conversation thread. */
@@ -35,6 +43,26 @@ export interface ChatRoom {
   updatedAt: number;
   /** Number of messages in this room (for display in room list). */
   messageCount: number;
+}
+
+/** Payload received from the main process for a streaming chunk event. */
+export interface StreamChunkPayload {
+  /** The message ID this chunk belongs to. */
+  messageId: string;
+  /** The text chunk content. */
+  chunk: string;
+  /** First chunk — signals creation of a new assistant message placeholder. */
+  start?: boolean;
+  /** Agent name (provided on start). */
+  agent?: string;
+  /** Agent emoji (provided on start). */
+  agentEmoji?: string;
+  /** Source attribution for dispatch-originated streams. */
+  source?: 'dashboard';
+  /** Signals that the stream has completed. */
+  done?: boolean;
+  /** Signals a stream error with the error message. */
+  error?: string;
 }
 
 /** Payload sent to the main process when the user submits a message. */

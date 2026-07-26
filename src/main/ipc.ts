@@ -144,6 +144,8 @@ import { registerTerminalIPC } from './terminal-ipc.js';
 import { registerCheckpointTimelineIPC } from './checkpoint-timeline-ipc.js';
 import { registerNotebookIPC } from './notebook-ipc.js';
 import { registerMarketplaceIPC } from './marketplace-ipc.js';
+// Dispatch-to-Chat-Panel bridge (dispatch-chat-visibility spec, Req 1.1, 3.4, 3.5)
+import { DispatchBridge } from './dispatch-bridge';
 // P5 orphan sweep (task 23.2) — Category A unwired IPC handler modules, wired
 // onto the live IPC path from registerIPCHandlers below (R16.3, R16.4).
 import { registerVisionIPC } from './vision-ipc.js';
@@ -352,6 +354,7 @@ let agentMemoryClient: any = null; // Reference to AgentMemoryClient, set during
 let projectMemoryRef: any = null; // Reference to ProjectMemoryStore, used by memory panel
 let cronScheduler: CronScheduler | null = null; // Cron scheduler for automated tasks
 let skillLearner: SkillLearner | null = null; // Self-improving skill learner
+let dispatchBridge: DispatchBridge | null = null; // Dispatch-to-Chat bridge (dispatch-chat-visibility)
 
 // ── Agent Loop Integration (Requirement 10.1, 10.2) ──
 // Singleton ToolSystem with real built-in tool implementations for the agent loop.
@@ -2011,6 +2014,18 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
   _ipcMainWindow = mainWindow; // Store for deferred channel wiring
   ensureInit();
 
+  // ── Instantiate DispatchBridge (dispatch-chat-visibility, Req 1.1, 3.4, 3.5) ──
+  // Bridges Agent Dashboard dispatches to the Chat Panel by persisting messages
+  // and emitting ChatService-compatible IPC events.
+  if (db && mainWindow) {
+    try {
+      dispatchBridge = new DispatchBridge({ mainWindow, db });
+      console.log('[IPC] DispatchBridge instantiated');
+    } catch (err: any) {
+      console.error('[IPC] Failed to instantiate DispatchBridge:', err?.message);
+    }
+  }
+
   // ── CRITICAL: Register license handlers FIRST, before anything else ──
   // This ensures activation always works even if other subsystems fail to initialize.
   try {
@@ -2791,9 +2806,46 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
     // the pipeline can interpret "confirm" as approval of that proposal rather
     // than an ambiguous freeform prompt.
     const actionContext = (typeof arg === 'object' && arg !== null && arg.actionContext) || null;
+    // `agent` is a routing hint from the Agent Dashboard specifying which agent
+    // should handle the task. When set, the pipeline prefers this agent over auto-routing.
+    const agentHint: string | null = (typeof arg === 'object' && arg !== null && arg.agent) || null;
+    // `source` identifies the origin of the message (e.g. 'dashboard' when dispatched
+    // from the Agent Dashboard panel).
+    const dispatchSource: string | null = (typeof arg === 'object' && arg !== null && arg.source) || null;
     const trimmed = (message || '').trim();
     if (!trimmed) return;
-    console.log('[IPC] chat-message received:', trimmed, isSteerRedirect ? '(steer redirect)' : '', isSpecMode ? '(spec mode)' : '', actionContext ? '(action-context)' : '');
+    console.log('[IPC] chat-message received:', trimmed, isSteerRedirect ? '(steer redirect)' : '', isSpecMode ? '(spec mode)' : '', actionContext ? '(action-context)' : '', agentHint ? `(agent: ${agentHint})` : '', dispatchSource ? `(source: ${dispatchSource})` : '');
+
+    // ── Dispatch-to-Chat Bridge (dispatch-chat-visibility, Req 1.1, 3.4, 3.5) ──
+    // When a task is dispatched from the Agent Dashboard, register it with the
+    // DispatchBridge so the prompt and streaming responses appear in the Chat Panel.
+    if (dispatchSource === 'dashboard' && dispatchBridge) {
+      const dispatchProjectId: string | null = (typeof arg === 'object' && arg !== null && arg.projectId) || null;
+
+      // Reject dispatch if projectId is missing or does not match a known project (Req 3.5)
+      if (!dispatchProjectId) {
+        console.error('[DispatchBridge] Rejected dispatch: no projectId in payload');
+        return;
+      }
+      const knownProjects = sessionManager.list();
+      const projectExists = knownProjects.some((p: any) => p.id === dispatchProjectId);
+      if (!projectExists) {
+        console.error('[DispatchBridge] Rejected dispatch: projectId does not match any known project:', dispatchProjectId);
+        return;
+      }
+
+      // Generate a unique msgId and register the dispatch
+      const crypto = require('node:crypto');
+      const msgId = crypto.randomUUID();
+      dispatchBridge.registerDispatch({
+        projectId: dispatchProjectId,
+        message: trimmed,
+        source: 'dashboard',
+        agent: agentHint || undefined,
+        msgId,
+      });
+      console.log('[DispatchBridge] Dispatch registered:', msgId, 'project:', dispatchProjectId);
+    }
 
     // ── No project selected: respond with NeuroNest info or instruct to select a project ──
     if (!activeSessionId) {
@@ -2867,7 +2919,10 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
       }
     }
 
-    storeMessage('user', trimmed);
+    // Skip storeMessage for dashboard dispatches — DispatchBridge.registerDispatch() already persisted the user message
+    if (dispatchSource !== 'dashboard') {
+      storeMessage('user', trimmed);
+    }
 
         // Slash command
     if (trimmed.startsWith('/')) {
@@ -4008,6 +4063,19 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
       plan.topology = 'swarm';
     }
 
+    // Agent routing hint: if agentHint is set and matches a registry ID,
+    // override the plan to route exclusively to that agent (Req 2.2, 2.3).
+    if (agentHint) {
+      const hintedAgent = AGENT_REGISTRY.find(r => r.id === agentHint);
+      if (hintedAgent) {
+        console.log('[IPC] Agent routing hint accepted:', agentHint, '(' + hintedAgent.name + ')');
+        plan.agents = [{ id: hintedAgent.id, task: zeraResult.optimizedPrompt, dependsOn: [] }];
+        plan.topology = 'sequential';
+      } else {
+        console.warn('[IPC] Agent routing hint ignored — not found in registry:', agentHint);
+      }
+    }
+
     // Inject design template for Design department agents
     try {
       const { injectDesignTemplate } = require('../skills/skill-integration');
@@ -4652,9 +4720,28 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
             // Start signal — create the message bubble
             const agentProv = agentProviderMap.get(event.agentId || '') || { provider: activeProviderType, model: activeModelId };
             mainWindow.webContents.send('chat:stream', { msgId: event.msgId, token: '', agent: event.agentName || 'Agent', start: true, provider: agentProv.provider || activeProviderType, model: agentProv.model || activeModelId });
+            // Notify the dashboard so it can correlate its "preparing" card with the stream
+            if (dispatchSource === 'dashboard') {
+              mainWindow.webContents.send('dashboard:session-started', { msgId: event.msgId });
+            }
           } else {
             // Token chunk
             mainWindow.webContents.send('chat:stream', { msgId: event.msgId, token: event.token });
+          }
+
+          // ── DispatchBridge routing (dispatch-chat-visibility, Req 2.1, 2.3, 2.4, 2.5, 5.1–5.4) ──
+          // Route stream events to the ChatService via DispatchBridge for dispatch-originated messages.
+          // This is ADDITIONAL — Dashboard channel emissions above remain unchanged.
+          if (dispatchBridge && event.msgId && dispatchBridge.isDispatch(event.msgId)) {
+            if (event.token === '' && !event.done) {
+              dispatchBridge.onStreamStart(event.msgId, event.agentName || 'Agent', { provider: activeProviderType, model: activeModelId });
+            } else if (event.done && !event.error) {
+              dispatchBridge.onStreamDone(event.msgId);
+            } else if (event.done && event.error) {
+              dispatchBridge.onStreamError(event.msgId, event.content || 'Stream error');
+            } else {
+              dispatchBridge.onStreamToken(event.msgId, event.token ?? '');
+            }
           }
         } else if (event.type === 'agent_start') {
           sendAndStore(mainWindow, {
@@ -4849,8 +4936,27 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
           } else if (event.token === '' && !event.done) {
             const agentProv2 = agentProviderMap.get(event.agentId || '') || { provider: activeProviderType, model: activeModelId };
             mainWindow.webContents.send('chat:stream', { msgId: event.msgId, token: '', agent: event.agentName || 'Agent', start: true, provider: agentProv2.provider || activeProviderType, model: agentProv2.model || activeModelId });
+            // Notify the dashboard so it can correlate its "preparing" card with the stream
+            if (dispatchSource === 'dashboard') {
+              mainWindow.webContents.send('dashboard:session-started', { msgId: event.msgId });
+            }
           } else {
             mainWindow.webContents.send('chat:stream', { msgId: event.msgId, token: event.token });
+          }
+
+          // ── DispatchBridge routing (dispatch-chat-visibility, Req 2.1, 2.3, 2.4, 2.5, 5.1–5.4) ──
+          // Route stream events to the ChatService via DispatchBridge for dispatch-originated messages.
+          // This is ADDITIONAL — Dashboard channel emissions above remain unchanged.
+          if (dispatchBridge && event.msgId && dispatchBridge.isDispatch(event.msgId)) {
+            if (event.token === '' && !event.done) {
+              dispatchBridge.onStreamStart(event.msgId, event.agentName || 'Agent', { provider: activeProviderType, model: activeModelId });
+            } else if (event.done && !event.error) {
+              dispatchBridge.onStreamDone(event.msgId);
+            } else if (event.done && event.error) {
+              dispatchBridge.onStreamError(event.msgId, event.content || 'Stream error');
+            } else {
+              dispatchBridge.onStreamToken(event.msgId, event.token ?? '');
+            }
           }
         } else if (event.type === 'agent_complete') {
           // ── Firewall: scan agent output (warn only, never block code generation) ──
