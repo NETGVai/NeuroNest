@@ -17,7 +17,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-000?style=flat-square&logo=electron" alt="Platforms" />
-  <img src="https://img.shields.io/badge/version-0.1.605-blue?style=flat-square" alt="Version" />
+  <img src="https://img.shields.io/badge/version-0.1.668-blue?style=flat-square" alt="Version" />
   <img src="https://img.shields.io/badge/agents-118-purple?style=flat-square" alt="Agents" />
   <img src="https://img.shields.io/badge/providers-11-green?style=flat-square" alt="Providers" />
   <a href="./LICENSE"><img src="https://img.shields.io/badge/License-BUSL--1.1-yellow?style=flat-square" alt="License: BUSL-1.1" /></a>
@@ -118,7 +118,7 @@ Bounded, verification-gated iterative execution that makes NeuroNest dramaticall
 
 **Security enforcement:**
 
-- All loop passes run through the full 8-layer security stack
+- All loop passes run through the full 13-layer security stack
 - Scope constraints restrict allowed file paths and tools per loop
 - Security policy per loop (standard/strict/enterprise)
 - Cost tracking per pass with cumulative budget enforcement
@@ -236,11 +236,42 @@ The following capabilities extend NeuroNest beyond core orchestration. Each is i
 - **Adoption Dashboard** — Team analytics: active users, sessions/day, tasks completed, estimated time saved, cost per task, per-agent effectiveness. CSV/JSON export. Configurable retention.
 - **Internationalization (i18n)** — Full locale management with ICU MessageFormat. 9 languages shipped (English, Chinese, Japanese, Korean, German, Spanish, French, Portuguese-BR, Russian). Runtime switching without restart.
 
+### Global Context Framework (GCF)
+
+A comprehensive context management system that enriches agent prompts with project knowledge. GCF operates transparently between user input and LLM calls, ensuring agents always have relevant context without manual @-mentions.
+
+**Components:**
+
+| Component | Role |
+|-----------|------|
+| AST Analyzer | Parses source files into typed syntax trees for structural understanding |
+| Semantic Search Index | Vector embeddings over code chunks for meaning-based retrieval |
+| Incremental Context Engine | Tracks file changes and updates context incrementally (no full re-index) |
+| Edit History Tracker | Records recent edits to bias context toward active working areas |
+| Prompt Enrichment Pipeline | Assembles relevant context snippets into agent prompts before LLM calls |
+| Response Validator | Validates LLM responses against project structure and known symbols |
+| Context Window Optimizer | Packs maximum relevant context within model token limits |
+
+**Agent Integration:**
+- Automatically enriches prompts before every LLM call with relevant code, types, and project conventions
+- Validates responses after LLM calls — flags hallucinated imports, non-existent files, and type mismatches
+- Graceful degradation with double-fault protection — if GCF fails, the pipeline continues normally without enrichment
+- Drift detection monitors for context drift between concurrent agents and reconciles shared state
+
+### Event Log
+
+Append-only event log providing a unified source of truth for agent state.
+
+- **Schema-validated payloads** — All events pass Zod schema validation before persistence
+- **Per-source rate limiting** — Sliding-window rate limiter (100 events/second default) prevents runaway emitters
+- **Feature-gated rollout** — Shadow mode validates event integrity without affecting existing state management
+- **Replay-friendly** — Ordered, immutable entries support full session reconstruction for debugging
+
 ---
 
 ## Security
 
-NeuroNest implements an 8-layer defense-in-depth security model. Each layer operates independently.
+NeuroNest implements a 13-layer defense-in-depth security model. Each layer operates independently.
 
 | Layer | Protection |
 |-------|-----------|
@@ -252,6 +283,11 @@ NeuroNest implements an 8-layer defense-in-depth security model. Each layer oper
 | Secure Communication | HTTPS enforcement, certificate pinning, request signing, replay protection |
 | Edit Lock Manager | Directory-scoped file edit restrictions with glob pattern enforcement |
 | Network Sandbox | Policy-based network access control — domain/IP/port allow/deny rules with 3 presets (permissive, standard, strict) |
+| Path Traversal Guard | Validates all file paths against project root, blocks symlink escapes and `..` traversal |
+| Shell Injection Prevention | All subprocess execution uses `execFile` with argument arrays (no shell interpretation) |
+| Dynamic Import Validation | Module imports restricted to an allowlist of permitted packages |
+| SQL Injection Prevention | Table name allowlist + parameterized queries for all database access |
+| CSP Nonce-Based Script Control | Per-session cryptographic nonces replace `unsafe-inline` in Content-Security-Policy |
 
 Policy presets: Standard, Strict, Enterprise. Per-agent and per-project policy overrides. Security policies can only be tightened (standard → strict → enterprise), never loosened. Full configuration UI in the dashboard.
 
@@ -299,11 +335,19 @@ Policy presets: Standard, Strict, Enterprise. Per-agent and per-project policy o
 │  │ GOAL.md/PLAN.md · Progress Hash · Context Budget · Skills     │   │
 │  └─────────────────────────────────────────────────────────────-─┘   │
 │                                                                      │
+│  ┌─────────────────────────────────────────────────────────────-─┐   │
+│  │ Global Context Framework (GCF)                                │   │
+│  │ AST Analyzer · Semantic Search · Incremental Engine           │   │
+│  │ Prompt Enrichment · Response Validator · Edit History         │   │
+│  │ Context Window Optimizer · Drift Reconciler                   │   │
+│  └─────────────────────────────────────────────────────────────-─┘   │
+│                                                                      │
 │  ┌──────────────────────────────────────────────────────────────-┐   │
 │  │ Infrastructure                                                │   │
-│  │ SQLite (WAL, 52 migrations) · Event Bus · Checkpoint Service  │   │
+│  │ SQLite (WAL, 58 migrations) · Event Bus · Checkpoint Service  │   │
 │  │ Cost Tracking · Feature Gate System · Cron Scheduler          │   │
 │  │ Firewall · Action Analyzer · Credential Vault · Graph Manager │   │
+│  │ PathGuard · SafeExec · Import Validator                       │   │
 │  └─────────────────────────────────────────────────────────────-─┘   │
 └──────────────────────────────────────────────────────────────────────┘
 ```
@@ -312,8 +356,9 @@ Policy presets: Standard, Strict, Enterprise. Per-agent and per-project policy o
 - User message → Brainstorm (optional) → Firewall scan → ZERA optimization → Mode selection → Orchestrator plan → Swarm execution → Response
 - Loop mode: LoopSpec → Runner state machine → Pass execution → Verification → Feedback → Receipt
 - Provider resolution: Registry lookup → Priority selection → Rate-limit fallback → Failover chain
+- GCF enrichment: User message → GCF Prompt Enrichment → Enriched context → LLM → GCF Response Validation → User
 
-**Persistence:** SQLite with 52 migrations covering sessions, messages, skills, agent tasks, cost records, security scans, long-term memory, loop specs, loop runs, loop passes, condensation logs, semantic indexes, worktree sessions, code reviews, network policies, session exports, adoption metrics, and more.
+**Persistence:** SQLite with 58 migrations covering sessions, messages, skills, agent tasks, cost records, security scans, long-term memory, loop specs, loop runs, loop passes, condensation logs, semantic indexes, worktree sessions, code reviews, network policies, session exports, adoption metrics, and more.
 
 ---
 
@@ -371,7 +416,7 @@ Policy presets: Standard, Strict, Enterprise. Per-agent and per-project policy o
 | Document | Description |
 |----------|------------|
 | [Architecture](https://neuronest.cc/docs) | System design, pipeline flow, component reference |
-| [Security](https://neuronest.cc/security) | 8-layer security model, firewall tiers, threat model |
+| [Security](https://neuronest.cc/security) | 13-layer security model, firewall tiers, threat model |
 | [Online Docs](https://neuronest.cc/docs) | Full documentation site |
 
 ---
@@ -380,7 +425,7 @@ Policy presets: Standard, Strict, Enterprise. Per-agent and per-project policy o
 
 - **Runtime:** Electron 43, Node.js 22+
 - **Language:** TypeScript (main process), Vanilla JS (renderer)
-- **Database:** SQLite via better-sqlite3 (WAL mode, 52 migrations)
+- **Database:** SQLite via better-sqlite3 (WAL mode, 58 migrations)
 - **Editor:** Monaco Editor
 - **Graphs:** Cytoscape.js
 - **Voice:** ONNX Runtime (Supertonic TTS + Whisper STT, on-device)
@@ -391,7 +436,19 @@ Policy presets: Standard, Strict, Enterprise. Per-agent and per-project policy o
 - **Validation:** Zod (IPC schemas, LoopSpec, config)
 - **Embeddings:** LanceDB (vector search for semantic code indexing)
 - **Terminal:** node-pty (interactive PTY for agent terminal sessions)
+- **Security:** PathGuard, SafeExec, Import Validator, SQL Allowlist, CSP Nonce
+- **Context:** Global Context Framework (AST analysis, semantic search, prompt enrichment)
 - **i18n:** ICU MessageFormat (20+ locales)
+
+---
+
+## Configuration
+
+All performance and feature flags are controllable via environment variables:
+
+- **Naming convention:** `NEURONEST_<FLAG_NAME>=true|false` (e.g., `NEURONEST_ASYNC_COMMANDS=false`)
+- **22 independently toggleable feature flags** for safe incremental rollout
+- **`.env` file support** for local development (auto-loaded at startup)
 
 ---
 
@@ -410,5 +467,5 @@ NeuroNest is licensed under the [Business Source License 1.1](LICENSE). See [LIC
 ---
 
 <p align="center">
-  Built by <a href="https://neuronest.cc">NeuroNest</a> · © 2024-2025 Network Guardian Inc.
+  Built by <a href="https://neuronest.cc">NeuroNest</a> · © 2024-2026 Network Guardian Inc.
 </p>
