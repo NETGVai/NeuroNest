@@ -645,7 +645,7 @@ export class SwarmCoordinator {
             const promptBudgetTokens = modelContextTokens - maxTokens - 300;
             const promptBudgetChars = promptBudgetTokens * 3; // ~3 chars per token conservative
 
-            const { PRODUCTION_OUTPUT_FORMAT, STATIC_HTML_OUTPUT_FORMAT } = require('./code-generation-enhancer');
+            const { PRODUCTION_OUTPUT_FORMAT, STATIC_HTML_OUTPUT_FORMAT } = await import('./code-generation-enhancer');
             // Switch output format when planner flagged single-artifact intent.
             const outputFormat = plan.metadata?.primaryArtifact?.kind === 'static-html'
               ? STATIC_HTML_OUTPUT_FORMAT

@@ -27,6 +27,8 @@
 
 import type Database from 'better-sqlite3';
 import { uuidv7 } from 'uuidv7';
+import type { ZodType } from 'zod';
+import { EventLogRateLimiter } from './event-log-rate-limiter';
 
 // ─── UUID strategy ─────────────────────────────────────────────
 
@@ -86,6 +88,16 @@ export interface PipelineEvent {
   kind: EventKind;
   payload: unknown;
   createdAt: number;
+}
+
+// ─── Schema Validation ─────────────────────────────────────────
+
+/**
+ * Result of validating an event payload against a registered Zod schema.
+ */
+export interface SchemaValidationResult {
+  valid: boolean;
+  errors?: string[];
 }
 
 // ─── Tunables ──────────────────────────────────────────────────
@@ -153,6 +165,12 @@ export class EventLog {
   private droppedEvents = 0;
   private overflowFlushes = 0;
 
+  /** Schema registry: maps event kind to a Zod schema for payload validation. */
+  private readonly schemas: Map<EventKind, ZodType> = new Map();
+
+  /** Per-source sliding-window rate limiter for the emit path. */
+  private readonly rateLimiter: EventLogRateLimiter;
+
   // Prepared statements (race-free thanks to better-sqlite3 single-thread model).
   private readonly stmtMaxSeq: Database.Statement;
   private readonly stmtInsert: Database.Statement;
@@ -161,6 +179,7 @@ export class EventLog {
 
   constructor(db: Database.Database, opts: { autoStart?: boolean } = {}) {
     this.db = db;
+    this.rateLimiter = new EventLogRateLimiter();
 
     this.stmtMaxSeq = db.prepare(
       'SELECT COALESCE(MAX(seq), 0) AS s FROM pipeline_events WHERE session_id = ?',
@@ -207,6 +226,41 @@ export class EventLog {
     }
   }
 
+  // ─── Schema Validation ─────────────────────────────────────────
+
+  /**
+   * Register a Zod schema for a given event kind. Once registered, all
+   * payloads emitted with that kind are validated before being enqueued.
+   * Registering a new schema for an already-registered kind overwrites
+   * the previous schema.
+   */
+  registerSchema(kind: EventKind, schema: ZodType): void {
+    this.schemas.set(kind, schema);
+  }
+
+  /**
+   * Validate a payload against the registered schema for the given kind.
+   * Returns `{ valid: true }` if no schema is registered for the kind
+   * (pass-through for unregistered kinds). Returns `{ valid: false, errors }`
+   * if validation fails.
+   */
+  validatePayload(kind: EventKind, payload: unknown): SchemaValidationResult {
+    const schema = this.schemas.get(kind);
+    if (!schema) {
+      return { valid: true };
+    }
+
+    const result = schema.safeParse(payload);
+    if (result.success) {
+      return { valid: true };
+    }
+
+    const errors = result.error.issues.map(
+      (issue) => `${issue.path.join('.')}: ${issue.message}`,
+    );
+    return { valid: false, errors };
+  }
+
   /**
    * Stop the timer and synchronously flush remaining events one final time.
    * Useful in tests and during graceful shutdown. Subsequent `emit` calls
@@ -226,8 +280,29 @@ export class EventLog {
    * On buffer overflow (> 1000 pending) a synchronous flush is forced
    * before this method returns; design.md "Error Handling" calls this out
    * explicitly.
+   *
+   * If a schema is registered for the event kind, the payload is validated
+   * before enqueue. Invalid payloads are rejected (not dispatched) and a
+   * warning is logged.
    */
   emit(input: { sessionId: string; kind: EventKind; payload: unknown }): Promise<void> {
+    // Schema validation: reject invalid payloads before dispatch
+    const validation = this.validatePayload(input.kind, input.payload);
+    if (!validation.valid) {
+      console.warn(
+        `[event-log] schema validation failed for kind="${input.kind}": ${validation.errors?.join('; ')}`,
+      );
+      return Promise.resolve();
+    }
+
+    // Rate limiting: reject events exceeding per-source sliding window limit
+    if (!this.rateLimiter.allow(input.sessionId)) {
+      console.warn(
+        `[event-log] rate limited event kind="${input.kind}" from source="${input.sessionId}"`,
+      );
+      return Promise.resolve();
+    }
+
     const pending: PendingEvent = {
       id: generateEventId(),
       sessionId: input.sessionId,

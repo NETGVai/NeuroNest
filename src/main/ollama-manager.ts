@@ -4,7 +4,7 @@
  * This manager auto-starts it when NeuroNest launches and stops it on quit.
  */
 
-import { execSync, spawn, ChildProcess } from 'node:child_process';
+import { execSync, execFileSync, spawn, ChildProcess } from 'node:child_process';
 import * as http from 'node:http';
 
 const OLLAMA_PORT = 11434;
@@ -18,7 +18,7 @@ let ollamaRunning = false;
 /** Check if Homebrew is installed */
 function isHomebrewInstalled(): boolean {
   try {
-    execSync('which brew', { encoding: 'utf-8', timeout: 5000 });
+    execFileSync('which', ['brew'], { encoding: 'utf-8', timeout: 5000 });
     return true;
   } catch {
     return false;
@@ -77,8 +77,8 @@ async function ensureHomebrew(onProgress?: (msg: string) => void): Promise<boole
 /** Check if Ollama binary is installed on the system */
 export function isOllamaInstalled(): boolean {
   try {
-    const cmd = process.platform === 'win32' ? 'where ollama' : 'which ollama 2>/dev/null';
-    const result = execSync(cmd, { encoding: 'utf-8', timeout: 5000 });
+    const cmd = process.platform === 'win32' ? 'where' : 'which';
+    const result = execFileSync(cmd, ['ollama'], { encoding: 'utf-8', timeout: 5000 });
     return result.trim().length > 0;
   } catch {
     // On Windows, also check common install locations
@@ -167,9 +167,9 @@ export function stopOllama(): void {
   }
   // Also try to stop any Ollama started outside NeuroNest
   if (process.platform === 'win32') {
-    try { execSync('taskkill /f /im ollama.exe 2>nul', { timeout: 5000, shell: 'cmd.exe' }); } catch {}
+    try { execFileSync('taskkill', ['/f', '/im', 'ollama.exe'], { timeout: 5000, stdio: 'pipe' }); } catch {}
   } else {
-    try { execSync('killall ollama 2>/dev/null', { timeout: 3000 }); } catch {}
+    try { execFileSync('killall', ['ollama'], { timeout: 3000, stdio: 'pipe' }); } catch {}
   }
 }
 
@@ -397,12 +397,14 @@ export async function installLlamaCpp(onProgress?: (msg: string) => void): Promi
       const extractDir = (process.env.LOCALAPPDATA || process.env.USERPROFILE + '\\AppData\\Local') + '\\llama-cpp';
       const zipPath = downloadDir + '\\llama-cpp.zip';
       // Download latest release — use GitHub API to find the correct asset name
-      execSync(`powershell -Command "$releases = Invoke-RestMethod -Uri 'https://api.github.com/repos/ggerganov/llama.cpp/releases/latest'; $asset = $releases.assets | Where-Object { $_.name -match 'llama-.*-bin-win-x64\\.zip' -or $_.name -match 'llama-server.*win.*x64\\.zip' } | Select-Object -First 1; if ($asset) { Invoke-WebRequest -Uri $asset.browser_download_url -OutFile '${zipPath}' } else { Invoke-WebRequest -Uri 'https://github.com/ggerganov/llama.cpp/releases/latest/download/llama-server-win-x64.zip' -OutFile '${zipPath}' }"`, { timeout: 180000, encoding: 'utf-8' });
+      const downloadScript = `$releases = Invoke-RestMethod -Uri 'https://api.github.com/repos/ggerganov/llama.cpp/releases/latest'; $asset = $releases.assets | Where-Object { $_.name -match 'llama-.*-bin-win-x64\\.zip' -or $_.name -match 'llama-server.*win.*x64\\.zip' } | Select-Object -First 1; if ($asset) { Invoke-WebRequest -Uri $asset.browser_download_url -OutFile '${zipPath}' } else { Invoke-WebRequest -Uri 'https://github.com/ggerganov/llama.cpp/releases/latest/download/llama-server-win-x64.zip' -OutFile '${zipPath}' }`;
+      execFileSync('powershell', ['-Command', downloadScript], { timeout: 180000, encoding: 'utf-8' });
       onProgress?.('Extracting llama.cpp...');
-      execSync(`powershell -Command "New-Item -ItemType Directory -Force -Path '${extractDir}' | Out-Null; Expand-Archive -Path '${zipPath}' -DestinationPath '${extractDir}' -Force"`, { timeout: 60000, encoding: 'utf-8' });
+      const extractScript = `New-Item -ItemType Directory -Force -Path '${extractDir}' | Out-Null; Expand-Archive -Path '${zipPath}' -DestinationPath '${extractDir}' -Force`;
+      execFileSync('powershell', ['-Command', extractScript], { timeout: 60000, encoding: 'utf-8' });
       // Add to PATH for current process and persist via registry
       process.env.PATH = (process.env.PATH || '') + ';' + extractDir;
-      try { execSync(`setx PATH "%PATH%;${extractDir}"`, { timeout: 10000, shell: 'cmd.exe', stdio: 'pipe' }); } catch {}
+      try { execFileSync('setx', ['PATH', `%PATH%;${extractDir}`], { timeout: 10000, stdio: 'pipe' }); } catch {}
       if (isLlamaCppInstalled()) {
         return { success: true, message: 'Installed to ' + extractDir };
       }
@@ -470,9 +472,9 @@ export async function startLlamaCpp(): Promise<{ started: boolean; message: stri
 export function stopLlamaCpp(): void {
   if (llamaCppProcess) { llamaCppProcess.kill(); llamaCppProcess = null; }
   if (process.platform === 'win32') {
-    try { execSync('taskkill /f /im llama-server.exe 2>nul', { timeout: 5000, shell: 'cmd.exe' }); } catch {}
+    try { execFileSync('taskkill', ['/f', '/im', 'llama-server.exe'], { timeout: 5000, stdio: 'pipe' }); } catch {}
   } else {
-    try { execSync('killall llama-server 2>/dev/null', { timeout: 3000 }); } catch {}
+    try { execFileSync('killall', ['llama-server'], { timeout: 3000, stdio: 'pipe' }); } catch {}
   }
 }
 
@@ -499,9 +501,9 @@ export async function uninstallLlamaCpp(): Promise<{ success: boolean; message: 
     try { execSync('brew uninstall llama.cpp 2>/dev/null', { timeout: 60000, encoding: 'utf-8' }); } catch {}
   } else if (process.platform === 'win32') {
     const extractDir = (process.env.LOCALAPPDATA || process.env.USERPROFILE + '\\AppData\\Local') + '\\llama-cpp';
-    try { execSync(`rmdir /s /q "${extractDir}" 2>nul`, { timeout: 10000, shell: 'cmd.exe' }); } catch {}
+    try { execFileSync('cmd.exe', ['/c', 'rmdir', '/s', '/q', extractDir], { timeout: 10000, stdio: 'pipe' }); } catch {}
     // Also try old location
-    try { execSync('rmdir /s /q C:\\llama-cpp 2>nul', { timeout: 10000, shell: 'cmd.exe' }); } catch {}
+    try { execFileSync('cmd.exe', ['/c', 'rmdir', '/s', '/q', 'C:\\llama-cpp'], { timeout: 10000, stdio: 'pipe' }); } catch {}
   } else {
     try { execSync('rm -f /usr/local/bin/llama-server 2>/dev/null', { timeout: 5000 }); } catch {}
   }

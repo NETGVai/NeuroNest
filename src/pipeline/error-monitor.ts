@@ -9,7 +9,7 @@
  * Reports errors back so the agent can self-correct.
  */
 
-import { execSync } from 'node:child_process';
+import { safeExecFileSync } from '../security/safe-exec.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -97,8 +97,8 @@ function checkTypeScript(filePath: string, relPath: string, projectPath: string)
   if (ext !== '.ts' && ext !== '.tsx') return errors;
 
   try {
-    execSync(`npx tsc --noEmit --pretty false "${filePath}" 2>&1`, {
-      cwd: projectPath, encoding: 'utf-8', timeout: 15000, stdio: 'pipe',
+    safeExecFileSync('npx', ['tsc', '--noEmit', '--pretty', 'false', filePath], {
+      cwd: projectPath, timeout: 15000,
     });
   } catch (e: any) {
     const output = e.stdout || e.stderr || '';
@@ -124,8 +124,8 @@ function checkTypeScript(filePath: string, relPath: string, projectPath: string)
 function checkPythonSyntax(filePath: string, relPath: string, projectPath: string): DiagnosticError[] {
   const errors: DiagnosticError[] = [];
   try {
-    execSync(`python3 -m py_compile "${filePath}" 2>&1`, {
-      cwd: projectPath, encoding: 'utf-8', timeout: 10000, stdio: 'pipe',
+    safeExecFileSync('python3', ['-m', 'py_compile', filePath], {
+      cwd: projectPath, timeout: 10000,
     });
   } catch (e: any) {
     const output = e.stderr || e.stdout || '';

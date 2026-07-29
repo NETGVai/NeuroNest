@@ -34,29 +34,29 @@ let _imGateway: InstanceType<typeof import('../channels/im-gateway.js').IMGatewa
 let _subAgentContextIsolator: InstanceType<typeof import('../pipeline/sub-agent-context-isolator.js').SubAgentContextIsolator> | null = null;
 let _toolCallRecoveryHandler: InstanceType<typeof import('../pipeline/tool-call-recovery.js').ToolCallRecoveryHandler> | null = null;
 
-function getSkillLoader() {
+async function getSkillLoader() {
   if (!_skillLoader) {
-    const { SkillLoader } = require('../pipeline/skill-loader.js');
+    const { SkillLoader } = await import('../pipeline/skill-loader.js');
     _skillLoader = new SkillLoader();
   }
   return _skillLoader!;
 }
 
-function getContextSummarizer() {
+async function getContextSummarizer() {
   if (!_contextSummarizer) {
-    const { ContextSummarizer } = require('../pipeline/context-summarizer.js');
+    const { ContextSummarizer } = await import('../pipeline/context-summarizer.js');
     _contextSummarizer = new ContextSummarizer({ workspaceDir: '.neuronest/summaries' });
   }
   return _contextSummarizer!;
 }
 
-function getExecutionModeRouter() {
+async function getExecutionModeRouter() {
   if (!_executionModeRouter) {
-    const { ExecutionModeRouter } = require('../pipeline/execution-mode-router.js');
-    const { AGENT_REGISTRY } = require('../agents/agent-registry.js');
-    const { SwarmCoordinator, SwarmMemoryPool } = require('../pipeline/swarm-coordinator.js');
-    const { createLLMClient } = require('../pipeline/llm-client.js');
-    const { getDefaultDbPath } = require('../storage/database.js');
+    const { ExecutionModeRouter } = await import('../pipeline/execution-mode-router.js');
+    const { AGENT_REGISTRY } = await import('../agents/agent-registry.js');
+    const { SwarmCoordinator, SwarmMemoryPool } = await import('../pipeline/swarm-coordinator.js');
+    const { createLLMClient } = await import('../pipeline/llm-client.js');
+    const { getDefaultDbPath } = await import('../storage/database.js');
 
     // ─── Production LLM client ──────────────────────────────────────
     // Resolve the active LLM provider from the persisted config database.
@@ -119,7 +119,7 @@ function getExecutionModeRouter() {
     const realSwarm = new SwarmCoordinator(new SwarmMemoryPool(), llmClient, null, null, skillDb);
     const swarmAdapter = {
       execute: async (plan: { task: string; sessionId: string; mode: string; agents: string[] }) => {
-        const topology = plan.mode === 'parallel' ? 'star' : 'sequential';
+        const topology = (plan.mode === 'parallel' ? 'star' : 'sequential') as import('../pipeline/orchestrator-planner.js').Topology;
         const executionPlan = {
           plan: plan.task,
           agents: plan.agents.map((id: string) => ({ id, task: plan.task, dependsOn: [] })),
@@ -146,34 +146,34 @@ function getExecutionModeRouter() {
   return _executionModeRouter!;
 }
 
-function getMemoryStore() {
+async function getMemoryStore() {
   if (!_memoryStore) {
-    const { MemoryStore } = require('../storage/memory-store.js');
+    const { MemoryStore } = await import('../storage/memory-store.js');
     _memoryStore = new MemoryStore(null); // Falls back to ephemeral store
   }
   return _memoryStore!;
 }
 
-function getSuggestionGenerator() {
+async function getSuggestionGenerator() {
   if (!_suggestionGenerator) {
-    const { SuggestionGenerator } = require('../pipeline/suggestion-generator.js');
-    _suggestionGenerator = new SuggestionGenerator(getMemoryStore());
+    const { SuggestionGenerator } = await import('../pipeline/suggestion-generator.js');
+    _suggestionGenerator = new SuggestionGenerator(await getMemoryStore());
   }
   return _suggestionGenerator!;
 }
 
-function getSandboxManager() {
+async function getSandboxManager() {
   if (!_sandboxManager) {
-    const { SandboxManager } = require('../sandbox/sandbox-manager.js');
+    const { SandboxManager } = await import('../sandbox/sandbox-manager.js');
     const stubFirewall = { evaluate: (input: string) => ({ passed: true, blocked: false, sanitized: input }) };
     _sandboxManager = new SandboxManager(null, stubFirewall);
   }
   return _sandboxManager!;
 }
 
-function getMCPServerManager() {
+async function getMCPServerManager() {
   if (!_mcpServerManager) {
-    const { MCPServerManager } = require('../mcp/mcp-server-manager.js');
+    const { MCPServerManager } = await import('../mcp/mcp-server-manager.js');
     const stubFirewall = { evaluate: (input: string) => ({ passed: true, blocked: false, sanitized: input }) };
     _mcpServerManager = new MCPServerManager(null, stubFirewall);
     // F9 (Requirement 49.1): attempt boot-time auto-registration of the
@@ -190,7 +190,7 @@ function getMCPServerManager() {
     // gui-agent-mcp-server (EXTERNAL_BROWSER_MCP) onto the live MCP path.
     // Both are no-ops when their respective flags are off (default: false).
     try {
-      const { wireLeanMCPRegistration, wireGuiAgentMCPServer } = require('../orchestration/lean-minimalism-wiring.js');
+      const { wireLeanMCPRegistration, wireGuiAgentMCPServer } = await import('../orchestration/lean-minimalism-wiring.js');
       wireLeanMCPRegistration(_mcpServerManager);
       wireGuiAgentMCPServer(_mcpServerManager);
     } catch {
@@ -200,13 +200,13 @@ function getMCPServerManager() {
   return _mcpServerManager!;
 }
 
-function getIMGateway() {
+async function getIMGateway() {
   if (!_imGateway) {
-    const { IMGateway } = require('../channels/im-gateway.js');
+    const { IMGateway } = await import('../channels/im-gateway.js');
     const stubChannelManager = {
       connect: async () => ({ success: true, message: 'connected' }),
       disconnect: async () => {},
-      sendMessage: async () => ({ success: true }),
+      sendMessage: async () => ({ success: true, message: 'sent' }),
       onMessage: () => {},
     };
     const stubFirewall = { evaluate: () => ({ allowed: true }) };
@@ -216,17 +216,17 @@ function getIMGateway() {
   return _imGateway!;
 }
 
-function getSubAgentContextIsolator() {
+async function getSubAgentContextIsolator() {
   if (!_subAgentContextIsolator) {
-    const { SubAgentContextIsolator } = require('../pipeline/sub-agent-context-isolator.js');
-    _subAgentContextIsolator = new SubAgentContextIsolator(getContextSummarizer(), getMemoryStore());
+    const { SubAgentContextIsolator } = await import('../pipeline/sub-agent-context-isolator.js');
+    _subAgentContextIsolator = new SubAgentContextIsolator(await getContextSummarizer(), await getMemoryStore());
   }
   return _subAgentContextIsolator!;
 }
 
-function getToolCallRecoveryHandler() {
+async function getToolCallRecoveryHandler() {
   if (!_toolCallRecoveryHandler) {
-    const { ToolCallRecoveryHandler } = require('../pipeline/tool-call-recovery.js');
+    const { ToolCallRecoveryHandler } = await import('../pipeline/tool-call-recovery.js');
     _toolCallRecoveryHandler = new ToolCallRecoveryHandler();
   }
   return _toolCallRecoveryHandler!;
@@ -239,7 +239,7 @@ export function registerDeerFlowIPC(mainWindow: BrowserWindow): void {
 
   ipcMain.handle('get-suggestions', async (_ev, taskOutput: string, agentDomain: string, userId: string) => {
     try {
-      return getSuggestionGenerator().generate(taskOutput, agentDomain, userId);
+      return (await getSuggestionGenerator()).generate(taskOutput, agentDomain, userId);
     } catch (err: any) {
       return errorResponse(err?.message ?? 'Failed to generate suggestions', 'SUGGESTION_ERROR');
     }
@@ -247,7 +247,7 @@ export function registerDeerFlowIPC(mainWindow: BrowserWindow): void {
 
   ipcMain.handle('memory-list', async (_ev, userId: string) => {
     try {
-      return getMemoryStore().listFacts(userId);
+      return (await getMemoryStore()).listFacts(userId);
     } catch (err: any) {
       return errorResponse(err?.message ?? 'Failed to list memory facts', 'MEMORY_LIST_ERROR');
     }
@@ -255,7 +255,7 @@ export function registerDeerFlowIPC(mainWindow: BrowserWindow): void {
 
   ipcMain.handle('memory-remember', async (_ev, userId: string, category: string, key: string, value: string) => {
     try {
-      return getMemoryStore().remember(userId, category as any, key, value);
+      return (await getMemoryStore()).remember(userId, category as any, key, value);
     } catch (err: any) {
       return errorResponse(err?.message ?? 'Failed to store fact', 'MEMORY_REMEMBER_ERROR');
     }
@@ -263,7 +263,7 @@ export function registerDeerFlowIPC(mainWindow: BrowserWindow): void {
 
   ipcMain.handle('memory-forget', async (_ev, userId: string, key: string) => {
     try {
-      return getMemoryStore().forget(userId, key);
+      return (await getMemoryStore()).forget(userId, key);
     } catch (err: any) {
       return errorResponse(err?.message ?? 'Failed to forget fact', 'MEMORY_FORGET_ERROR');
     }
@@ -280,7 +280,7 @@ export function registerDeerFlowIPC(mainWindow: BrowserWindow): void {
 
   ipcMain.handle('mcp-list-servers', async () => {
     try {
-      return getMCPServerManager().listServers();
+      return (await getMCPServerManager()).listServers();
     } catch (err: any) {
       return errorResponse(err?.message ?? 'Failed to list MCP servers', 'MCP_LIST_ERROR');
     }
@@ -288,7 +288,7 @@ export function registerDeerFlowIPC(mainWindow: BrowserWindow): void {
 
   ipcMain.handle('mcp-list-tools', async () => {
     try {
-      const registry = getMCPServerManager().getToolRegistry();
+      const registry = (await getMCPServerManager()).getToolRegistry();
       return Array.from(registry.values());
     } catch (err: any) {
       return errorResponse(err?.message ?? 'Failed to list MCP tools', 'MCP_TOOLS_ERROR');
@@ -300,7 +300,7 @@ export function registerDeerFlowIPC(mainWindow: BrowserWindow): void {
   // so the MCP settings panel can render the "Built-in servers" section.
   ipcMain.handle('mcp-list-built-in', async () => {
     try {
-      return getMCPServerManager().listBuiltInServers();
+      return (await getMCPServerManager()).listBuiltInServers();
     } catch (err: any) {
       return errorResponse(err?.message ?? 'Failed to list built-in MCP servers', 'MCP_BUILT_IN_ERROR');
     }
@@ -313,7 +313,7 @@ export function registerDeerFlowIPC(mainWindow: BrowserWindow): void {
   // / re-registers and returns the refreshed status so the panel can update.
   ipcMain.handle('mcp-install-built-in', async (_ev, serverId: string) => {
     try {
-      return await getMCPServerManager().installBuiltInServer(serverId);
+      return await (await getMCPServerManager()).installBuiltInServer(serverId);
     } catch (err: any) {
       return errorResponse(err?.message ?? 'Failed to install built-in MCP server', 'MCP_INSTALL_ERROR');
     }
@@ -321,7 +321,7 @@ export function registerDeerFlowIPC(mainWindow: BrowserWindow): void {
 
   ipcMain.handle('get-execution-mode', async () => {
     try {
-      return getExecutionModeRouter().getModeInfo();
+      return (await getExecutionModeRouter()).getModeInfo();
     } catch (err: any) {
       return errorResponse(err?.message ?? 'Failed to get execution mode', 'MODE_ERROR');
     }

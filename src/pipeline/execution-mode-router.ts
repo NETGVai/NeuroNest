@@ -362,11 +362,11 @@ export class ExecutionModeRouter {
   async scoreAllAgentsWithLLM(task: string, llmClient?: LLMClientLike): Promise<AgentDefinitionLike> {
     if (llmClient && this.agentRegistry.length > 0) {
       try {
-        const { selectAgentsWithLLM } = require('./llm-decision-engine');
+        const { selectAgentsWithLLM } = await import('./llm-decision-engine');
         const agentSummaries = this.agentRegistry.slice(0, 25).map(a => ({
           id: a.id, name: a.name, department: a.department, specialty: a.specialty.slice(0, 80)
         }));
-        const result = await selectAgentsWithLLM(task, agentSummaries, llmClient);
+        const result = await selectAgentsWithLLM(task, agentSummaries, llmClient as any);
         if (result && result.agentIds.length > 0) {
           const found = this.agentRegistry.find(a => a.id === result.agentIds[0]);
           if (found) return found;
@@ -385,11 +385,11 @@ export class ExecutionModeRouter {
   async selectMultipleAgentsWithLLM(task: string, llmClient?: LLMClientLike): Promise<AgentDefinitionLike[]> {
     if (llmClient && this.agentRegistry.length > 0) {
       try {
-        const { selectAgentsWithLLM } = require('./llm-decision-engine');
+        const { selectAgentsWithLLM } = await import('./llm-decision-engine');
         const agentSummaries = this.agentRegistry.slice(0, 25).map(a => ({
           id: a.id, name: a.name, department: a.department, specialty: a.specialty.slice(0, 80)
         }));
-        const result = await selectAgentsWithLLM(task, agentSummaries, llmClient);
+        const result = await selectAgentsWithLLM(task, agentSummaries, llmClient as any);
         if (result && result.agentIds.length >= 2) {
           const agents = result.agentIds
             .map((id: string) => this.agentRegistry.find((a: AgentDefinitionLike) => a.id === id))

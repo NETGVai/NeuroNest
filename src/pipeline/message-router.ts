@@ -331,7 +331,7 @@ export function routeMessage(message: string): RoutingDecision {
 export async function routeMessageWithLLM(message: string, llmClient: any): Promise<RoutingDecision> {
   if (llmClient) {
     try {
-      const { classifyIntentWithLLM } = require('./llm-intent-classifier');
+      const { classifyIntentWithLLM } = await import('./llm-intent-classifier');
       const llmResult = await classifyIntentWithLLM(message, llmClient);
 
       if (llmResult) {

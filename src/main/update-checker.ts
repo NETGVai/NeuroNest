@@ -12,6 +12,7 @@
 
 import { app, BrowserWindow, shell } from 'electron';
 import os from 'node:os';
+import { sanitizeVersionString } from './security/html-sanitizer';
 
 const VERSIONS_URL = 'https://neuronest.cc/versions.json';
 const DOWNLOAD_PAGE = 'https://neuronest.cc/download';
@@ -145,12 +146,11 @@ export async function checkForUpdates(mainWindow: BrowserWindow): Promise<void> 
   console.log(`[UpdateChecker] Update available: ${currentVersion} → ${remoteVersion}`);
   console.log(`[UpdateChecker] Download URL: ${downloadUrl}`);
 
-  // Escape values for safe injection into JS string
-  const safeCurrentVersion = currentVersion.replace(/['"\\]/g, '');
-  const safeRemoteVersion = remoteVersion.replace(/['"\\]/g, '');
-  const safeChangelog = changelog.replace(/['"\\<>]/g, '');
+  // Sanitize version strings to strip any HTML tags and restrict to semver-safe chars
+  const safeCurrentVersion = sanitizeVersionString(currentVersion);
+  const safeRemoteVersion = sanitizeVersionString(remoteVersion);
 
-  // Show blocking update modal in the renderer
+  // Show blocking update modal in the renderer using safe DOM construction (no innerHTML with unsanitized values)
   mainWindow.webContents.executeJavaScript(`
     (function() {
       var existing = document.getElementById('nn-update-overlay');
@@ -163,34 +163,75 @@ export async function checkForUpdates(mainWindow: BrowserWindow): Promise<void> 
       var card = document.createElement('div');
       card.style.cssText = 'background:var(--bg-sidebar,#1e1e2e);border:1px solid var(--border-color,#45475a);border-radius:16px;padding:32px;max-width:460px;width:90%;color:var(--text-primary,#cdd6f4);text-align:center;';
 
-      var refProfile = {};
-      try { refProfile = JSON.parse(localStorage.getItem('neuronest-user-profile') || '{}'); } catch(_e) {}
-      var refParam = refProfile.referralCode ? '?ref=' + encodeURIComponent(refProfile.referralCode) : '';
-      var downloadPageUrl = 'https://neuronest.cc/download/' + refParam;
+      var rocket = document.createElement('div');
+      rocket.style.cssText = 'font-size:48px;margin-bottom:16px;';
+      rocket.textContent = '\\uD83D\\uDE80';
+      card.appendChild(rocket);
 
-      card.innerHTML =
-        '<div style="font-size:48px;margin-bottom:16px;">\\uD83D\\uDE80</div>' +
-        '<h2 style="margin:0 0 8px;font-size:22px;color:var(--text-primary,#cdd6f4);">Update Required</h2>' +
-        '<p style="margin:0 0 16px;font-size:14px;color:var(--text-secondary,#a6adc8);">A new version of NeuroNest is available.</p>' +
-        '<div style="display:flex;justify-content:center;gap:24px;margin-bottom:20px;">' +
-          '<div style="text-align:center;">' +
-            '<div style="font-size:11px;color:var(--text-dim,#6c7086);margin-bottom:4px;">Current</div>' +
-            '<div style="font-size:18px;font-weight:700;color:var(--red,#f38ba8);">${safeCurrentVersion}</div>' +
-          '</div>' +
-          '<div style="font-size:24px;color:var(--text-dim,#6c7086);align-self:center;">\\u2192</div>' +
-          '<div style="text-align:center;">' +
-            '<div style="font-size:11px;color:var(--text-dim,#6c7086);margin-bottom:4px;">Latest</div>' +
-            '<div style="font-size:18px;font-weight:700;color:var(--green,#a6e3a1);">${safeRemoteVersion}</div>' +
-          '</div>' +
-        '</div>' +
-        '<a id="nn-update-download-btn" href="#" style="display:block;width:100%;padding:12px;border:none;border-radius:8px;background:var(--accent,#89b4fa);color:#fff;font-size:15px;font-weight:600;cursor:pointer;margin-bottom:10px;text-decoration:none;text-align:center;">UPDATE NOW</a>' +
-        '<div style="font-size:11px;color:var(--text-dim,#6c7086);">You must update to continue using NeuroNest.</div>';
+      var heading = document.createElement('h2');
+      heading.style.cssText = 'margin:0 0 8px;font-size:22px;color:var(--text-primary,#cdd6f4);';
+      heading.textContent = 'Update Required';
+      card.appendChild(heading);
+
+      var desc = document.createElement('p');
+      desc.style.cssText = 'margin:0 0 16px;font-size:14px;color:var(--text-secondary,#a6adc8);';
+      desc.textContent = 'A new version of NeuroNest is available.';
+      card.appendChild(desc);
+
+      var versionRow = document.createElement('div');
+      versionRow.style.cssText = 'display:flex;justify-content:center;gap:24px;margin-bottom:20px;';
+
+      var currentBlock = document.createElement('div');
+      currentBlock.style.cssText = 'text-align:center;';
+      var currentLabel = document.createElement('div');
+      currentLabel.style.cssText = 'font-size:11px;color:var(--text-dim,#6c7086);margin-bottom:4px;';
+      currentLabel.textContent = 'Current';
+      var currentVal = document.createElement('div');
+      currentVal.style.cssText = 'font-size:18px;font-weight:700;color:var(--red,#f38ba8);';
+      currentVal.textContent = '${safeCurrentVersion}';
+      currentBlock.appendChild(currentLabel);
+      currentBlock.appendChild(currentVal);
+
+      var arrow = document.createElement('div');
+      arrow.style.cssText = 'font-size:24px;color:var(--text-dim,#6c7086);align-self:center;';
+      arrow.textContent = '\\u2192';
+
+      var latestBlock = document.createElement('div');
+      latestBlock.style.cssText = 'text-align:center;';
+      var latestLabel = document.createElement('div');
+      latestLabel.style.cssText = 'font-size:11px;color:var(--text-dim,#6c7086);margin-bottom:4px;';
+      latestLabel.textContent = 'Latest';
+      var latestVal = document.createElement('div');
+      latestVal.style.cssText = 'font-size:18px;font-weight:700;color:var(--green,#a6e3a1);';
+      latestVal.textContent = '${safeRemoteVersion}';
+      latestBlock.appendChild(latestLabel);
+      latestBlock.appendChild(latestVal);
+
+      versionRow.appendChild(currentBlock);
+      versionRow.appendChild(arrow);
+      versionRow.appendChild(latestBlock);
+      card.appendChild(versionRow);
+
+      var btn = document.createElement('a');
+      btn.id = 'nn-update-download-btn';
+      btn.href = '#';
+      btn.style.cssText = 'display:block;width:100%;padding:12px;border:none;border-radius:8px;background:var(--accent,#89b4fa);color:#fff;font-size:15px;font-weight:600;cursor:pointer;margin-bottom:10px;text-decoration:none;text-align:center;';
+      btn.textContent = 'UPDATE NOW';
+      card.appendChild(btn);
+
+      var footer = document.createElement('div');
+      footer.style.cssText = 'font-size:11px;color:var(--text-dim,#6c7086);';
+      footer.textContent = 'You must update to continue using NeuroNest.';
+      card.appendChild(footer);
 
       overlay.appendChild(card);
       document.body.appendChild(overlay);
 
-      document.getElementById('nn-update-download-btn').addEventListener('click', function(e) {
+      btn.addEventListener('click', function(e) {
         e.preventDefault();
+        var refProfile = {};
+        try { refProfile = JSON.parse(localStorage.getItem('neuronest-user-profile') || '{}'); } catch(_e) {}
+        var refParam = refProfile.referralCode ? '?ref=' + encodeURIComponent(refProfile.referralCode) : '';
         window.electronAPI.invoke('update:download', { refParam: refParam });
       });
     })();

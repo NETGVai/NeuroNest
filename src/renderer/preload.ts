@@ -5,7 +5,9 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 const SEND_CHANNELS = [
   'chat-message', 'project-create', 'project-open', 'project-delete', 'project-rename',
-  'agent-select', 'navigate', 'command-execute', 'update-agent-prompt', 'save-agent-model', 'toggle-devtools', 'save-project-file', 'save-channel-config', 'toggle-devtools', 'abort-pipeline',
+  'agent-select', 'navigate', 'command-execute', 'update-agent-prompt', 'save-agent-model', 'toggle-devtools', 'save-project-file', 'save-channel-config', 'abort-pipeline',
+  // User profile IPC (replaces executeJavaScript localStorage reads)
+  'user-profile-response',
   // Intent Gate — renderer → main
   'intent:override-request', 'intent:disambiguation-response',
   // Spec Interview Engine — renderer → main
@@ -20,8 +22,6 @@ const SEND_CHANNELS = [
   'event-log.emit',
   // Production UX — fire-and-forget agent control channels
   'agent:cancel-task', 'agent:switch-mode', 'approval:respond',
-  // Intent Gate — override request (Renderer → Main)
-  'intent:override-request',
 ];
 
 const INVOKE_CHANNELS = [
@@ -364,8 +364,6 @@ const RECEIVE_CHANNELS = [
   'spec:review',
   // Production UX — hooks execution status
   'hooks:execution-status',
-  // Intent Gate — decision broadcast (Main → Renderer)
-  'intent:decision',
   // Autocomplete status updates (Main → Renderer)
   'autocomplete:status',
   // Interactive Terminal status updates (Main → Renderer)
@@ -392,6 +390,8 @@ const RECEIVE_CHANNELS = [
   'drift:signal', 'drift:state-update',
   // Plan Mode state updates (Main → Renderer)
   'plan-mode:state-update',
+  // User profile request (Main → Renderer, response via 'user-profile-response' send channel)
+  'request-user-profile',
 ];
 
 contextBridge.exposeInMainWorld('electronAPI', {
@@ -454,4 +454,18 @@ contextBridge.exposeInMainWorld('eventBusBridge', {
   emitEvent(input: { sessionId: string; kind: string; payload: unknown }) {
     ipcRenderer.send('event-log.emit', input);
   },
+});
+
+// ─── User Profile IPC Auto-Responder ─────────────────────────────
+// When the main process needs the user profile from localStorage,
+// it sends 'request-user-profile' instead of using executeJavaScript.
+// This listener reads localStorage and sends the data back via IPC.
+ipcRenderer.on('request-user-profile', () => {
+  try {
+    const raw = localStorage.getItem('neuronest-user-profile') || '{}';
+    const profile = JSON.parse(raw);
+    ipcRenderer.send('user-profile-response', profile);
+  } catch (_e) {
+    ipcRenderer.send('user-profile-response', {});
+  }
 });

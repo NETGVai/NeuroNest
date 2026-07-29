@@ -27,6 +27,8 @@ process.stderr?.on?.('error', (err: any) => { if (err?.code === 'EPIPE') return;
 
 import { app, BrowserWindow } from 'electron';
 import * as path from 'node:path';
+import * as crypto from 'node:crypto';
+import { initAppSecrets, getAppSecretStore } from './app-secrets';
 import { restoreWindowState, persistWindowState } from './native-shell';
 import { registerIPCHandlers, notifyThemeChange, runtimeManager, activeLlmClient, initDeferredSubsystems } from './ipc';
 import { getLaunchMode } from './launch-mode';
@@ -34,8 +36,11 @@ import { startOllama, stopOllama } from './ollama-manager';
 import { stopOpenMythos } from './openmythos-manager';
 import { shutdownAgentSkillsService } from '../agent-skills/main-process-integration.js';
 import type { WindowState } from '../shared/types';
-import { hardenWindow, installCSP, getSecureWebPreferences, DEFAULT_SECURITY_POLICY } from './security/window-hardener';
-import { migrateLegacyData } from '../storage/data-directory';
+import { hardenWindow, installCSP, getSecureWebPreferences, DEFAULT_SECURITY_POLICY, generateCSPNonce, injectCSPNonceMeta } from './security/window-hardener';
+import { migrateLegacyData, getDataDirectory } from '../storage/data-directory';
+import { bootstrapGCF, shutdownGCF } from '../context/gcf-bootstrap.js';
+import { initDatabase } from '../storage/database';
+import { registerStubHandlers } from './stub-ipc';
 
 // Auth system imports
 import { CertificateManager } from './auth/certificate-manager';
@@ -47,12 +52,50 @@ import { SQLiteCredentialStore } from './auth/sqlite-credential-store';
 import { registerAuthIPC } from './auth/auth-ipc';
 import { registerSubscriptionIPC } from './subscription/subscription-ipc';
 import { validateLicenseOnStartup } from './subscription/startup-validator';
-import { initDatabase } from '../storage/database';
 import { EventLog } from '../pipeline/event-log';
 import { SessionTelemetryService } from '../session/session-telemetry';
 import { DualWriteReconciler } from '../pipeline/dual-write-reconciler';
 
 let mainWindow: BrowserWindow | null = null;
+
+// ── Inline .env Loader ──
+// Electron doesn't auto-load .env files. Parse KEY=VALUE pairs from the project
+// root .env so that secrets like BEARER_TOKEN and DATABASE_URL are available
+// before initAppSecrets() runs. Real environment variables take precedence.
+try {
+  const fs = require('node:fs');
+  const envPath = path.join(__dirname, '..', '..', '.env');
+  const envContent = fs.readFileSync(envPath, 'utf8') as string;
+  for (const line of envContent.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eqIndex = trimmed.indexOf('=');
+    if (eqIndex === -1) continue;
+    const key = trimmed.slice(0, eqIndex).trim();
+    let value = trimmed.slice(eqIndex + 1).trim();
+    // Strip surrounding quotes (single or double)
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+    // Only set if not already defined — real env vars take precedence
+    if (process.env[key] === undefined) {
+      process.env[key] = value;
+    }
+  }
+} catch {
+  // .env loading failure is non-fatal — variables may be provided via real env
+}
+
+// ── Secret Store Initialization ──
+// Load required secrets from environment variables at the very start.
+// If any required secret is missing, the application refuses to start.
+try {
+  initAppSecrets();
+} catch (err: unknown) {
+  const message = err instanceof Error ? err.message : String(err);
+  console.error(`[App] FATAL: ${message}`);
+  process.exit(1);
+}
 
 // Auth system singletons — initialized once on first GUI startup
 let certManager: CertificateManager | null = null;
@@ -85,8 +128,14 @@ function createMainWindow(): BrowserWindow {
   // Apply window hardening (navigation blocking, new-window interception)
   hardenWindow(win, DEFAULT_SECURITY_POLICY);
 
-  // Install Content-Security-Policy headers on the default session
-  installCSP();
+  // Generate per-window CSP nonce and install nonce-based CSP
+  const cspNonce = generateCSPNonce();
+  installCSP(undefined, undefined, cspNonce);
+
+  // Inject nonce into renderer via meta tag once content is loaded
+  win.webContents.once('did-finish-load', () => {
+    injectCSPNonceMeta(win, cspNonce);
+  });
 
   if (saved.isMaximized) {
     win.maximize();
@@ -153,7 +202,7 @@ function ensureAuthModules(): boolean {
         onAuthSuccess: (token: string) => {
           console.log('[App] Auth success via deep link');
           if (authSessionManager && mainWindow && !mainWindow.isDestroyed()) {
-            authSessionManager.ensureSecret().then((secret) => {
+            authSessionManager.ensureSecret().then(async (secret) => {
               const payload = authSessionManager!.validateToken(token, secret);
               const email = payload?.userId || '';
 
@@ -162,8 +211,9 @@ function ensureAuthModules(): boolean {
               let userAppId = '';
               let userDeviceId = '';
               try {
-                const authDb = require('../storage/database').initDatabase();
-                const { SQLiteCredentialStore } = require('./auth/sqlite-credential-store');
+                const { initDatabase } = await import('../storage/database');
+                const authDb = initDatabase();
+                const { SQLiteCredentialStore } = await import('./auth/sqlite-credential-store');
                 const store = new SQLiteCredentialStore(authDb);
                 const profile = store.getUserProfile(email);
                 console.log('[App] Profile lookup for', email, ':', profile ? `${profile.firstName} ${profile.lastName}` : 'not found');
@@ -309,8 +359,8 @@ app.whenReady().then(async () => {
   const mode = getLaunchMode();
 
   if (mode === 'cli') {
-    const { createCLIRenderer } = require('../cli/cli-renderer');
-    const { runREPL } = require('../cli/index');
+    const { createCLIRenderer } = await import('../cli/cli-renderer');
+    const { runREPL } = await import('../cli/index');
     const renderer = createCLIRenderer();
     process.on('SIGINT', () => {
       renderer.close();
@@ -328,7 +378,7 @@ app.whenReady().then(async () => {
   // ERR_PACKAGE_PATH_NOT_EXPORTED). Fail-soft: on any load error the F10
   // surfaces simply keep emitting their pre-existing JSON encoding.
   try {
-    const { initGcf } = require('../serializers/gcf-encoder.js');
+    const { initGcf } = await import('../serializers/gcf-encoder.js');
     await initGcf();
   } catch (e) {
     console.warn('[App] GCF wire-format init skipped (F10 falls back to JSON):', e);
@@ -336,7 +386,7 @@ app.whenReady().then(async () => {
 
   // Initialize runtime protection (production only)
   try {
-    const { RuntimeProtection } = require('../security/runtime-protection.js');
+    const { RuntimeProtection } = await import('../security/runtime-protection.js');
     const runtimeProtection = new RuntimeProtection();
     runtimeProtection.initialize(mainWindow);
   } catch (e) {
@@ -345,7 +395,7 @@ app.whenReady().then(async () => {
 
   // Initialize secure communication (certificate pinning)
   try {
-    const { setupCertificatePinning } = require('../security/secure-communication.js');
+    const { setupCertificatePinning } = await import('../security/secure-communication.js');
     setupCertificatePinning();
   } catch (e) {
     console.warn('[App] Certificate pinning init skipped:', e);
@@ -382,6 +432,56 @@ app.whenReady().then(async () => {
 
   registerIPCHandlers({ mainWindow });
 
+  // ── Stub IPC Handlers ──
+  // Register placeholder handlers for all declared-but-unimplemented IPC channels.
+  // Must happen after registerIPCHandlers() so we don't collide with real handlers,
+  // but before the renderer loads so invocations never hit "No handler registered".
+  registerStubHandlers([
+    'personas:update',
+    'personas:preview',
+    'personas:activate',
+    'plan-mode:get-state',
+    'plan-mode:toggle',
+    'focus-mode:toggle',
+    'voice:start-capture',
+    'voice:stop-capture',
+    'voice:status',
+    'i18n:set-locale',
+    'i18n:get-locale',
+    'i18n:available-locales',
+  ]);
+
+  // ── GCF System Bootstrap ──
+  // Wire the Global Context Framework into the application startup.
+  // Must happen after registerIPCHandlers() completes so that core IPC is ready.
+  // Graceful degradation: if bootstrap throws, log and continue without GCF.
+  // Startup guard: if this code path is somehow skipped, terminate with an error.
+  let gcfBootstrapAttempted = false;
+  // gcfSystem is used by subsequent startup tasks (agent pipeline integration, task 13.x)
+  let gcfSystem: import('../context/gcf-bootstrap.js').GCFSystem | null = null;
+  try {
+    gcfBootstrapAttempted = true;
+    gcfSystem = await bootstrapGCF({
+      db: initDatabase(),
+      projectDir: getDataDirectory(),
+      sessionId: crypto.randomUUID(),
+      mainWindow,
+    });
+    console.log('[App] GCF system bootstrapped successfully');
+  } catch (err) {
+    console.error('[App] GCF bootstrap failed (graceful degradation):', err);
+  }
+
+  // Startup guard: if bootstrapGCF was never attempted (code path bug), terminate.
+  if (!gcfBootstrapAttempted) {
+    console.error('[App] FATAL: GCF bootstrap was never called — startup code path error');
+    process.exit(1);
+  }
+
+  // Expose gcfSystem for use in later startup tasks (agent pipeline integration).
+  // It is intentionally retained in scope even if not immediately consumed.
+  void gcfSystem;
+
   // NOW load the renderer — all IPC handlers are registered and ready
   mainWindow.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
 
@@ -398,12 +498,12 @@ app.whenReady().then(async () => {
 
   // Non-blocking startup license validation (Req 7.1, 7.4)
   // Wait for page to load so localStorage is accessible, then validate license
-  mainWindow.webContents.once('did-finish-load', () => {
+  mainWindow.webContents.once('did-finish-load', async () => {
     if (!mainWindow || mainWindow.isDestroyed()) return;
 
     // Initialize auto-updater (electron-updater) — checks GitHub releases / configured publish target
     try {
-      const { initAutoUpdater } = require('./auto-updater');
+      const { initAutoUpdater } = await import('./auto-updater');
       initAutoUpdater(mainWindow);
     } catch (err: any) {
       console.warn('[App] Auto-updater init failed (non-fatal):', err.message);
@@ -417,8 +517,11 @@ app.whenReady().then(async () => {
     }).catch(() => {});
 
     mainWindow.webContents
-      .executeJavaScript(`JSON.parse(localStorage.getItem('neuronest-user-profile') || '{}')`)
-      .then((profile: { licenseKey?: string; appId?: string; subscriptionId?: string; invitationCode?: string }) => {
+      .send('request-user-profile');
+
+    // Listen for the profile response from the renderer via IPC (replaces executeJavaScript localStorage read)
+    const { ipcMain: ipcMainProfile } = require('electron');
+    ipcMainProfile.once('user-profile-response', async (_event: any, profile: { licenseKey?: string; appId?: string; subscriptionId?: string; invitationCode?: string }) => {
         if (!mainWindow || mainWindow.isDestroyed()) return;
 
         // For Stripe subscription users: validate via payments API
@@ -433,15 +536,14 @@ app.whenReady().then(async () => {
         if (profile.licenseKey) {
           // Get the stored invitation code to look up the plan
           const { ipcMain } = require('electron');
-          const { initDatabase } = require('../storage/database');
+          const { initDatabase } = await import('../storage/database');
           try {
             const db2 = initDatabase();
             const row = db2.prepare("SELECT value FROM config WHERE key = 'license:invitationCode'").get() as any;
             const inviteCode = row?.value || '';
             if (inviteCode) {
-              const crypto = require('node:crypto');
               const os = require('node:os');
-              const bearerToken = 'nn_sk_NxZu2pUJ7AGbe5MOLEdf7yq0hYvie0aIeZfmxm7f';
+              const bearerToken = getAppSecretStore().get('BEARER_TOKEN');
               const plat = os.platform() === 'darwin' ? (os.arch() === 'arm64' ? 'macos-arm64' : 'macos-intel') : os.platform() === 'win32' ? (os.arch() === 'arm64' ? 'windows-arm64' : 'windows-x64') : (os.arch() === 'arm64' ? 'linux-arm64' : 'linux-x64');
               const ver = app.getVersion() || '0.0.0';
               fetch(`https://neuronest.cc/api/service/keys/${encodeURIComponent(inviteCode)}?platform=${encodeURIComponent(plat)}&version=${encodeURIComponent(ver)}`, {
@@ -479,7 +581,7 @@ app.whenReady().then(async () => {
 
           // Start periodic heartbeat (every 30 minutes, fire-and-forget)
           try {
-            const { LicenseManager } = require('./license/license-manager');
+            const { LicenseManager } = await import('./license/license-manager');
             const heartbeatDb = initDatabase();
             const heartbeatMgr = new LicenseManager({ db: heartbeatDb });
             // Initial heartbeat after 60 seconds
@@ -490,15 +592,12 @@ app.whenReady().then(async () => {
             console.warn('[App] Heartbeat setup failed (non-fatal):', hbErr);
           }
         }
-      })
-      .catch((err: unknown) => {
-        console.error('[App] Failed to read user profile for license validation (non-fatal):', err);
-      });
+    });
   });
 
   // Initialize Agent Skills service
   try {
-    const { initializeAgentSkillsInMainProcess } = require('../agent-skills/main-process-integration');
+    const { initializeAgentSkillsInMainProcess } = await import('../agent-skills/main-process-integration');
     initializeAgentSkillsInMainProcess().then(() => {
       console.log('[App] Agent Skills service initialized');
     }).catch((error: any) => {
@@ -536,7 +635,7 @@ app.whenReady().then(async () => {
     }
   });
 
-  app.on('activate', () => {
+  app.on('activate', async () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       mainWindow = createMainWindow();
       registerIPCHandlers({ mainWindow });
@@ -554,7 +653,7 @@ app.whenReady().then(async () => {
 
       // Initialize Agent Skills service
       try {
-        const { initializeAgentSkillsInMainProcess } = require('../agent-skills/main-process-integration');
+        const { initializeAgentSkillsInMainProcess } = await import('../agent-skills/main-process-integration');
         initializeAgentSkillsInMainProcess().then(() => {
           console.log('[App] Agent Skills service initialized on activate');
         }).catch((error: any) => {
@@ -571,7 +670,7 @@ app.on('window-all-closed', async () => {
   stopOllama();
   stopOpenMythos();
   await shutdownAgentSkillsService();
-  try { require('../channels/channel-manager'); } catch {}
+  try { await import('../channels/channel-manager'); } catch {}
 
   // Abort any active LLM streaming client (Req 9.3)
   try {
@@ -603,6 +702,14 @@ app.on('window-all-closed', async () => {
     }
   } catch (err) {
     console.error('[App] Runtime shutdown error (non-fatal):', err);
+  }
+
+  // Graceful GCF shutdown: flush state and release resources
+  try {
+    await shutdownGCF();
+    console.log('[App] GCF system shut down');
+  } catch (err) {
+    console.error('[App] GCF shutdown error (non-fatal):', err);
   }
 
   app.quit();

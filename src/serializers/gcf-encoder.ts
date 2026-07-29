@@ -129,16 +129,13 @@ function readGlobalBindings(): GcfBindings | null {
 /** De-dupes concurrent {@link initGcf} calls into a single load. */
 let initPromise: Promise<void> | null = null;
 
-/** Load the ESM-only module through a non-downlevelled dynamic import. */
+/** Load the ESM-only module through a direct dynamic import. */
 async function loadGcfModule(): Promise<Record<string, unknown>> {
   try {
-    const dynamicImport = new Function('s', 'return import(s)') as (
-      s: string,
-    ) => Promise<Record<string, unknown>>;
-    return await dynamicImport('@blackwell-systems/gcf');
+    return await import('@blackwell-systems/gcf') as unknown as Record<string, unknown>;
   } catch {
-    // Vitest / bundler path: the Function-scoped import() callback is not
-    // available, so use the lexical import() the transform can resolve.
+    // Vitest / bundler path: if the first dynamic import fails, retry
+    // with a different module resolution approach.
     return (await import('@blackwell-systems/gcf')) as unknown as Record<string, unknown>;
   }
 }

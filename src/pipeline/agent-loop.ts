@@ -76,6 +76,7 @@ import type { RepairAgent, VerificationRunner, RepairFeedback, SelfHealingConfig
 import { attemptDeterministicFix } from './deterministic-escalation.js';
 import type { AgentEdit, ProjectContext } from './verification-gate/types.js';
 import { DiffRiskScorer } from './diff-risk-scorer.js';
+import type { GCFAgentIntegration } from '../context/gcf-agent-integration.js';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 
@@ -220,6 +221,8 @@ export interface AgentLoopConfig {
   codeQualityDirectives?: CodeQualityDirectives;
   /** Action-first behavior directives (Req 2.1, 2.2, 2.4). Uses defaults when omitted. */
   actionFirstDirectives?: ActionFirstDirectives;
+  /** Optional GCF Agent Integration for prompt enrichment and response validation (Req 15.1, 15.2, 15.3) */
+  agentIntegration?: GCFAgentIntegration;
 }
 
 /** Progress update emitted on each iteration */
@@ -1171,6 +1174,7 @@ export class AgentLoopController {
     // Modules 3, 4, 6, 7, 8, 12 are wired here on the phased/startup path.
     if (PERF_FLAGS.PRODUCTION_UX_MINIMALISM) {
       try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
         const { wireMinimalismDependencyCheck } = require('../orchestration/lean-minimalism-wiring.js');
         wireMinimalismDependencyCheck();
       } catch {
@@ -1201,6 +1205,7 @@ export class AgentLoopController {
    */
   private resolveP5SweepDb(): import('better-sqlite3').Database | null {
     try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
       const { initDatabase } = require('../storage/database.js');
       return initDatabase();
     } catch {
@@ -1762,7 +1767,7 @@ export class AgentLoopController {
     // Supplies phase constraints and dependency ordering to the PhasedPipeline.
     let orchestrationConstraints: any = null;
     try {
-      const { wireEnhancedOrchestrationConstraints } = require('../orchestration/lean-minimalism-wiring.js');
+      const { wireEnhancedOrchestrationConstraints } = await import('../orchestration/lean-minimalism-wiring.js');
       orchestrationConstraints = wireEnhancedOrchestrationConstraints();
     } catch {
       // Non-fatal: pipeline proceeds without constraints
@@ -1773,7 +1778,7 @@ export class AgentLoopController {
     // by quality-workers-service, so wiring the service implies testgaps-worker is reachable.
     let qualityWorkers: any = null;
     try {
-      const { wireQualityWorkersService, wireTestGapsWorker } = require('../orchestration/lean-minimalism-wiring.js');
+      const { wireQualityWorkersService, wireTestGapsWorker } = await import('../orchestration/lean-minimalism-wiring.js');
       // Ensure testgaps-worker is loadable (validates its live caller chain)
       wireTestGapsWorker();
       qualityWorkers = wireQualityWorkersService({
@@ -1793,7 +1798,7 @@ export class AgentLoopController {
     // Adaptive replanning from current state on subtask failure.
     let adaptiveReplanner: any = null;
     try {
-      const { wireAdaptiveReplanner } = require('../orchestration/lean-minimalism-wiring.js');
+      const { wireAdaptiveReplanner } = await import('../orchestration/lean-minimalism-wiring.js');
       adaptiveReplanner = wireAdaptiveReplanner();
     } catch {
       // Non-fatal: pipeline proceeds without replanning
@@ -2565,6 +2570,30 @@ export class AgentLoopController {
       { role: 'user', content: processedMessage },
     ];
 
+    // ─── GCF Agent Integration: enrich prompt before LLM calls (Req 15.1, 15.2) ───
+    if (this.config.agentIntegration) {
+      try {
+        const enrichmentResult = await this.config.agentIntegration.enrichPrompt(
+          processedMessage,
+          { exchangeCount: 0, tokenBudget: 128_000 },
+        );
+        // Append enriched context to the system prompt if enrichment produced content
+        if (enrichmentResult.enrichedPrompt && enrichmentResult.enrichedPrompt.injectedContext) {
+          messages[0] = {
+            role: 'system',
+            content: systemPrompt + '\n\n## Enriched Context\n' + enrichmentResult.enrichedPrompt.injectedContext,
+          };
+        }
+      } catch (enrichErr) {
+        // Graceful degradation (Req 15.4): if enrichment fails, proceed without it
+        try {
+          console.warn('[AgentLoop] GCF prompt enrichment failed (graceful degradation):', enrichErr);
+        } catch {
+          // Double-fault protection (Req 15.5): if even logging fails, silently continue
+        }
+      }
+    }
+
     // Track state
     let iteration = 0;
     let toolCallsExecuted = 0;
@@ -2818,18 +2847,41 @@ export class AgentLoopController {
           artifactIds.push(storedArtifactId);
         }
 
+        // ─── GCF Agent Integration: validate response before presenting to user (Req 15.3) ───
+        let finalResponseContent = response.content || '';
+        if (this.config.agentIntegration && finalResponseContent) {
+          try {
+            const validationResult = await this.config.agentIntegration.validateResponse(
+              finalResponseContent,
+              [], // File targets are extracted by the validator from the response content
+              processedMessage,
+            );
+            // If validation produced a corrected response, use it
+            if (validationResult.correction?.response) {
+              finalResponseContent = validationResult.correction.response;
+            }
+          } catch (validateErr) {
+            // Graceful degradation (Req 15.4): if validation fails, proceed with raw response
+            try {
+              console.warn('[AgentLoop] GCF response validation failed (graceful degradation):', validateErr);
+            } catch {
+              // Double-fault protection (Req 15.5): if even logging fails, silently continue
+            }
+          }
+        }
+
         // ─── Execution Trace: complete trace on finish (Req 14.1) ───
         if (executionTraceService && traceId) {
           executionTraceService.addEntry(traceId, {
             timestamp: new Date().toISOString(),
             type: 'result',
-            result: { response: (response.content || '').slice(0, 500), toolCallsExecuted },
+            result: { response: finalResponseContent.slice(0, 500), toolCallsExecuted },
           });
           await executionTraceService.completeTrace(traceId);
         }
 
         return {
-          response: response.content || '',
+          response: finalResponseContent,
           toolCallsExecuted,
           iterations: iteration,
           tokenUsage,

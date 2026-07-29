@@ -30,6 +30,7 @@ import {
 } from './sqlite-optimizer.js';
 import { PerformanceMonitor } from './performance-monitor.js';
 import { DatabaseRecoveryManager } from './database-recovery.js';
+import { validateTableName } from './sql-allowlist.js';
 import { logger } from '../utils/logger.js';
 import type Database from 'better-sqlite3';
 
@@ -178,7 +179,11 @@ async function runStartupHealthCheck(database: Database.Database): Promise<void>
   const requiredTables = ['skills', 'agent_skill_assignments', 'skill_events'];
   for (const table of requiredTables) {
     try {
-      database.prepare(`SELECT COUNT(*) as cnt FROM ${table}`).get();
+      if (!validateTableName(table)) {
+        issues.push(`Table '${table}' is not in the allowed tables list`);
+        continue;
+      }
+      database.prepare(`SELECT COUNT(*) as cnt FROM "${table}"`).get();
     } catch (error) {
       issues.push(`Table '${table}' not accessible: ${error instanceof Error ? error.message : String(error)}`);
     }

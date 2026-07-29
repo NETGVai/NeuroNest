@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { logger } from '../utils/logger.js';
 import { RecoveryResult } from './error-handler.js';
+import { validateTableName } from './sql-allowlist.js';
 
 /**
  * SQLite Database Recovery Manager
@@ -234,6 +235,10 @@ export class DatabaseRecoveryManager {
 
       for (const table of tables) {
         try {
+          if (!validateTableName(table.name)) {
+            // Skip tables not in the allowlist (e.g., sqlite internal tables)
+            continue;
+          }
           this.db.exec(`REINDEX "${table.name}"`);
         } catch (_reindexErr) {
           // Continue with other tables

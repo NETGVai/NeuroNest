@@ -59,6 +59,7 @@ import * as rememberedGrants from './migrations/054-remembered-grants.js';
 import * as hookDefinitionsV2 from './migrations/055-hook-definitions-v2.js';
 import * as crossSessionMemory from './migrations/056-cross-session-memory.js';
 import * as dispatchSource from './migrations/057-dispatch-source.js';
+import * as gcfContext from './migrations/058-gcf-context.js';
 
 export interface Migration {
   version: number;
@@ -66,7 +67,7 @@ export interface Migration {
   up: (db: Database.Database) => void;
 }
 
-const migrations: Migration[] = [initialSchema, skillsSchema, multicaIntegration, agentSkillsIntegration, costRecords, securityScans, longTermMemory, sandboxSessions, mcpServers, memoryFts, diffReview, multiSession, extensions, newFeatures, plandexFeatures, advancedFeatures, remainingFeatures, gooseFeatures, sentruxFeatures, sreFeatures, helmorFeatures, factoryFeatures, coderFeatures, groundingAudit, incrementalIndexing, chatMessagesOverflow, runtimeSandboxGuardrails, errorSizeSamples, pipelineEvents, metricSamples, errorSizeSamplesBackfill, specMessageMode, secretsV2, multiChatSessions, agentLoopMetrics, featureIntegration, traceProvenanceColumns, neuronestEnhanced, productionUxAudit, unifiedIntentGate, loopStorage, accessibilityFriction, semanticIndex, worktreeSessions, codeReviews, backgroundProcesses, networkPolicyLog, sessionExports, pluginSystem, adoptionMetrics, mcpMarketplace, diffTurns, featureGateStore, rememberedGrants, hookDefinitionsV2, crossSessionMemory, dispatchSource];
+const migrations: Migration[] = [initialSchema, skillsSchema, multicaIntegration, agentSkillsIntegration, costRecords, securityScans, longTermMemory, sandboxSessions, mcpServers, memoryFts, diffReview, multiSession, extensions, newFeatures, plandexFeatures, advancedFeatures, remainingFeatures, gooseFeatures, sentruxFeatures, sreFeatures, helmorFeatures, factoryFeatures, coderFeatures, groundingAudit, incrementalIndexing, chatMessagesOverflow, runtimeSandboxGuardrails, errorSizeSamples, pipelineEvents, metricSamples, errorSizeSamplesBackfill, specMessageMode, secretsV2, multiChatSessions, agentLoopMetrics, featureIntegration, traceProvenanceColumns, neuronestEnhanced, productionUxAudit, unifiedIntentGate, loopStorage, accessibilityFriction, semanticIndex, worktreeSessions, codeReviews, backgroundProcesses, networkPolicyLog, sessionExports, pluginSystem, adoptionMetrics, mcpMarketplace, diffTurns, featureGateStore, rememberedGrants, hookDefinitionsV2, crossSessionMemory, dispatchSource, gcfContext];
 
 /**
  * Validates the migration registry is contiguous (versions 1..N) and the

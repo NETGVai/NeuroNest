@@ -16,7 +16,7 @@
  * Requirements: 4.1, 4.2, 4.5
  */
 
-import { execSync } from 'node:child_process';
+import { safeExecFileSync } from '../security/safe-exec.js';
 import { randomUUID } from 'node:crypto';
 
 // ─── Types ──────────────────────────────────────────────────────
@@ -218,12 +218,11 @@ Respond in JSON format:
  */
 export function getDiffFromStaged(cwd: string): string {
   try {
-    return execSync('git diff --cached', {
+    const result = safeExecFileSync('git', ['diff', '--cached'], {
       cwd,
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
       timeout: 30_000,
     });
+    return result.stdout;
   } catch {
     return '';
   }
@@ -235,12 +234,11 @@ export function getDiffFromStaged(cwd: string): string {
  */
 export function getDiffFromWorktree(cwd: string, worktreeBranch: string, baseBranch: string = 'main'): string {
   try {
-    return execSync(`git diff ${baseBranch}...${worktreeBranch}`, {
+    const result = safeExecFileSync('git', ['diff', `${baseBranch}...${worktreeBranch}`], {
       cwd,
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
       timeout: 30_000,
     });
+    return result.stdout;
   } catch {
     return '';
   }

@@ -51,6 +51,7 @@ function getDb(): Database.Database | null {
   try {
     // Lazy require so this module remains importable in environments without
     // better-sqlite3 (e.g. renderer-side bundles) — the require fails gracefully.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const dbModule = require('../storage/database.js');
     if (typeof dbModule.initDatabase !== 'function') {
       cachedDb = null;

@@ -16,7 +16,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { execSync } from 'node:child_process';
+import { safeExecFileSync } from '../security/safe-exec.js';
 import type Database from 'better-sqlite3';
 import type { FeatureGateSystem } from '../feature-gate/feature-gate-system.js';
 import type { CallbackEngine } from '../pipeline/callback-engine.js';
@@ -290,12 +290,11 @@ export class DiffReviewSystem implements IDiffReviewSystem {
   private parseGitDiff(): DiffHunk[] {
     let diffOutput: string;
     try {
-      diffOutput = execSync(`git diff -U${this.contextLines}`, {
+      const result = safeExecFileSync('git', ['diff', `-U${this.contextLines}`], {
         cwd: this.cwd,
-        encoding: 'utf-8',
-        stdio: ['pipe', 'pipe', 'pipe'],
         timeout: 30_000,
       });
+      diffOutput = result.stdout;
     } catch {
       // No diff available or git not initialized
       return [];
@@ -408,12 +407,11 @@ export class DiffReviewSystem implements IDiffReviewSystem {
 
     for (const filePath of uniqueFiles) {
       try {
-        const output = execSync(`wc -l < "${filePath}"`, {
+        const wcResult = safeExecFileSync('wc', ['-l', filePath], {
           cwd: this.cwd,
-          encoding: 'utf-8',
-          stdio: ['pipe', 'pipe', 'pipe'],
           timeout: 5_000,
-        }).trim();
+        });
+        const output = wcResult.stdout.trim();
         const count = parseInt(output, 10);
         result.set(filePath, isNaN(count) ? null : count);
       } catch {

@@ -255,7 +255,7 @@ export class SmartModelRouter {
   async detectTaskTypeLLM(prompt: string, llmClient?: any, agentRole?: string): Promise<TaskType> {
     if (llmClient) {
       try {
-        const { classifyTaskType } = require('./llm-decision-engine');
+        const { classifyTaskType } = await import('./llm-decision-engine');
         const result = await classifyTaskType(prompt, llmClient);
         if (result) {
           // Map LLM decision engine types to smart-router types

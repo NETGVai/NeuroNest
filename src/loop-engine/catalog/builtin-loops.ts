@@ -41,11 +41,11 @@ export const TYPE_CLEAN_LOOP: LoopSpec = {
   name: 'Type-clean',
   useWhen: 'TypeScript compilation reports type errors that need fixing',
   goal: 'Fix all TypeScript type errors',
-  passAction: 'Identify and fix TypeScript type errors reported by tsc --noEmit',
+  passAction: 'Identify and fix TypeScript type errors reported by the TypeScript compiler',
   verify: [
     {
       type: 'command',
-      command: 'npx tsc --noEmit',
+      command: './node_modules/.bin/tsc --noEmit',
       expectedExitCode: 0,
     },
   ],

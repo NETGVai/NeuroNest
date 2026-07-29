@@ -1,5 +1,6 @@
 import { logger } from '../utils/logger.js';
 import Database from 'better-sqlite3';
+import { validateTableName } from './sql-allowlist.js';
 
 /**
  * Comprehensive Error Handler for Agent Skills Integration
@@ -215,7 +216,11 @@ export class AgentSkillsErrorHandler {
         
         for (const table of tables) {
           try {
-            database.exec(`REINDEX ${table.name}`);
+            if (!validateTableName(table.name)) {
+              logger.debug(`Skipping reindex for unrecognized table: ${table.name}`);
+              continue;
+            }
+            database.exec(`REINDEX "${table.name}"`);
             logger.debug(`Reindexed table: ${table.name}`);
           } catch (reindexError) {
             logger.warn(`Failed to reindex table ${table.name}`, { 

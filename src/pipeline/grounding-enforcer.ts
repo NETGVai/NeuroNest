@@ -337,7 +337,7 @@ export class GroundingEnforcer {
   async isCreativeTaskLLM(taskDescription: string, llmClient?: any): Promise<boolean> {
     if (llmClient) {
       try {
-        const { classifyCreativeTask } = require('./llm-decision-engine');
+        const { classifyCreativeTask } = await import('./llm-decision-engine');
         const result = await classifyCreativeTask(taskDescription, llmClient);
         if (result) {
           console.log('[GroundingEnforcer] LLM creative task classification:', result.isCreative, '—', result.reasoning);

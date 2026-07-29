@@ -28,7 +28,7 @@ export async function generateSuggestionsWithLLM(
 ): Promise<Suggestion[]> {
   if (llmClient) {
     try {
-      const { generateSmartSuggestions } = require('./llm-decision-engine');
+      const { generateSmartSuggestions } = await import('./llm-decision-engine');
       const result = await generateSmartSuggestions(lastResponse, lastUserMessage, llmClient);
       if (result && result.suggestions.length > 0) {
         return result.suggestions.map((s: any, i: number) => ({

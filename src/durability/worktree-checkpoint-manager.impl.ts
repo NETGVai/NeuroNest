@@ -9,7 +9,7 @@
  */
 
 import type Database from 'better-sqlite3';
-import { execSync } from 'node:child_process';
+import { safeExecFileSync } from '../security/safe-exec.js';
 import { randomUUID } from 'node:crypto';
 
 import type { CheckpointConfig } from './checkpoint-service.js';
@@ -274,12 +274,12 @@ export class WorktreeCheckpointManager implements IWorktreeCheckpointManager {
    * Execute a git command and return trimmed stdout.
    */
   private execGit(command: string): string {
-    return execSync(`git ${command}`, {
+    const args = command.split(/\s+/);
+    const result = safeExecFileSync('git', args, {
       cwd: this.cwd,
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
       timeout: 30_000,
-    }).trim();
+    });
+    return result.stdout.trim();
   }
 
   /**

@@ -319,7 +319,7 @@ export async function routeTaskWithLLM(
 ): Promise<RouteResult> {
   if (llmClient) {
     try {
-      const { matchSkillWithLLM } = require('../pipeline/llm-decision-engine');
+      const { matchSkillWithLLM } = await import('../pipeline/llm-decision-engine');
       const skills = registry.list({ enabled: true, projectId: context.projectId });
       if (skills.length > 0) {
         const skillSummaries = skills.slice(0, 20).map(s => ({

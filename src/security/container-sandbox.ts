@@ -9,7 +9,8 @@
  * Requirements: 18.1, 18.2, 18.3, 18.4, 18.5, 18.6, 18.7
  */
 
-import { spawn, execSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import * as crypto from 'node:crypto';
 
 // ─── Interfaces ─────────────────────────────────────────────────
@@ -172,7 +173,7 @@ export class ContainerSandbox {
     this.activeContainers.delete(containerId);
 
     try {
-      execSync(`${this.runtime} rm -f ${containerId}`, {
+      execFileSync(this.runtime, ['rm', '-f', containerId], {
         stdio: 'ignore',
         timeout: 10_000,
       });
@@ -332,7 +333,7 @@ export class ContainerSandbox {
    */
   private killContainer(containerId: string): void {
     try {
-      execSync(`${this.runtime} kill ${containerId}`, {
+      execFileSync(this.runtime, ['kill', containerId], {
         stdio: 'ignore',
         timeout: 5_000,
       });
@@ -437,7 +438,7 @@ export function detectContainerRuntime(): ContainerRuntime {
  */
 function isToolAvailable(tool: string): boolean {
   try {
-    execSync(`which ${tool}`, { stdio: 'ignore', timeout: 5_000 });
+    execFileSync('which', [tool], { stdio: 'ignore', timeout: 5_000 });
     return true;
   } catch {
     return false;

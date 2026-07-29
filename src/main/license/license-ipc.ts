@@ -14,6 +14,7 @@
 import { ipcMain } from 'electron';
 import Database from 'better-sqlite3';
 import { LicenseManager } from './license-manager';
+import { getAppSecretStore } from '../app-secrets';
 
 /**
  * Register all license-related IPC handlers.
@@ -167,7 +168,7 @@ export function registerLicenseIPC(db: Database.Database): void {
     try {
       const response = await fetch('https://neuronest.cc/api/invite/send', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${(manager as any).constructor.name ? 'nn_sk_NxZu2pUJ7AGbe5MOLEdf7yq0hYvie0aIeZfmxm7f' : ''}` },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${getAppSecretStore().get('BEARER_TOKEN')}` },
         body: JSON.stringify({
           senderRefCode: args.senderRefCode,
           senderEmail: args.senderEmail,
@@ -190,7 +191,7 @@ export function registerLicenseIPC(db: Database.Database): void {
     try {
       const response = await fetch(`https://neuronest.cc/api/referral/stats?code=${encodeURIComponent(args.code)}`, {
         method: 'GET',
-        headers: { Authorization: `Bearer nn_sk_NxZu2pUJ7AGbe5MOLEdf7yq0hYvie0aIeZfmxm7f` },
+        headers: { Authorization: `Bearer ${getAppSecretStore().get('BEARER_TOKEN')}` },
       });
       const data = await response.json();
       if (!response.ok) return { error: data.error || `HTTP ${response.status}` };
@@ -233,7 +234,7 @@ export function registerLicenseIPC(db: Database.Database): void {
         method: 'DELETE',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer nn_sk_NxZu2pUJ7AGbe5MOLEdf7yq0hYvie0aIeZfmxm7f`,
+          Authorization: `Bearer ${getAppSecretStore().get('BEARER_TOKEN')}`,
         },
         body: JSON.stringify({ email: args.email }),
       });

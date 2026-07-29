@@ -19,8 +19,12 @@
  * 11. adr-connector → WIRE (always on, live caller from indexing pipeline)
  * 12. minimalism-dependency-check → PRODUCTION_UX_MINIMALISM
  *
+ * NOTE: Internal require() calls are used for synchronous lazy-loading of
+ * flag-gated sub-modules. Callers import this module via dynamic import().
+ *
  * Requirements: 12.1, 12.2, 12.3, 12.5, 12.6, 12.8
  */
+/* eslint-disable @typescript-eslint/no-require-imports */
 
 import { PERF_FLAGS } from '../main/performance/feature-flags.js';
 

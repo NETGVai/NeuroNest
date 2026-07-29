@@ -14,9 +14,9 @@
  * Requirements: 7.1, 7.2, 7.3, 7.4, 7.6, 7.7
  */
 
-import { execSync } from 'node:child_process';
 import { readFileSync, existsSync } from 'node:fs';
 import { join, basename } from 'node:path';
+import { safeExecFileSync } from '../security/safe-exec.js';
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -187,13 +187,14 @@ const TYPE_DETECTION_PATTERNS: Array<{ type: CommitType; patterns: RegExp[] }> =
 // ─── Default Git Client ─────────────────────────────────────────
 
 /**
- * Default git client using child_process execSync.
+ * Default git client using safeExecFileSync.
  * Provides a thin wrapper around git commands for testability.
  */
 export class DefaultGitClient implements GitClient {
   getStagedDiff(cwd: string): string {
     try {
-      return execSync('git diff --cached', { cwd, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 });
+      const result = safeExecFileSync('git', ['diff', '--cached'], { cwd });
+      return result.stdout;
     } catch {
       return '';
     }
@@ -201,7 +202,8 @@ export class DefaultGitClient implements GitClient {
 
   getStagedDiffStat(cwd: string): string {
     try {
-      return execSync('git diff --cached --stat', { cwd, encoding: 'utf-8' });
+      const result = safeExecFileSync('git', ['diff', '--cached', '--stat'], { cwd });
+      return result.stdout;
     } catch {
       return '';
     }
@@ -209,8 +211,8 @@ export class DefaultGitClient implements GitClient {
 
   getStagedFiles(cwd: string): Array<{ status: string; path: string }> {
     try {
-      const output = execSync('git diff --cached --name-status', { cwd, encoding: 'utf-8' });
-      return output
+      const result = safeExecFileSync('git', ['diff', '--cached', '--name-status'], { cwd });
+      return result.stdout
         .trim()
         .split('\n')
         .filter(line => line.length > 0)

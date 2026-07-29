@@ -12,6 +12,7 @@ import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
+import { getAppSecretStore } from '../app-secrets';
 
 // ---------------------------------------------------------------------------
 // Types & Interfaces
@@ -59,7 +60,11 @@ export interface LicenseManagerDeps {
 const INVITATION_CODE_REGEX = /^PQC-[A-Z0-9]{8}-[A-Z0-9]{8}$/;
 
 const API_BASE_URL = 'https://neuronest.cc';
-const API_BEARER_TOKEN = 'nn_sk_NxZu2pUJ7AGbe5MOLEdf7yq0hYvie0aIeZfmxm7f';
+
+/** Retrieves the bearer token from the application secret store. */
+function getApiBearerToken(): string {
+  return getAppSecretStore().get('BEARER_TOKEN');
+}
 
 /**
  * Get the platform string for API requests.
@@ -293,7 +298,7 @@ export class LicenseManager {
       response = await fetch(`${API_BASE_URL}/api/service/keys/${encodeURIComponent(code)}?platform=${encodeURIComponent(getPlatformString())}&version=${encodeURIComponent(getAppVersion())}`, {
         method: 'GET',
         headers: {
-          Authorization: `Bearer ${API_BEARER_TOKEN}`,
+          Authorization: `Bearer ${getApiBearerToken()}`,
         },
       });
     } catch (err: unknown) {
@@ -427,7 +432,7 @@ export class LicenseManager {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${API_BEARER_TOKEN}`,
+          Authorization: `Bearer ${getApiBearerToken()}`,
         },
         body: JSON.stringify({ email, hwid, algorithm, features }),
       });
@@ -553,7 +558,7 @@ export class LicenseManager {
           method: 'PATCH',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${API_BEARER_TOKEN}`,
+            Authorization: `Bearer ${getApiBearerToken()}`,
           },
           body: JSON.stringify(body),
         }
@@ -619,7 +624,7 @@ export class LicenseManager {
           method: 'PATCH',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${API_BEARER_TOKEN}`,
+            Authorization: `Bearer ${getApiBearerToken()}`,
           },
           body: JSON.stringify({ hwid, features }),
         }
@@ -668,7 +673,7 @@ export class LicenseManager {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${API_BEARER_TOKEN}`,
+          Authorization: `Bearer ${getApiBearerToken()}`,
         },
         body: JSON.stringify({ code: stored.invitationCode, platform: getPlatformString(), version: getAppVersion() }),
       });
@@ -727,7 +732,7 @@ export class LicenseManager {
       try {
         const checkResp = await fetch(`${API_BASE_URL}/api/service/keys/${encodeURIComponent(stored.invitationCode)}?platform=${encodeURIComponent(getPlatformString())}&version=${encodeURIComponent(getAppVersion())}`, {
           method: 'GET',
-          headers: { Authorization: `Bearer ${API_BEARER_TOKEN}` },
+          headers: { Authorization: `Bearer ${getApiBearerToken()}` },
         });
         if (checkResp.ok) {
           const checkData = await checkResp.json() as Record<string, unknown>;
@@ -766,7 +771,7 @@ export class LicenseManager {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${API_BEARER_TOKEN}`,
+          Authorization: `Bearer ${getApiBearerToken()}`,
         },
         body: JSON.stringify({
           code: stored.invitationCode,

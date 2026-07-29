@@ -1,7 +1,6 @@
 /**
  * Built-in slash commands — wired to NeuroNest subsystems.
  */
-/* eslint-disable @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires */
 import type { CommandDefinition, CommandContext, CommandResult } from '../command-system';
 
 function ok(output: string): CommandResult { return { success: true, output }; }
@@ -52,7 +51,7 @@ export const builtInCommands: CommandDefinition[] = [
   {
     id: 'agents', name: 'agents', description: 'List all agents by department', usage: '/agents [department]',
     execute: async (args, ctx) => {
-      const { AGENT_REGISTRY, DEPARTMENTS, getAgentsByDepartment } = require('../../agents/agent-registry');
+      const { AGENT_REGISTRY, DEPARTMENTS, getAgentsByDepartment } = await import('../../agents/agent-registry');
       if (args.length > 0) {
         const dept = args.join(' ');
         const match = DEPARTMENTS.find((d: string) => d.toLowerCase().includes(dept.toLowerCase()));
@@ -72,7 +71,7 @@ export const builtInCommands: CommandDefinition[] = [
     id: 'agent', name: 'agent', description: 'Show agent details', usage: '/agent <name>',
     execute: async (args, ctx) => {
       if (!args.length) return err('Usage: /agent <name>');
-      const { AGENT_REGISTRY } = require('../../agents/agent-registry');
+      const { AGENT_REGISTRY } = await import('../../agents/agent-registry');
       const query = args.join(' ').toLowerCase();
       const agent = AGENT_REGISTRY.find((a: any) => a.name.toLowerCase().includes(query) || a.id.includes(query));
       if (!agent) return err('Agent not found: ' + args.join(' '));
@@ -82,7 +81,7 @@ export const builtInCommands: CommandDefinition[] = [
   {
     id: 'departments', name: 'departments', description: 'List all departments', usage: '/departments',
     execute: async () => {
-      const { DEPARTMENTS, getAgentsByDepartment } = require('../../agents/agent-registry');
+      const { DEPARTMENTS, getAgentsByDepartment } = await import('../../agents/agent-registry');
       return ok(DEPARTMENTS.length + ' Departments:\n\n' + DEPARTMENTS.map((d: string) => {
         const agents = getAgentsByDepartment(d);
         return d + ' (' + agents.length + ' agents)';
@@ -117,7 +116,7 @@ export const builtInCommands: CommandDefinition[] = [
     id: 'cost', name: 'cost', description: 'Show token usage and cost', usage: '/cost',
     execute: async (_args, ctx) => {
       try {
-        const { initDatabase } = require('../../storage/database');
+        const { initDatabase } = await import('../../storage/database');
         const db = initDatabase();
         const tokenRow = db.prepare("SELECT value FROM config WHERE key = 'total-tokens'").get() as any;
         const costRow = db.prepare("SELECT value FROM config WHERE key = 'total-cost'").get() as any;
@@ -164,10 +163,16 @@ export const builtInCommands: CommandDefinition[] = [
   {
     id: 'version', name: 'version', description: 'Show version', usage: '/version',
     execute: async () => {
-      const { AGENT_REGISTRY, DEPARTMENTS } = require('../../agents/agent-registry');
+      const { AGENT_REGISTRY, DEPARTMENTS } = await import('../../agents/agent-registry');
       let version = '0.1.0';
-      try { version = require('../../package.json').version || version; } catch {}
       try { const { app } = require('electron'); version = app.getVersion() || version; } catch {}
+      try {
+        const fs = require('node:fs');
+        const path = require('node:path');
+        const pkgPath = path.resolve(__dirname, '../../package.json');
+        const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
+        version = pkg.version || version;
+      } catch {}
       return ok('NeuroNest v' + version + ' — Multi-Agent AI Workspace\n' + AGENT_REGISTRY.length + ' agents • ' + DEPARTMENTS.length + ' departments • ZERA optimizer • Swarm execution • Smart Router');
     }
   },

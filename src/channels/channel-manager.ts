@@ -14,6 +14,7 @@ import {
   buildListenerConfig,
 } from './listener-config';
 import { APP_NAME } from '../branding';
+import { safeImport } from './import-validator';
 
 // ── Public types ────────────────────────────────────────────────────
 
@@ -369,8 +370,7 @@ export class ChannelManager {
     let BotClass: any;
 
     try {
-      const importMod = new Function('s', 'return import(s)');
-      const grammy = await importMod('grammy').catch(() => null);
+      const grammy = await safeImport('grammy').catch(() => null) as any;
       if (!grammy) throw new Error('not installed');
       BotClass = grammy.Bot;
     } catch {
@@ -465,8 +465,7 @@ export class ChannelManager {
     let GatewayIntentBits: any;
 
     try {
-      const importMod = new Function('s', 'return import(s)');
-      const discordjs = await importMod('discord.js').catch(() => null);
+      const discordjs = await safeImport('discord.js').catch(() => null) as any;
       if (!discordjs) throw new Error('not installed');
       ClientClass = discordjs.Client;
       GatewayIntentBits = discordjs.GatewayIntentBits;
@@ -563,8 +562,7 @@ export class ChannelManager {
     let AppClass: any;
 
     try {
-      const importMod = new Function('s', 'return import(s)');
-      const bolt = await importMod('@slack/bolt').catch(() => null);
+      const bolt = await safeImport('@slack/bolt').catch(() => null) as any;
       if (!bolt) throw new Error('not installed');
       AppClass = bolt.App;
     } catch {
@@ -653,8 +651,7 @@ export class ChannelManager {
     let nodemailer: any;
 
     try {
-      const importMod = new Function('s', 'return import(s)');
-      nodemailer = await importMod('nodemailer').catch(() => null);
+      nodemailer = await safeImport('nodemailer').catch(() => null) as any;
       if (!nodemailer) throw new Error('not installed');
     } catch {
       return {

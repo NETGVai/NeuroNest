@@ -5,9 +5,9 @@
  * Parallel agents can't conflict because they work in separate worktrees.
  */
 
-import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { safeExecFileSync } from '../security/safe-exec.js';
 
 export interface Workspace {
   id: string;
@@ -50,7 +50,7 @@ export class WorkspaceManager {
    */
   isGitRepo(projectPath: string): boolean {
     try {
-      execSync('git rev-parse --is-inside-work-tree', { cwd: projectPath, encoding: 'utf-8', stdio: 'pipe' });
+      safeExecFileSync('git', ['rev-parse', '--is-inside-work-tree'], { cwd: projectPath });
       return true;
     } catch { return false; }
   }
@@ -71,14 +71,14 @@ export class WorkspaceManager {
       // Create branch from base
       const base = baseBranch || 'HEAD';
       try {
-        execSync(`git branch ${branchName} ${base}`, { cwd: projectPath, encoding: 'utf-8', stdio: 'pipe' });
+        safeExecFileSync('git', ['branch', branchName, base], { cwd: projectPath });
       } catch {
         // Branch may already exist
       }
 
       // Create worktree
       fs.mkdirSync(path.dirname(worktreePath), { recursive: true });
-      execSync(`git worktree add "${worktreePath}" ${branchName}`, { cwd: projectPath, encoding: 'utf-8', stdio: 'pipe' });
+      safeExecFileSync('git', ['worktree', 'add', worktreePath, branchName], { cwd: projectPath });
 
       const workspace: Workspace = {
         id: `ws_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
@@ -115,14 +115,15 @@ export class WorkspaceManager {
 
     try {
       // Switch to main branch in the base repo
-      const mainBranch = execSync('git symbolic-ref --short HEAD', { cwd: projectPath, encoding: 'utf-8', stdio: 'pipe' }).trim();
+      const mainBranchResult = safeExecFileSync('git', ['symbolic-ref', '--short', 'HEAD'], { cwd: projectPath });
+      const mainBranch = mainBranchResult.stdout.trim();
 
       // Rebase the workspace branch onto main
-      execSync(`git rebase ${mainBranch}`, { cwd: ws.path, encoding: 'utf-8', stdio: 'pipe' });
+      safeExecFileSync('git', ['rebase', mainBranch], { cwd: ws.path });
 
       // Merge into main
-      execSync(`git checkout ${mainBranch}`, { cwd: projectPath, encoding: 'utf-8', stdio: 'pipe' });
-      execSync(`git merge ${ws.branch}`, { cwd: projectPath, encoding: 'utf-8', stdio: 'pipe' });
+      safeExecFileSync('git', ['checkout', mainBranch], { cwd: projectPath });
+      safeExecFileSync('git', ['merge', ws.branch], { cwd: projectPath });
 
       this.updateStatus(workspaceId, 'merged');
       return { success: true };
@@ -140,11 +141,11 @@ export class WorkspaceManager {
 
     try {
       // Remove worktree
-      execSync(`git worktree remove "${ws.path}" --force`, { cwd: projectPath, encoding: 'utf-8', stdio: 'pipe' });
+      safeExecFileSync('git', ['worktree', 'remove', ws.path, '--force'], { cwd: projectPath });
 
       // Delete branch
       try {
-        execSync(`git branch -D ${ws.branch}`, { cwd: projectPath, encoding: 'utf-8', stdio: 'pipe' });
+        safeExecFileSync('git', ['branch', '-D', ws.branch], { cwd: projectPath });
       } catch { /* branch may not exist */ }
 
       this.db.prepare('DELETE FROM workspaces WHERE id = ?').run(workspaceId);
@@ -164,8 +165,9 @@ export class WorkspaceManager {
     if (!ws) return { success: false, error: 'Workspace not found' };
 
     try {
-      const mainBranch = execSync('git symbolic-ref --short HEAD', { cwd: projectPath, encoding: 'utf-8', stdio: 'pipe' }).trim();
-      execSync(`git pull origin ${mainBranch} --rebase`, { cwd: ws.path, encoding: 'utf-8', stdio: 'pipe' });
+      const mainBranchResult = safeExecFileSync('git', ['symbolic-ref', '--short', 'HEAD'], { cwd: projectPath });
+      const mainBranch = mainBranchResult.stdout.trim();
+      safeExecFileSync('git', ['pull', 'origin', mainBranch, '--rebase'], { cwd: ws.path });
       return { success: true };
     } catch (e: any) {
       return { success: false, error: e.message };

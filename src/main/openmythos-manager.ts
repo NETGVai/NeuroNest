@@ -5,7 +5,7 @@
  * The bridge (scripts/openmythos_bridge.py) exposes an OpenAI-compatible API.
  */
 
-import { execSync, spawn, ChildProcess } from 'node:child_process';
+import { execSync, execFileSync, spawn, ChildProcess } from 'node:child_process';
 import * as http from 'node:http';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
@@ -86,15 +86,15 @@ export function parsePythonVersion(versionStr: string): { valid: boolean; major:
 export function isPythonInstalled(): { installed: boolean; version: string; path: string } {
   try {
     const pythonCmd = process.platform === 'win32' ? 'python' : 'python3';
-    const versionOutput = execSync(`${pythonCmd} --version 2>&1`, { encoding: 'utf-8', timeout: 5000 }).trim();
+    const versionOutput = execFileSync(pythonCmd, ['--version'], { encoding: 'utf-8', timeout: 5000 }).trim();
     const parsed = parsePythonVersion(versionOutput);
     if (!parsed.valid) {
       return { installed: false, version: '', path: '' };
     }
     let pythonPath = '';
     try {
-      const whichCmd = process.platform === 'win32' ? `where ${pythonCmd}` : `which ${pythonCmd} 2>/dev/null`;
-      pythonPath = execSync(whichCmd, { encoding: 'utf-8', timeout: 3000 }).trim().split('\n')[0];
+      const whichCmd = process.platform === 'win32' ? 'where' : 'which';
+      pythonPath = execFileSync(whichCmd, [pythonCmd], { encoding: 'utf-8', timeout: 3000 }).trim().split('\n')[0];
     } catch {}
     return {
       installed: true,
@@ -112,8 +112,7 @@ export function isPythonInstalled(): { installed: boolean; version: string; path
 export function isOpenMythosInstalled(): boolean {
   try {
     const pythonBin = getVenvPython();
-    const suppress = process.platform === 'win32' ? '2>nul' : '2>/dev/null';
-    const result = execSync(`"${pythonBin}" -m pip show open-mythos ${suppress}`, { encoding: 'utf-8', timeout: 10000 });
+    const result = execFileSync(pythonBin, ['-m', 'pip', 'show', 'open-mythos'], { encoding: 'utf-8', timeout: 10000 });
     return result.includes('Name: open-mythos');
   } catch {
     return false;
@@ -124,8 +123,7 @@ export function isOpenMythosInstalled(): boolean {
 function areBridgeDepsInstalled(): boolean {
   try {
     const pythonBin = getVenvPython();
-    const suppress = process.platform === 'win32' ? '2>nul' : '2>/dev/null';
-    execSync(`"${pythonBin}" -c "import fastapi; import uvicorn" ${suppress}`, { encoding: 'utf-8', timeout: 10000 });
+    execFileSync(pythonBin, ['-c', 'import fastapi; import uvicorn'], { encoding: 'utf-8', timeout: 10000 });
     return true;
   } catch {
     return false;
@@ -141,7 +139,7 @@ function ensureBridgeDeps(): void {
     : path.join(venvDir, 'bin', 'pip');
   if (!fs.existsSync(venvPip)) return;
   console.log('[OpenMythos] Installing missing bridge dependencies (fastapi, uvicorn)...');
-  execSync(`"${venvPip}" install fastapi uvicorn pydantic`, {
+  execFileSync(venvPip, ['install', 'fastapi', 'uvicorn', 'pydantic'], {
     timeout: 120000,
     encoding: 'utf-8',
   });
@@ -267,8 +265,8 @@ export function stopOpenMythos(): void {
     console.log('[OpenMythos] No process reference, killing by port', OPENMYTHOS_PORT);
     try {
       if (process.platform === 'win32') {
-        // Windows: use netstat + taskkill
-        const netstat = execSync(`netstat -ano | findstr :${OPENMYTHOS_PORT}`, { encoding: 'utf-8', timeout: 5000 });
+        // Windows: use netstat + findstr to find process on port
+        const netstat = execFileSync('cmd.exe', ['/c', `netstat -ano | findstr :${OPENMYTHOS_PORT}`], { encoding: 'utf-8', timeout: 5000 });
         const lines = netstat.trim().split('\n');
         for (const line of lines) {
           const parts = line.trim().split(/\s+/);
@@ -280,7 +278,7 @@ export function stopOpenMythos(): void {
         openMythosRunning = false;
       } else {
         // Unix: use lsof
-        const pid = execSync(`lsof -ti tcp:${OPENMYTHOS_PORT} 2>/dev/null`, { encoding: 'utf-8' }).trim();
+        const pid = execFileSync('lsof', ['-ti', `tcp:${OPENMYTHOS_PORT}`], { encoding: 'utf-8', timeout: 5000 }).trim();
         if (pid) {
           pid.split('\n').forEach(p => {
             try { process.kill(parseInt(p, 10), 'SIGTERM'); } catch {}
@@ -305,7 +303,7 @@ export async function detectGPU(): Promise<GPUInfo> {
   try {
     const pythonBin = getVenvPython();
     const script = `import torch; print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else ''); print(torch.cuda.get_device_properties(0).total_mem // (1024*1024) if torch.cuda.is_available() else 0); print(torch.version.cuda or '')`;
-    const output = execSync(`"${pythonBin}" -c "${script}" 2>/dev/null`, {
+    const output = execFileSync(pythonBin, ['-c', script], {
       encoding: 'utf-8',
       timeout: 15000,
     }).trim();
@@ -373,7 +371,7 @@ export async function installOpenMythos(
       onProgress?.('Creating virtual environment...');
       console.log('[OpenMythos] Creating venv at', venvDir);
       const pythonCmd = process.platform === 'win32' ? 'python' : 'python3';
-      execSync(`${pythonCmd} -m venv "${venvDir}"`, {
+      execFileSync(pythonCmd, ['-m', 'venv', venvDir], {
         timeout: 60000,
         encoding: 'utf-8',
       });
@@ -384,7 +382,7 @@ export async function installOpenMythos(
       : path.join(venvDir, 'bin', 'pip');
     onProgress?.('Installing open-mythos via pip (in virtual environment)...');
     console.log('[OpenMythos] Running pip install in venv...');
-    execSync(`"${venvPip}" install open-mythos fastapi uvicorn pydantic`, {
+    execFileSync(venvPip, ['install', 'open-mythos', 'fastapi', 'uvicorn', 'pydantic'], {
       timeout: 300000, // 5 minutes max
       encoding: 'utf-8',
     });
@@ -442,9 +440,9 @@ export async function uninstallOpenMythos(): Promise<{ success: boolean; message
   try {
     console.log('[OpenMythos] Removing venv at', venvDir);
     if (process.platform === 'win32') {
-      execSync(`rmdir /s /q "${venvDir}"`, { timeout: 30000, encoding: 'utf-8', shell: 'cmd.exe' });
+      execFileSync('cmd.exe', ['/c', 'rmdir', '/s', '/q', venvDir], { timeout: 30000, encoding: 'utf-8' });
     } else {
-      execSync(`rm -rf "${venvDir}"`, { timeout: 30000, encoding: 'utf-8' });
+      execFileSync('rm', ['-rf', venvDir], { timeout: 30000, encoding: 'utf-8' });
     }
     return { success: true, message: 'OpenMythos uninstalled successfully' };
   } catch (e: any) {

@@ -151,7 +151,7 @@ export function scoreAllAgents(prompt: string): Map<string, number> {
 export async function scoreAllAgentsWithLLM(prompt: string, llmClient?: any): Promise<Map<string, number>> {
   if (llmClient) {
     try {
-      const { selectAgentsWithLLM } = require('./llm-decision-engine');
+      const { selectAgentsWithLLM } = await import('./llm-decision-engine');
       // Pass a subset of agents (top 30 by department relevance) to keep token count low
       const agentSummaries = AGENT_REGISTRY
         .filter(a => !EXCLUDED_AGENT_IDS.includes(a.id))

@@ -300,8 +300,8 @@ export class SessionImporter {
 
       // Attempt replay via tool executor
       try {
-        const { executeTool } = require('../pipeline/tool-executor.js');
-        const result = executeTool({ tool: tc.tool, ...tc.args, sessionId });
+        const { executeTool } = await import('../pipeline/tool-executor.js');
+        const result = executeTool({ tool: tc.tool as import('../pipeline/tool-executor.js').ToolType, ...tc.args, projectId: sessionId } as any);
         results.push({
           toolCallId: tc.id,
           tool: tc.tool,

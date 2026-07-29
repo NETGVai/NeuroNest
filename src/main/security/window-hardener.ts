@@ -4,6 +4,7 @@
  * Enforces security policies on all BrowserWindow instances:
  * - Sandbox isolation
  * - Content Security Policy via session headers
+ * - Nonce-based script allowlisting (no 'unsafe-inline')
  * - External navigation blocking
  * - New-window event interception
  *
@@ -11,9 +12,61 @@
  */
 
 import { BrowserWindow, session, shell } from 'electron';
+import { randomBytes } from 'node:crypto';
 import { getLogger } from '../../utils/structured-logger';
 
 const LOG_SOURCE = 'WindowHardener';
+
+/**
+ * Configuration for building a nonce-based Content Security Policy header.
+ */
+export interface CSPConfig {
+  /** Per-session cryptographic nonce for inline script allowlisting */
+  nonce: string;
+  /** Optional additional script hash values to allow (e.g., 'sha256-...') */
+  additionalScriptHashes?: string[];
+  /** Additional allowed connect-src origins beyond 'self' and 'https:' */
+  connectSrc?: string[];
+}
+
+/**
+ * Generates a cryptographically secure, per-session nonce for CSP script allowlisting.
+ * The nonce is a base64-encoded random value (16 bytes = 128 bits of entropy).
+ *
+ * @returns A base64-encoded nonce string suitable for CSP headers
+ */
+export function generateCSPNonce(): string {
+  return randomBytes(16).toString('base64');
+}
+
+/**
+ * Builds a Content Security Policy header string without 'unsafe-inline' in script-src.
+ * Uses nonce-based allowlisting for inline scripts.
+ *
+ * @param config - CSP configuration including the nonce and optional script hashes
+ * @returns A fully-formed CSP header value string
+ */
+export function buildCSPHeader(config: CSPConfig): string {
+  const { nonce, additionalScriptHashes = [], connectSrc = [] } = config;
+
+  // Build script-src with nonce (no 'unsafe-inline')
+  const scriptSources = ["'self'", `'nonce-${nonce}'`, ...additionalScriptHashes.map(h => `'${h}'`)];
+
+  const directives: Record<string, string[]> = {
+    'default-src': ["'self'"],
+    'script-src': scriptSources,
+    'style-src': ["'self'", "'unsafe-inline'"],
+    'img-src': ["'self'", 'data:', 'https:'],
+    'font-src': ["'self'", 'data:'],
+    'connect-src': ["'self'", 'https:', ...connectSrc],
+    'object-src': ["'none'"],
+    'base-uri': ["'self'"],
+  };
+
+  return Object.entries(directives)
+    .map(([directive, sources]) => `${directive} ${sources.join(' ')}`)
+    .join('; ');
+}
 
 /**
  * Security policy enforced on every BrowserWindow instance.
@@ -39,7 +92,7 @@ export const DEFAULT_SECURITY_POLICY: WindowSecurityPolicy = {
   allowedNavigationOrigins: ['file://'],
   cspDirectives: {
     'default-src': ["'self'"],
-    'script-src': ["'self'", "'unsafe-inline'"],
+    'script-src': ["'self'"],
     'style-src': ["'self'", "'unsafe-inline'"],
     'img-src': ["'self'", 'data:', 'https:'],
     'font-src': ["'self'", 'data:'],
@@ -87,18 +140,30 @@ export function hardenWindow(win: BrowserWindow, policy: WindowSecurityPolicy = 
  * Uses onHeadersReceived to inject CSP, ensuring it cannot be bypassed by
  * renderer-injected HTML meta tags.
  *
+ * When a nonce is provided, uses nonce-based script allowlisting (no 'unsafe-inline').
+ * When no nonce is provided, falls back to directive-based CSP from the policy.
+ *
  * @param ses - The Electron session to apply CSP to (defaults to defaultSession)
  * @param directives - CSP directive map (key = directive name, value = sources array)
+ * @param nonce - Optional nonce to use for script-src allowlisting
  */
 export function installCSP(
   ses?: Electron.Session,
-  directives: Record<string, string[]> = DEFAULT_SECURITY_POLICY.cspDirectives
+  directives: Record<string, string[]> = DEFAULT_SECURITY_POLICY.cspDirectives,
+  nonce?: string
 ): void {
   const targetSession = ses ?? session.defaultSession;
 
-  const cspValue = Object.entries(directives)
-    .map(([directive, sources]) => `${directive} ${sources.join(' ')}`)
-    .join('; ');
+  let cspValue: string;
+
+  if (nonce) {
+    // Use nonce-based CSP (no 'unsafe-inline' in script-src)
+    cspValue = buildCSPHeader({ nonce });
+  } else {
+    cspValue = Object.entries(directives)
+      .map(([directive, sources]) => `${directive} ${sources.join(' ')}`)
+      .join('; ');
+  }
 
   targetSession.webRequest.onHeadersReceived((details, callback) => {
     callback({
@@ -176,4 +241,32 @@ export function getSecureWebPreferences(
     nodeIntegrationInSubFrames: false,
     allowRunningInsecureContent: false,
   };
+}
+
+/**
+ * Injects the CSP nonce into the renderer process via a meta tag.
+ * This allows renderer-side scripts to discover the nonce and apply it
+ * to dynamically-created script elements.
+ *
+ * Must be called after the window has loaded content (e.g., in `did-finish-load`).
+ *
+ * @param win - The BrowserWindow to inject the nonce into
+ * @param nonce - The CSP nonce value to inject
+ */
+export function injectCSPNonceMeta(win: BrowserWindow, nonce: string): void {
+  const script = `
+    (function() {
+      var meta = document.createElement('meta');
+      meta.name = 'csp-nonce';
+      meta.content = '${nonce}';
+      document.head.appendChild(meta);
+    })();
+  `;
+  win.webContents.executeJavaScript(script).catch((err) => {
+    getLogger().error(
+      LOG_SOURCE,
+      'Failed to inject CSP nonce meta tag',
+      err instanceof Error ? err : new Error(String(err))
+    );
+  });
 }

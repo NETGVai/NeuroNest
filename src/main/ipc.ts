@@ -182,6 +182,15 @@ import { ASTLockManager as ASTLockManagerForCategoryB } from '../orchestration/a
 import { ParallelAgentExecutor as ParallelAgentExecutorForCategoryB } from '../orchestration/parallel-agent-executor.js';
 import { LazyModuleLoader } from './performance/lazy-module-loader';
 import { PERF_FLAGS } from './performance/feature-flags';
+import { safeExecFileSync, validateCommand } from '../security/safe-exec.js';
+
+/** Allowlist of permitted executables for user-configured commands */
+const COMMAND_ALLOWLIST = [
+  'npm', 'npx', 'node', 'yarn', 'pnpm',
+  'eslint', 'prettier', 'tsc', 'vitest', 'jest', 'mocha',
+  'cargo', 'go', 'python', 'python3', 'pip', 'pip3',
+  'make', 'cmake', 'git', 'curl', 'zip', 'tar', 'wc',
+];
 import { AsyncSystemMonitor } from './performance/async-system-monitor';
 import { AgentLoopController, type AgentLoopResult, type AgentLLMClient, type AgentMessage, type AgentLLMResponse, type FunctionDefinition } from '../pipeline/agent-loop';
 import { ToolSystem as AgentToolSystem } from '../tools/tool-system';
@@ -197,12 +206,18 @@ import { DEFAULT_FEATURE_FLAGS, FEATURE_DEPENDENCIES, ENHANCED_FEATURE_DEPENDENC
 import { FEATURE_FLAG_METADATA } from '../feature-gate/feature-gate-metadata.js';
 import { loadProjectConfig } from '../config/project-config';
 
-// Agent status simulation - in a real system this would come from agent manager
-function getAgentStatus(agentId: string): 'active' | 'busy' | 'offline' {
-  // For now, return 'active' for all agents to match the main agents view
-  // In production, this would query the actual agent manager or runtime
-  // TODO: Integrate with actual agent runtime status when available
-  return 'active';
+// Agent status based on actual Agent_Pipeline state
+function getAgentStatus(_agentId: string): 'active' | 'busy' | 'offline' {
+  // Check if the swarm coordinator is actively running a task
+  if (activeSwarmCoordinator) {
+    return 'busy';
+  }
+  // If there's an enhanced coordinator initialized and a session is active, the agent is active
+  if (enhancedSwarmCoordinator && activeSessionId) {
+    return 'active';
+  }
+  // No coordinator or session means the agent is offline
+  return 'offline';
 }
 import { FileEventEmitter } from './file-event-emitter';
 import { BatchedEvent } from './event-batcher';
@@ -252,6 +267,8 @@ import {
   isVoiceSynthesizeArgs,
 } from './ipc-types';
 import { AsyncCommandRunner } from './performance/async-command-runner';
+import { validatePath } from '../security/path-guard';
+import { getGCFSystem } from '../context/gcf-bootstrap.js';
 
 // Singleton AsyncCommandRunner instance for non-blocking command execution
 const asyncCommandRunner = new AsyncCommandRunner();
@@ -990,7 +1007,9 @@ async function initDeferredModules(): Promise<void> {
 
     // Initialize ProviderRegistry with formal adapter wrapping
     try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
       const { ProviderRegistry } = require('../providers/provider-registry.impl');
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
       const { createAdaptersFromConfigs } = require('../providers/llm-client-adapter');
       const featureGate = getFeatureGateAdapter();
       const registry = new ProviderRegistry(db, featureGate);
@@ -1801,7 +1820,9 @@ function getUnifiedReducer():
   const log = getEventLog();
   if (!log || !db) return null;
   try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { UnifiedStateReducer } = require('../pipeline/unified-state-reducer');
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { SessionTelemetryService } = require('../session/session-telemetry');
     // Telemetry service is cheap to instantiate (just a few prepared
     // statements) and shares the db handle with the rest of the app.
@@ -1832,8 +1853,8 @@ async function assembleStateBlockForSession(sessionId: string): Promise<string> 
   const reducer = getUnifiedReducer();
   if (!reducer || !db) return '';
   try {
-    const { assembleStateBlock } = require('../pipeline/prompt-state-block');
-    const { SessionTelemetryService } = require('../session/session-telemetry');
+    const { assembleStateBlock } = await import('../pipeline/prompt-state-block');
+    const { SessionTelemetryService } = await import('../session/session-telemetry');
     const metrics = new SessionTelemetryService(db);
     return await assembleStateBlock(sessionId, { reducer, metrics });
   } catch (e) {
@@ -1926,7 +1947,7 @@ export async function evaluateTerminalCommand(
 ): Promise<SecurityDecision> {
   try {
     // Import the fail-closed analyzer lazily to avoid circular deps at module level
-    const { FailClosedActionSecurityAnalyzer } = require('../pipeline/verification-gate/stages/gui-acceptance-stage.js');
+    const { FailClosedActionSecurityAnalyzer } = await import('../pipeline/verification-gate/stages/gui-acceptance-stage.js');
 
     // ── Firewall evaluation (fail-closed on error/unavailable) ──
     let firewallResult: { passed: boolean; blocked: boolean; events: Array<{ action?: string; ruleName?: string }>; };
@@ -2067,6 +2088,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
   //   • pro-mode:hydrate  — on renderer boot, full snapshot
   //   • pro-mode:set-state — on every change, partial update
   try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { setProModeState, getProModeState } = require('../pipeline/pro-mode-state');
     for (const ch of ['pro-mode:hydrate', 'pro-mode:set-state', 'pro-mode:get-state']) {
       try { ipcMain.removeHandler(ch); } catch {}
@@ -2109,6 +2131,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
 
     // Inject branding into the renderer so it can reference APP_NAME etc.
     try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
       const { BRANDING } = require('../branding');
       mainWindow.webContents.executeJavaScript(
         `window.__BRANDING__ = ${JSON.stringify(BRANDING)};`
@@ -2855,11 +2878,11 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
       // Note: self_knowledge detection is NOT replaced by IntentGate — it operates on
       // a different taxonomy. The IntentGate handles routing (conversation/quick_action/build/ambiguous)
       // while self-knowledge is a pre-routing intercept for "what is NeuroNest?" queries.
-      const { classifyIntent: classifyIntentNoProject } = require('../pipeline/intent-classifier');
+      const { classifyIntent: classifyIntentNoProject } = await import('../pipeline/intent-classifier');
       const noProjectIntent = classifyIntentNoProject(trimmed);
 
       if (noProjectIntent.intent === 'self_knowledge') {
-        const knowledgeBase = require('../data/neuronest-knowledge.json');
+        const knowledgeBase = (await import('../data/neuronest-knowledge.json')).default;
 
         // Find best matching entry using keyword matching
         let bestMatch: any = null;
@@ -3039,7 +3062,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
         // Smart Commit Message Generation (Kilo-Inspired Feature)
         try {
           sendAndStore(mainWindow, { role: 'assistant', content: '📝 Generating commit message from staged changes...', isCommand: true, agent: 'CommitGen' });
-          const { CommitMessageGenerator } = require('../git/commit-message-generator');
+          const { CommitMessageGenerator } = await import('../git/commit-message-generator');
           const commitGen = CommitMessageGenerator.getInstance();
           // Inject LLM client for AI-powered message generation
           const commitLLM = resolveActiveLLMClient();
@@ -3106,10 +3129,10 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
     // Note: self_knowledge detection is NOT replaced by IntentGate — it operates on
     // a different taxonomy. The IntentGate handles routing (conversation/quick_action/build/ambiguous)
     // while self-knowledge is a pre-routing intercept for "what is NeuroNest?" queries.
-    const { classifyIntent } = require('../pipeline/intent-classifier');
+    const { classifyIntent } = await import('../pipeline/intent-classifier');
     const selfKnowledgeResult = classifyIntent(trimmed);
     if (selfKnowledgeResult.intent === 'self_knowledge') {
-      const knowledgeBase = require('../data/neuronest-knowledge.json');
+      const knowledgeBase = (await import('../data/neuronest-knowledge.json')).default;
       const messageLower = trimmed.toLowerCase();
 
       // Find best matching entry using keyword matching (same logic as qaKnowledge)
@@ -3160,7 +3183,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
     const confirmPattern = /^(yes|yeah|yep|yup|sure|ok|okay|confirm|confirmed|do it|go ahead|proceed|please do|yes go ahead|yes please|i confirm|affirmative|go for it)[\s.!]*$/i;
     if (confirmPattern.test(trimmed)) {
       console.log('[IPC] Confirmation message detected — routing directly to simple responder');
-      const { SimpleResponder } = require('../pipeline/simple-responder');
+      const { SimpleResponder } = await import('../pipeline/simple-responder');
       try {
         const osConf = require('node:os');
         const pathConf = require('node:path');
@@ -3247,13 +3270,13 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
       startGrillSession,
       continueGrillSession,
       abortGrillSession,
-    } = require('../pipeline/grill-me-session');
+    } = await import('../pipeline/grill-me-session');
 
     let grilledSpec: string | null = null;
     if (activeSessionId && isSteerRedirect) {
       // Steer overrides any stale grill state — clear so the redirect
       // doesn't get caught in a half-finished interview.
-      const { abortGrillSession: dropStaleGrill } = require('../pipeline/grill-me-session');
+      const { abortGrillSession: dropStaleGrill } = await import('../pipeline/grill-me-session');
       dropStaleGrill(activeSessionId);
     }
     if (activeSessionId && !isSteerRedirect) {
@@ -3342,21 +3365,21 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
     }
 
     // ── Intent Classification and Message Routing ──
-    const { routeMessageWithLLM, routeMessage, routeMessageUnified } = require('../pipeline/message-router');
-    const { SimpleResponder } = require('../pipeline/simple-responder');
+    const { routeMessageWithLLM, routeMessage, routeMessageUnified } = await import('../pipeline/message-router');
+    const { SimpleResponder } = await import('../pipeline/simple-responder');
     
     // Use LLM-based classification when a provider is available (more accurate),
     // fall back to pattern-based when no LLM is configured.
     // When the `unified_intent_gate` feature flag is enabled, the IntentGate
     // cascade replaces both legacy classifiers (Requirements: 1.3, 1.4, 1.5, 1.6).
     const classifierLLM = resolveActiveLLMClient();
-    let routingDecision;
+    let routingDecision: import('../pipeline/message-router').RoutingDecision;
 
     // Attempt unified IntentGate routing (feature-gated)
     let intentGateInstance: any = null;
     let featureGateInstance: any = null;
     try {
-      const { getIntentGateInstance, getFeatureGateInstance } = require('../pipeline/intent-gate-registry');
+      const { getIntentGateInstance, getFeatureGateInstance } = await import('../pipeline/intent-gate-registry');
       intentGateInstance = getIntentGateInstance();
       featureGateInstance = getFeatureGateInstance();
     } catch {
@@ -3710,7 +3733,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
     }
 
     // Check if we should skip the full pipeline for conversational messages
-    if (routingDecision.route === 'simple_responder' && skillRouteOutput) {
+    if ((routingDecision.route as string) === 'simple_responder' && skillRouteOutput) {
       // Skill provided output for a conversational message - send completion signal and return
       mainWindow.webContents.send('chat-response', { role: 'assistant', content: '', agent: 'NeuroNest' });
       console.log('[IPC] Conversational message handled by skill, skipping pipeline');
@@ -3718,7 +3741,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
     }
 
     // Skip full pipeline for conversational messages that didn't match skills
-    if (routingDecision.route === 'simple_responder' && !skillRouteOutput) {
+    if ((routingDecision.route as string) === 'simple_responder' && !skillRouteOutput) {
       // This case should have been handled above, but adding as safety net
       console.log('[IPC] Conversational message without skill match, already handled by simple responder');
       return;
@@ -3749,7 +3772,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
     }
 
     // Load project context and shared memory
-    const { SharedMemory } = require('../pipeline/shared-memory');
+    const { SharedMemory } = await import('../pipeline/shared-memory');
     const sharedMemory = new SharedMemory(db, activeSessionId);
 
     // Store user message in shared memory
@@ -3810,7 +3833,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
         // Store key facts from NEURONEST.md and steering files as primary_truth in ProjectMemoryStore
         if (neuronestContext && activeSessionId && projectMemoryRef) {
           try {
-            const { MemoryTruthGate } = require('../storage/memory-truth-gate.js');
+            const { MemoryTruthGate } = await import('../storage/memory-truth-gate.js');
             const truthGate = new MemoryTruthGate(db);
             // Extract key facts: lines that start with headings or bullet points (non-empty meaningful lines)
             const keyFacts = neuronestContext
@@ -3837,8 +3860,8 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
         // Load steering file rules as primary_truth
         if (activeSessionId && projectMemoryRef) {
           try {
-            const { ProjectSteeringStore } = require('../storage/project-steering.js');
-            const { MemoryTruthGate } = require('../storage/memory-truth-gate.js');
+            const { ProjectSteeringStore } = await import('../storage/project-steering.js');
+            const { MemoryTruthGate } = await import('../storage/memory-truth-gate.js');
             const steeringStore = new ProjectSteeringStore(db);
             const truthGate = new MemoryTruthGate(db);
             const rules = steeringStore.getRules(activeSessionId);
@@ -4015,7 +4038,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
     // Use ExecutionModeRouter to determine optimal execution mode for this task
     let selectedMode: 'flash' | 'standard' | 'pro' | 'ultra' = 'pro'; // default
     try {
-      const { scoreAllAgents } = require('../pipeline/orchestrator-planner');
+      const { scoreAllAgents } = await import('../pipeline/orchestrator-planner');
       const agentScores = scoreAllAgents(zeraResult.optimizedPrompt);
       const topScore = Math.max(...Array.from(agentScores.values() as Iterable<number>));
       const qualifiedAgentCount = Array.from(agentScores.values() as Iterable<number>).filter((s: number) => s > 5).length;
@@ -4078,7 +4101,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
 
     // Inject design template for Design department agents
     try {
-      const { injectDesignTemplate } = require('../skills/skill-integration');
+      const { injectDesignTemplate } = await import('../skills/skill-integration');
       const designDepts = ['Design'];
       for (const agentTask of plan.agents) {
         const agentDef = AGENT_REGISTRY.find(r => r.id === agentTask.id);
@@ -4527,7 +4550,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
     // Telemetry uses the same SessionTelemetryService Metrics_Sink as the
     // cold-start boot (task 16.1).
     try {
-      const { selectToolsForChat } = require('../pipeline/tool-rag-selection');
+      const { selectToolsForChat } = await import('../pipeline/tool-rag-selection');
 
       // Full_Registry size = booted catalog size when available. Used for the
       // shadow-mode size delta; the catalog already unions ToolSystem + MCP.
@@ -4538,7 +4561,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
       // Metrics_Sink — the canonical SessionTelemetryService over the shared db.
       let ragMetricsSink: { recordMetric(s: string | null, k: string, v: number): void } | undefined;
       try {
-        const { SessionTelemetryService } = require('../session/session-telemetry');
+        const { SessionTelemetryService } = await import('../session/session-telemetry');
         ragMetricsSink = new SessionTelemetryService(db);
       } catch { ragMetricsSink = undefined; }
 
@@ -4641,6 +4664,8 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
           planMode: false,
           turboEditsEnabled: false,
           smartContextEnabled: false,
+          // GCF Agent Integration: wire prompt enrichment and response validation (Req 15.1, 15.2, 15.3)
+          agentIntegration: getGCFSystem()?.agentIntegration ?? undefined,
           // Enable drift management when lint/test/fix is active for the project —
           // drift monitors whether the agent is staying on-task and prevents scope creep.
           driftConfig: (lintTestServiceRef && lintTestServiceRef.getConfig(activeSessionId)?.lintEnabled)
@@ -4681,7 +4706,10 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
 
     // Use enhanced coordinator if available and session is active
     let swarmResult;
-    const useEnhancedCoordinator = true; // Feature flag - can be made configurable later
+    const useEnhancedCoordinatorEnv = process.env.NEURONEST_USE_ENHANCED_COORDINATOR;
+    const useEnhancedCoordinator = useEnhancedCoordinatorEnv !== undefined
+      ? useEnhancedCoordinatorEnv.toLowerCase() !== 'false'
+      : true; // Default to true if env var is not set
     
     if (enhancedSwarmCoordinator && activeSessionId && useEnhancedCoordinator) {
       console.log('[IPC] Using enhanced swarm coordinator with task lifecycle management');
@@ -5439,10 +5467,10 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
           try {
             const fgLoopCheck = getFeatureGateAdapter();
             if (fgLoopCheck.isEnabled('loops_enabled') && totalFiles >= 3) {
-              const { execSync } = require('node:child_process');
 
               // Detect what kind of project was generated and choose verification
               let verifyCommand = '';
+              let verifyArgs: string[] = [];
               let verifyLabel = '';
               const hasPkgJson = fs.existsSync(path.join(projectDir, 'package.json'));
               const hasTsConfig = fs.existsSync(path.join(projectDir, 'tsconfig.json'));
@@ -5457,35 +5485,40 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
                     content: '📦 Installing dependencies for verification...',
                     isCommand: true, agent: 'Loop Engine',
                   });
-                  execSync('npm install --legacy-peer-deps 2>&1 || true', { cwd: projectDir, timeout: 60000, encoding: 'utf-8', stdio: 'pipe' });
+                  safeExecFileSync('npm', ['install', '--legacy-peer-deps'], { cwd: projectDir, timeout: 60000 });
                 } catch {}
               }
 
               // Choose verification command
               if (hasTsConfig) {
-                verifyCommand = 'npx tsc --noEmit 2>&1';
+                verifyCommand = 'npx';
+                verifyArgs = ['tsc', '--noEmit'];
                 verifyLabel = 'TypeScript type-check';
               } else if (hasPkgJson) {
                 // Check if there's a build script
                 try {
                   const pkg = JSON.parse(fs.readFileSync(path.join(projectDir, 'package.json'), 'utf-8'));
                   if (pkg.scripts?.build) {
-                    verifyCommand = 'npm run build 2>&1';
+                    verifyCommand = 'npm';
+                    verifyArgs = ['run', 'build'];
                     verifyLabel = 'Build';
                   } else if (pkg.scripts?.start) {
                     // At least verify syntax with node --check on entry point
                     const entry = pkg.main || 'index.js';
                     if (fs.existsSync(path.join(projectDir, entry))) {
-                      verifyCommand = `node --check ${entry} 2>&1`;
+                      verifyCommand = 'node';
+                      verifyArgs = ['--check', entry];
                       verifyLabel = 'Syntax check';
                     }
                   }
                 } catch {}
               } else if (hasCargoToml) {
-                verifyCommand = 'cargo check 2>&1';
+                verifyCommand = 'cargo';
+                verifyArgs = ['check'];
                 verifyLabel = 'Cargo check';
               } else if (hasGoMod) {
-                verifyCommand = 'go build ./... 2>&1';
+                verifyCommand = 'go';
+                verifyArgs = ['build', './...'];
                 verifyLabel = 'Go build';
               }
 
@@ -5499,7 +5532,10 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
                 let verifyOutput = '';
                 let verifyExitCode = 0;
                 try {
-                  verifyOutput = execSync(verifyCommand, { cwd: projectDir, timeout: 90000, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+                  const verifyResult = safeExecFileSync(verifyCommand, verifyArgs, { cwd: projectDir, timeout: 90000 });
+                  verifyOutput = verifyResult.stdout;
+                  verifyExitCode = verifyResult.exitCode;
+                  if (verifyResult.stderr) verifyOutput += '\n' + verifyResult.stderr;
                 } catch (verifyErr: any) {
                   verifyExitCode = verifyErr.status || 1;
                   verifyOutput = (verifyErr.stdout || '') + '\n' + (verifyErr.stderr || '');
@@ -5521,8 +5557,8 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
 
                   // Trigger Loop Engine to fix the build errors
                   try {
-                    const { LoopRunner } = require('../loop-engine/runner/loop-runner.js');
-                    const { LoopStorage } = require('../loop-engine/storage/loop-storage.js');
+                    const { LoopRunner } = await import('../loop-engine/runner/loop-runner.js');
+                    const { LoopStorage } = await import('../loop-engine/storage/loop-storage.js');
 
                     const loopStorage = new LoopStorage(db);
                     const buildFixSpec = {
@@ -5532,7 +5568,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
                       useWhen: `${verifyLabel} fails after code generation`,
                       goal: `Fix all errors so that \`${verifyCommand.replace(' 2>&1', '')}\` exits 0`,
                       passAction: `Read the error output and fix the code causing the failures. Errors:\n${truncatedErrors}`,
-                      verify: [{ type: 'command', command: verifyCommand.replace(' 2>&1', ''), expectedExitCode: 0 }],
+                      verify: [{ type: 'command' as const, command: verifyCommand.replace(' 2>&1', ''), expectedExitCode: 0 }],
                       feedback: 'The verification still fails. Here are the remaining errors — fix them without breaking other files.',
                       stop: { maxPasses: 8, maxCostUsd: 2.5, maxWallClockMin: 15, noProgressPasses: 3, approvalBoundaries: [] },
                       scope: { allowedPaths: ['.'], allowedTools: ['file_read', 'file_write', 'bash'], securityPolicy: 'standard' },
@@ -5542,11 +5578,11 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
                     const loopRunner = new LoopRunner({
                       storage: loopStorage,
                       llmClient: resolveActiveLLMClient(),
-                      swarmCoordinator: null,
+                      swarmCoordinator: null as any,
                       featureGate: fgLoopCheck,
-                    });
+                    } as any);
 
-                    const runId = await loopRunner.start(buildFixSpec, activeSessionId);
+                    const runId = await loopRunner.start(buildFixSpec as any, activeSessionId);
                     console.log('[Loop Engine] Post-generation repair loop started:', runId);
 
                     sendAndStore(mainWindow, {
@@ -5610,7 +5646,6 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
         if (lintTestConfig && lintTestConfig.runOnAiChange) {
           const os = require('node:os');
           const path = require('node:path');
-          const { execSync } = require('node:child_process');
           const projectDir = path.join(os.homedir(), '.neuronest', 'projects', activeSessionId);
 
           // Run lint if enabled and command is configured
@@ -5641,9 +5676,18 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
               lintExitCode = lintResult.exitCode;
               lintOutput = lintResult.stdout + (lintResult.stderr ? '\n' + lintResult.stderr : '');
             } else {
-              // Fallback to synchronous execution
+              // Fallback to synchronous execution using safeExecFileSync
               try {
-                lintOutput = execSync(lintTestConfig.lintCommand, { cwd: projectDir, timeout: 60000, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+                const lintParts = lintTestConfig.lintCommand.split(/\s+/);
+                const lintCmd = lintParts[0];
+                const lintArgs = lintParts.slice(1);
+                if (!validateCommand(lintCmd, COMMAND_ALLOWLIST)) {
+                  throw new Error(`Lint command "${lintCmd}" is not in the allowlist of permitted executables`);
+                }
+                const lintResult = safeExecFileSync(lintCmd, lintArgs, { cwd: projectDir, timeout: 60000 });
+                lintOutput = lintResult.stdout;
+                lintExitCode = lintResult.exitCode;
+                if (lintResult.stderr) lintOutput += '\n' + lintResult.stderr;
               } catch (lintErr: any) {
                 lintExitCode = lintErr.status || 1;
                 lintOutput = (lintErr.stdout || '') + '\n' + (lintErr.stderr || '');
@@ -5701,7 +5745,13 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
                 } else {
                   // Fallback to synchronous fix execution
                   try {
-                    execSync(fixCommand, { cwd: projectDir, timeout: 60000, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+                    const fixParts = fixCommand.split(/\s+/);
+                    const fixCmd = fixParts[0];
+                    const fixArgs = fixParts.slice(1);
+                    if (!validateCommand(fixCmd, COMMAND_ALLOWLIST)) {
+                      throw new Error(`Fix command "${fixCmd}" is not in the allowlist of permitted executables`);
+                    }
+                    safeExecFileSync(fixCmd, fixArgs, { cwd: projectDir, timeout: 60000 });
                     lintTestServiceRef.recordRun(activeSessionId, 'lint', fixCommand, 0, 'Auto-fix applied', 'auto-fix', true);
                     sendAndStore(mainWindow, {
                       role: 'assistant',
@@ -5747,7 +5797,16 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
             } else {
               // Fallback to synchronous execution
               try {
-                testOutput = execSync(lintTestConfig.testCommand, { cwd: projectDir, timeout: 120000, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+                const testParts = lintTestConfig.testCommand.split(/\s+/);
+                const testCmd = testParts[0];
+                const testArgs = testParts.slice(1);
+                if (!validateCommand(testCmd, COMMAND_ALLOWLIST)) {
+                  throw new Error(`Test command "${testCmd}" is not in the allowlist of permitted executables`);
+                }
+                const testResult = safeExecFileSync(testCmd, testArgs, { cwd: projectDir, timeout: 120000 });
+                testOutput = testResult.stdout;
+                testExitCode = testResult.exitCode;
+                if (testResult.stderr) testOutput += '\n' + testResult.stderr;
               } catch (testErr: any) {
                 testExitCode = testErr.status || 1;
                 testOutput = (testErr.stdout || '') + '\n' + (testErr.stderr || '');
@@ -5779,9 +5838,9 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
               try {
                 const fgForLoop = getFeatureGateAdapter();
                 if (fgForLoop.isEnabled('loops_enabled')) {
-                  const { LoopRunner } = require('../loop-engine/runner/loop-runner.js');
-                  const { LoopStorage } = require('../loop-engine/storage/loop-storage.js');
-                  const { BUILTIN_TEST_REPAIR_ID } = require('../loop-engine/catalog/builtin-loops.js');
+                  const { LoopRunner } = await import('../loop-engine/runner/loop-runner.js');
+                  const { LoopStorage } = await import('../loop-engine/storage/loop-storage.js');
+                  const { BUILTIN_TEST_REPAIR_ID } = await import('../loop-engine/catalog/builtin-loops.js');
 
                   sendAndStore(mainWindow, {
                     role: 'assistant',
@@ -5790,15 +5849,15 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
                   });
 
                   const loopStorage = new LoopStorage(db);
-                  const specRow = loopStorage.getSpec?.(BUILTIN_TEST_REPAIR_ID);
+                  const specRow = await loopStorage.getSpec?.(BUILTIN_TEST_REPAIR_ID);
                   if (specRow) {
                     const testRepairSpec = JSON.parse(specRow.json);
                     const loopRunner = new LoopRunner({
                       storage: loopStorage,
                       llmClient: resolveActiveLLMClient(),
-                      swarmCoordinator: null,
+                      swarmCoordinator: null as any,
                       featureGate: fgForLoop,
-                    });
+                    } as any);
 
                     // Run async — don't block the main IPC response
                     loopRunner.start(testRepairSpec, activeSessionId).then((runId: string) => {
@@ -5825,7 +5884,6 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
         const os = require('node:os');
         const path = require('node:path');
         const fs = require('node:fs');
-        const { execSync } = require('node:child_process');
         const projectDir = path.join(os.homedir(), '.neuronest', 'projects', activeSessionId);
 
         // Detect build command from project
@@ -5899,7 +5957,16 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
           } else {
             // Fallback to synchronous execution
             try {
-              buildOutput = execSync(buildCommand, { cwd: projectDir, timeout: 120000, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+              const buildParts = buildCommand.split(/\s+/);
+              const buildCmd = buildParts[0];
+              const buildArgs = buildParts.slice(1);
+              if (!validateCommand(buildCmd, COMMAND_ALLOWLIST)) {
+                throw new Error(`Build command "${buildCmd}" is not in the allowlist of permitted executables`);
+              }
+              const buildResult = safeExecFileSync(buildCmd, buildArgs, { cwd: projectDir, timeout: 120000 });
+              buildOutput = buildResult.stdout;
+              buildExitCode = buildResult.exitCode;
+              if (buildResult.stderr) buildOutput += '\n' + buildResult.stderr;
             } catch (buildErr: any) {
               buildExitCode = buildErr.status || 1;
               buildOutput = (buildErr.stdout || '') + '\n' + (buildErr.stderr || '');
@@ -5980,7 +6047,6 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
         const os = require('node:os');
         const path = require('node:path');
         const fs = require('node:fs');
-        const { execSync } = require('node:child_process');
         const projectDir = path.join(os.homedir(), '.neuronest', 'projects', activeSessionId);
 
         // Check if it's a git repo
@@ -5988,12 +6054,12 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
         if (fs.existsSync(gitDir)) {
           // Stage all changes and commit
           try {
-            const { execFileSync } = require('node:child_process');
-            execFileSync('git', ['add', '-A'], { cwd: projectDir, timeout: 15000, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
-            const status = execFileSync('git', ['status', '--porcelain'], { cwd: projectDir, timeout: 10000, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+            safeExecFileSync('git', ['add', '-A'], { cwd: projectDir, timeout: 15000 });
+            const statusResult = safeExecFileSync('git', ['status', '--porcelain'], { cwd: projectDir, timeout: 10000 });
+            const status = statusResult.stdout.trim();
             if (status) {
               const commitMsg = 'feat: AI-generated changes (' + totalFiles + ' files)';
-              execFileSync('git', ['commit', '-m', commitMsg], { cwd: projectDir, timeout: 15000, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+              safeExecFileSync('git', ['commit', '-m', commitMsg], { cwd: projectDir, timeout: 15000 });
               sendAndStore(mainWindow, { role: 'assistant', content: '📝 Auto-committed: "' + commitMsg + '"', isCommand: true, agent: 'Autonomy' });
             }
           } catch (gitErr: any) {
@@ -6002,7 +6068,9 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
         } else {
           // Initialize git repo if autoCommit is on but no repo exists
           try {
-            execSync('git init && git add -A && git commit -m "Initial commit from NeuroNest"', { cwd: projectDir, timeout: 15000, encoding: 'utf-8', shell: process.platform === 'win32' ? 'cmd.exe' : '/bin/sh', stdio: ['pipe', 'pipe', 'pipe'] });
+            safeExecFileSync('git', ['init'], { cwd: projectDir, timeout: 15000 });
+            safeExecFileSync('git', ['add', '-A'], { cwd: projectDir, timeout: 15000 });
+            safeExecFileSync('git', ['commit', '-m', 'Initial commit from NeuroNest'], { cwd: projectDir, timeout: 15000 });
             sendAndStore(mainWindow, { role: 'assistant', content: '📝 Auto-commit: initialized git repo and committed ' + totalFiles + ' files', isCommand: true, agent: 'Autonomy' });
           } catch (initErr: any) {
             console.warn('[Autonomy] Git init failed:', initErr.message);
@@ -6685,7 +6753,16 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
       const os = require('node:os');
       const fs = require('node:fs');
       const path = require('node:path');
-      const fullPath = path.join(os.homedir(), '.neuronest', 'projects', projectId, filePath);
+      const projectRoot = path.join(os.homedir(), '.neuronest', 'projects', projectId);
+
+      // PathGuard: validate the file path before any file system access
+      const pathCheck = validatePath(filePath, projectRoot);
+      if (!pathCheck.safe) {
+        console.warn('[IPC] read-project-file path rejected:', pathCheck.reason);
+        return { error: 'Path rejected: ' + pathCheck.reason };
+      }
+
+      const fullPath = pathCheck.resolved;
 
       // Open externally (for PDFs, images, etc.)
       if (arg && arg.openExternal) {
@@ -6722,7 +6799,16 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
       const os = require('node:os');
       const fs = require('node:fs');
       const path = require('node:path');
-      const fullPath = path.join(os.homedir(), '.neuronest', 'projects', projectId, filePath);
+      const projectRoot = path.join(os.homedir(), '.neuronest', 'projects', projectId);
+
+      // PathGuard: validate the file path before any file system access
+      const pathCheck = validatePath(filePath, projectRoot);
+      if (!pathCheck.safe) {
+        console.error('[IPC] save-project-file path rejected:', pathCheck.reason);
+        return;
+      }
+
+      const fullPath = pathCheck.resolved;
       writeFileWithHeader(fullPath, content);
     } catch (e) { console.error('[IPC] save-project-file error:', e); }
   });
@@ -6911,10 +6997,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
     setTimeout(async () => {
       if (systemStatsCache.timestamps.publicIP) {
         try {
-          const { execSync } = require('node:child_process');
-          const exec = (cmd: string, t = 10000) => { try { return execSync(cmd, { encoding: 'utf-8', timeout: t }).trim(); } catch { return ''; } };
-          
-          // **OPTIMIZATION**: Use fallback chain for reliability
+          // Use safeExecFileSync for IP lookups — no shell interpolation
           let publicIP = '';
           const services = [
             { url: 'ifconfig.me', timeout: 2000 },
@@ -6924,7 +7007,8 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
           
           for (const service of services) {
             try {
-              publicIP = exec(`curl -s --max-time 2 ${service.url}`, service.timeout);
+              const result = safeExecFileSync('curl', ['-s', '--max-time', '2', service.url], { timeout: service.timeout });
+              publicIP = result.stdout.trim();
               if (publicIP && publicIP.match(/^\d+\.\d+\.\d+\.\d+$/)) {
                 console.log(`[BACKGROUND_IP] Successfully refreshed from ${service.url}`);
                 break;
@@ -7410,7 +7494,8 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
             
             for (const service of services) {
               try {
-                publicIP = exec(`curl -s --max-time 2 ${service.url}`, service.timeout);
+                const ipResult = safeExecFileSync('curl', ['-s', '--max-time', '2', service.url], { timeout: service.timeout });
+                publicIP = ipResult.stdout.trim();
                 if (publicIP && publicIP.match(/^\d+\.\d+\.\d+\.\d+$/)) {
                   console.log(`[PUBLIC_IP] Successfully fetched from ${service.url}: ${publicIP}`);
                   break;
@@ -7813,7 +7898,6 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
       const os = require('node:os');
       const fs = require('node:fs');
       const path = require('node:path');
-      const { execSync } = require('node:child_process');
       const { dialog } = require('electron');
 
       const projectDir = path.join(os.homedir(), '.neuronest', 'projects', projectId);
@@ -7847,13 +7931,13 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
       try {
         // Remove existing zip if present
         if (fs.existsSync(zipPath)) fs.unlinkSync(zipPath);
-        execSync(`zip -r "${zipPath}" .`, { cwd: projectDir, timeout: 60000 });
+        safeExecFileSync('zip', ['-r', zipPath, '.'], { cwd: projectDir, timeout: 60000 });
         return { success: true, path: zipPath, message: 'Project downloaded as ZIP' };
       } catch (zipErr: any) {
         // Fallback: try using tar if zip not available
         try {
           const tarPath = zipPath.replace(/\.zip$/, '.tar.gz');
-          execSync(`tar -czf "${tarPath}" -C "${projectDir}" .`, { timeout: 60000 });
+          safeExecFileSync('tar', ['-czf', tarPath, '-C', projectDir, '.'], { timeout: 60000 });
           return { success: true, path: tarPath, message: 'Project downloaded as tar.gz' };
         } catch {
           return { success: false, message: 'Failed to create archive: ' + (zipErr.message || '').slice(0, 100) };
@@ -7887,14 +7971,13 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
     )`);
   } catch (e: any) { console.error('[WebAuthn] Table init error:', e?.message); }
 
-  const dynamicImportFn = new Function('specifier', 'return import(specifier)');
   const RP_ID = 'localhost';
   const RP_NAME = 'NeuroNest';
   const ORIGIN = 'file://';
 
   ipcMain.handle('webauthn-register-start', async (_ev, arg: any) => {
     try {
-      const simpleWebAuthn = await dynamicImportFn('@simplewebauthn/server');
+      const simpleWebAuthn = await import('@simplewebauthn/server');
       const userId = arg?.userId || 'neuronest-user';
 
       // Get existing credentials for this user
@@ -7927,7 +8010,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
 
   ipcMain.handle('webauthn-register-finish', async (_ev, arg: any) => {
     try {
-      const simpleWebAuthn = await dynamicImportFn('@simplewebauthn/server');
+      const simpleWebAuthn = await import('@simplewebauthn/server');
       const userId = arg?.userId || 'neuronest-user';
       const response = arg?.response;
 
@@ -7965,7 +8048,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
 
   ipcMain.handle('webauthn-login-start', async (_ev, arg: any) => {
     try {
-      const simpleWebAuthn = await dynamicImportFn('@simplewebauthn/server');
+      const simpleWebAuthn = await import('@simplewebauthn/server');
       const userId = arg?.userId || 'neuronest-user';
 
       const creds = db.prepare('SELECT credential_id, transports FROM webauthn_credentials WHERE user_id = ?').all(userId) as any[];
@@ -7989,7 +8072,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
 
   ipcMain.handle('webauthn-login-finish', async (_ev, arg: any) => {
     try {
-      const simpleWebAuthn = await dynamicImportFn('@simplewebauthn/server');
+      const simpleWebAuthn = await import('@simplewebauthn/server');
       const userId = arg?.userId || 'neuronest-user';
       const response = arg?.response;
 
@@ -8208,38 +8291,40 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
 
       const os = require('node:os');
       const pathMod = require('node:path');
-      const { execSync } = require('node:child_process');
       const fsMod = require('node:fs');
       const projectDir = pathMod.join(os.homedir(), '.neuronest', 'projects', projectId);
 
       if (!fsMod.existsSync(projectDir)) return { success: false, output: 'Project directory not found' };
 
-      const run = (cmd: string) => {
-        try { return execSync(cmd, { cwd: projectDir, encoding: 'utf-8', timeout: 30000 }).trim(); }
+      const run = (cmd: string, args: string[]) => {
+        try {
+          const result = safeExecFileSync(cmd, args, { cwd: projectDir, timeout: 30000 });
+          return result.exitCode === 0 ? result.stdout.trim() : (result.stderr || result.stdout || '').trim();
+        }
         catch (e: any) { return 'ERROR: ' + (e.stderr || e.stdout || e.message || '').slice(0, 500); }
       };
 
       switch (action) {
         case 'status': {
-          const isGit = run('git rev-parse --is-inside-work-tree 2>/dev/null');
+          const isGit = run('git', ['rev-parse', '--is-inside-work-tree']);
           if (isGit !== 'true') return { success: true, output: 'Not a git repository. Click "Init" or "Connect" first.' };
-          const status = run('git status');
-          const remoteUrl = run('git remote get-url origin 2>/dev/null');
-          const currentBranch = run('git branch --show-current 2>/dev/null');
+          const status = run('git', ['status']);
+          const remoteUrl = run('git', ['remote', 'get-url', 'origin']);
+          const currentBranch = run('git', ['branch', '--show-current']);
           return { success: true, output: (remoteUrl && !remoteUrl.startsWith('ERROR') ? 'Remote: ' + remoteUrl + '\n' : '') + (currentBranch && !currentBranch.startsWith('ERROR') ? 'Branch: ' + currentBranch + '\n\n' : '\n') + status };
         }
         case 'init': {
           let out = '';
           // Sanitize branch name
           const safeBranch = branch.replace(/[^a-zA-Z0-9_.\/-]/g, '').slice(0, 50) || 'main';
-          const isGit = run('git rev-parse --is-inside-work-tree 2>/dev/null');
+          const isGit = run('git', ['rev-parse', '--is-inside-work-tree']);
           if (isGit !== 'true' && !isGit.startsWith('ERROR')) {
-            out += run('git init -b ' + safeBranch) + '\n';
+            out += run('git', ['init', '-b', safeBranch]) + '\n';
           } else if (isGit === 'true') {
             out += 'Already a git repo\n';
           } else {
             // Not a git repo — init fresh
-            out += run('git init -b ' + safeBranch) + '\n';
+            out += run('git', ['init', '-b', safeBranch]) + '\n';
           }
           // Create .gitignore if missing
           const gi = pathMod.join(projectDir, '.gitignore');
@@ -8247,45 +8332,44 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
             fsMod.writeFileSync(gi, 'node_modules/\n.DS_Store\n*.log\ndist/\n.env\n', 'utf-8');
             out += 'Created .gitignore\n';
           }
-          if (remote) { run('git remote remove origin 2>/dev/null'); out += run('git remote add origin ' + remote) + '\n'; }
+          if (remote) { run('git', ['remote', 'remove', 'origin']); out += run('git', ['remote', 'add', 'origin', remote]) + '\n'; }
           return { success: true, output: out };
         }
         case 'add': {
-          return { success: true, output: run('git add -A') + '\nAll files staged.' };
+          return { success: true, output: run('git', ['add', '-A']) + '\nAll files staged.' };
         }
         case 'commit': {
-          const msg = commitMessage.replace(/"/g, '\\"');
-          return { success: true, output: run('git commit -m "' + msg + '"') };
+          return { success: true, output: run('git', ['commit', '-m', commitMessage]) };
         }
         case 'push': {
           let out = '';
-          if (remote) { run('git remote remove origin 2>/dev/null'); out += run('git remote add origin ' + remote) + '\n'; }
-          out += run('git push -u origin ' + branch + ' 2>&1');
+          if (remote) { run('git', ['remote', 'remove', 'origin']); out += run('git', ['remote', 'add', 'origin', remote]) + '\n'; }
+          out += run('git', ['push', '-u', 'origin', branch]);
           return { success: true, output: out };
         }
         case 'pull': {
-          return { success: true, output: run('git pull origin ' + branch + ' 2>&1') };
+          return { success: true, output: run('git', ['pull', 'origin', branch]) };
         }
         case 'log': {
-          return { success: true, output: run('git log --oneline --graph -20') };
+          return { success: true, output: run('git', ['log', '--oneline', '--graph', '-20']) };
         }
         case 'diff': {
-          const diff = run('git diff --stat');
-          const diffFull = run('git diff');
+          const diff = run('git', ['diff', '--stat']);
+          const diffFull = run('git', ['diff']);
           return { success: true, output: diff + '\n\n' + (diffFull.length > 3000 ? diffFull.slice(0, 3000) + '\n... (truncated)' : diffFull) };
         }
         case 'branches': {
-          const isGitB = run('git rev-parse --is-inside-work-tree 2>/dev/null');
+          const isGitB = run('git', ['rev-parse', '--is-inside-work-tree']);
           if (isGitB !== 'true') return { success: true, output: '* main' };
-          return { success: true, output: run('git branch -a') || '* main' };
+          return { success: true, output: run('git', ['branch', '-a']) || '* main' };
         }
         case 'fetch': {
           let out = '';
           if (remote) {
-            run('git remote remove origin 2>/dev/null');
-            out += run('git remote add origin ' + remote) + '\n';
+            run('git', ['remote', 'remove', 'origin']);
+            out += run('git', ['remote', 'add', 'origin', remote]) + '\n';
           }
-          out += run('git fetch --all 2>&1');
+          out += run('git', ['fetch', '--all']);
           return { success: true, output: out };
         }
         default:

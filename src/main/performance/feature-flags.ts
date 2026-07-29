@@ -1,17 +1,34 @@
 /**
+ * Reads a boolean feature flag from an environment variable.
+ * If the env var is set to 'true' or 'false' (case-insensitive), returns that value.
+ * Otherwise, returns the provided default.
+ */
+export function envFlag(envVarName: string, defaultValue: boolean): boolean {
+  const raw = process.env[envVarName];
+  if (raw === undefined || raw === '') return defaultValue;
+  const lower = raw.toLowerCase();
+  if (lower === 'true') return true;
+  if (lower === 'false') return false;
+  return defaultValue;
+}
+
+/**
  * Performance feature flags for safe incremental rollout.
  * Each flag can be independently toggled to enable/disable a specific
  * performance optimization without affecting others.
+ *
+ * Flags can be overridden via environment variables using the naming convention:
+ * NEURONEST_<FLAG_NAME>=true|false (e.g., NEURONEST_ASYNC_COMMANDS=false)
  */
 export const PERF_FLAGS = {
   /** Toggle async command execution (lint, test, build, fix) */
-  ASYNC_COMMANDS: true,
+  ASYNC_COMMANDS: envFlag('NEURONEST_ASYNC_COMMANDS', true),
   /** Toggle file tree caching (in-memory directory structure) */
-  FILE_TREE_CACHE: true,
+  FILE_TREE_CACHE: envFlag('NEURONEST_FILE_TREE_CACHE', true),
   /** Toggle lazy module loading (deferred startup) */
-  LAZY_MODULES: true,
+  LAZY_MODULES: envFlag('NEURONEST_LAZY_MODULES', true),
   /** Toggle message store cap (bounded in-memory messages) */
-  BOUNDED_MESSAGES: true,
+  BOUNDED_MESSAGES: envFlag('NEURONEST_BOUNDED_MESSAGES', true),
   /**
    * Toggle prompt-compression (always-on by default).
    *
@@ -29,7 +46,7 @@ export const PERF_FLAGS = {
    * Per-message size gating (HEADROOM_CONFIG.minBytes) still avoids paying
    * compression cost on tiny chat replies.
    */
-  HEADROOM_COMPRESSION: true,
+  HEADROOM_COMPRESSION: envFlag('NEURONEST_HEADROOM_COMPRESSION', true),
   /**
    * Toggle the unified event log as the source of truth for agent state.
    *
@@ -40,7 +57,7 @@ export const PERF_FLAGS = {
    * Default OFF until shadow-mode comparisons demonstrate parity with the
    * legacy path on real workloads.
    */
-  UNIFIED_EVENT_LOG: false,
+  UNIFIED_EVENT_LOG: envFlag('NEURONEST_UNIFIED_EVENT_LOG', false),
   /**
    * Toggle shadow-mode logging for the unified event log.
    *
@@ -51,7 +68,7 @@ export const PERF_FLAGS = {
    *
    * Default ON so we accumulate observability data during rollout.
    */
-  UNIFIED_EVENT_LOG_SHADOW: true,
+  UNIFIED_EVENT_LOG_SHADOW: envFlag('NEURONEST_UNIFIED_EVENT_LOG_SHADOW', true),
   /**
    * Toggle Error_Compactor active feed (Requirement 4.2).
    *
@@ -60,7 +77,7 @@ export const PERF_FLAGS = {
    * Flips to `true` only after the Phase 1 telemetry preconditions in
    * Requirement 4.4 hold against a 7-day Phase 0 sample.
    */
-  ERROR_COMPACTION: false,
+  ERROR_COMPACTION: envFlag('NEURONEST_ERROR_COMPACTION', false),
   /**
    * Toggle Error_Compactor shadow-mode telemetry (Requirement 4.4 Phase 0).
    *
@@ -70,7 +87,7 @@ export const PERF_FLAGS = {
    * before `ERROR_COMPACTION` may flip on. Default ON so Phase 0
    * telemetry is collected from the first release.
    */
-  ERROR_COMPACTION_SHADOW: true,
+  ERROR_COMPACTION_SHADOW: envFlag('NEURONEST_ERROR_COMPACTION_SHADOW', true),
   /**
    * Toggle the F1 Untrusted_Source_Wrapper (kill-switch only).
    *
@@ -85,7 +102,7 @@ export const PERF_FLAGS = {
    * when the wrapping interacts badly with a specific provider or prompt
    * template.
    */
-  UNTRUSTED_SOURCE_WRAP: true,
+  UNTRUSTED_SOURCE_WRAP: envFlag('NEURONEST_UNTRUSTED_SOURCE_WRAP', true),
   /**
    * Toggle RAG-based tool selection active path (Requirement 27, Feature 4).
    *
@@ -100,7 +117,7 @@ export const PERF_FLAGS = {
    * fallback rate < 1%, and p95 retrieval latency < 50ms over a ≥ 7-day
    * sample.
    */
-  TOOL_RAG_SELECTION: false,
+  TOOL_RAG_SELECTION: envFlag('NEURONEST_TOOL_RAG_SELECTION', false),
   /**
    * Toggle RAG tool-selection shadow-mode telemetry (Requirement 27 Phase 0).
    *
@@ -112,7 +129,7 @@ export const PERF_FLAGS = {
    * TOOL_RAG_SELECTION may flip on. Default ON so Phase 0 telemetry is
    * collected from the first release. Removed from PERF_FLAGS in Phase 2.
    */
-  TOOL_RAG_SELECTION_SHADOW: true,
+  TOOL_RAG_SELECTION_SHADOW: envFlag('NEURONEST_TOOL_RAG_SELECTION_SHADOW', true),
   /**
    * Toggle the F5 Date_Grounding_Preamble (kill-switch only, Requirement 33).
    *
@@ -126,7 +143,7 @@ export const PERF_FLAGS = {
    * Default ON; this is a ship-on kill-switch intended only to disable date
    * grounding if a provider reacts poorly to the preamble.
    */
-  DATE_GROUNDING_ENABLED: true,
+  DATE_GROUNDING_ENABLED: envFlag('NEURONEST_DATE_GROUNDING_ENABLED', true),
   /**
    * Toggle the F7 Teacher_Escalation_Loop (Requirement 41).
    *
@@ -139,7 +156,7 @@ export const PERF_FLAGS = {
    * a `teacherModel` in settings — escalation does nothing useful until the
    * teacher model and its endpoint are set.
    */
-  TEACHER_ESCALATION_ENABLED: false,
+  TEACHER_ESCALATION_ENABLED: envFlag('NEURONEST_TEACHER_ESCALATION_ENABLED', false),
   /**
    * Toggle the F9 MCP_Browser_Server auto-start (kill-switch only,
    * Requirement 49).
@@ -157,7 +174,7 @@ export const PERF_FLAGS = {
    * auto-start if the registration interacts badly with a specific
    * environment.
    */
-  MCP_BROWSER_AUTOSTART: true,
+  MCP_BROWSER_AUTOSTART: envFlag('NEURONEST_MCP_BROWSER_AUTOSTART', true),
   /**
    * Toggle the GCF_Wire_Format active path (Requirement 55, Feature 10).
    *
@@ -174,7 +191,7 @@ export const PERF_FLAGS = {
    * provider must be marked `gcf_capable: true` (accuracy within 5 percentage
    * points of its JSON baseline).
    */
-  GCF_WIRE_FORMAT: true,
+  GCF_WIRE_FORMAT: envFlag('NEURONEST_GCF_WIRE_FORMAT', true),
   /**
    * Toggle GCF_Wire_Format shadow-mode telemetry (Requirement 55 Phase 0).
    *
@@ -187,7 +204,7 @@ export const PERF_FLAGS = {
    * before GCF_WIRE_FORMAT may flip on in Phase 1. Default ON. Removed from
    * PERF_FLAGS in Phase 2.
    */
-  GCF_WIRE_FORMAT_SHADOW: true,
+  GCF_WIRE_FORMAT_SHADOW: envFlag('NEURONEST_GCF_WIRE_FORMAT_SHADOW', true),
   /**
    * Toggle the F11 Skill_Pack_System loader (Requirement 58).
    *
@@ -202,7 +219,7 @@ export const PERF_FLAGS = {
    * Default ON; this is a ship-on kill-switch intended only to disable the
    * skill-pack subsystem if it interacts badly with a specific environment.
    */
-  SKILL_PACK_LOADER_ENABLED: true,
+  SKILL_PACK_LOADER_ENABLED: envFlag('NEURONEST_SKILL_PACK_LOADER_ENABLED', true),
   /**
    * Toggle the External Browser MCP registration (Requirement 24).
    *
@@ -215,7 +232,7 @@ export const PERF_FLAGS = {
    * Default OFF; this is an opt-in flag for phased rollout. Enable after
    * the GUI Agent acceptance stage is operational.
    */
-  EXTERNAL_BROWSER_MCP: false,
+  EXTERNAL_BROWSER_MCP: envFlag('NEURONEST_EXTERNAL_BROWSER_MCP', false),
   /**
    * Toggle the Lean Minimalism system prompt directive (Requirement 2).
    *
@@ -230,7 +247,7 @@ export const PERF_FLAGS = {
    * Default OFF; flip to `true` after Verifier_Subagent reconciliation
    * (Requirement 6) is implemented and verified.
    */
-  PRODUCTION_UX_MINIMALISM: false,
+  PRODUCTION_UX_MINIMALISM: envFlag('NEURONEST_PRODUCTION_UX_MINIMALISM', false),
   /**
    * Toggle the Execution Mode Router and Phased Pipeline (Requirement 11).
    *
@@ -244,7 +261,7 @@ export const PERF_FLAGS = {
    *
    * Default OFF; enable after phased pipeline infrastructure is in place.
    */
-  PHASED_EXECUTION: false,
+  PHASED_EXECUTION: envFlag('NEURONEST_PHASED_EXECUTION', false),
   /**
    * Toggle the Adaptive Replanning (GOAP-Lite) mechanism (Requirement 23).
    *
@@ -258,7 +275,7 @@ export const PERF_FLAGS = {
    * Default OFF; enable after Trajectory Memory (Requirement 17) is
    * operational and verified.
    */
-  ADAPTIVE_REPLANNING: false,
+  ADAPTIVE_REPLANNING: envFlag('NEURONEST_ADAPTIVE_REPLANNING', false),
 };
 
 /**
