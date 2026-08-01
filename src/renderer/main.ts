@@ -18,6 +18,7 @@ import { registerPanel } from './app/router';
 import { chatPanel } from './panels/chat';
 import { graphPanelModule } from './panels/graph';
 import { createWorkspacesPanel } from './app/workspaces-panel';
+import { fileTreePanel } from './panels/file-tree';
 import type { PanelId, PanelModule } from './types';
 
 /**
@@ -63,10 +64,43 @@ function bootstrap(): void {
   registerPanel('graph', graphPanelModule);
   registerPanel('terminal', createPlaceholderPanel('terminal', 'Terminal'));
   registerPanel('workspaces', createWorkspacesPanel());
+  registerPanel('file-tree', fileTreePanel);
   registerPanel('settings', createPlaceholderPanel('settings', 'Settings'));
 
   // Mount the application shell
   mountApp(root);
+
+  // Wire up the editor:open-file IPC event from the main process.
+  // This event is sent when a file is opened from the File Tree Panel.
+  // It navigates to the editor panel and opens the requested file.
+  const bridge = (window as unknown as Record<string, unknown>).electronAPI as {
+    on?: (channel: string, callback: (...args: unknown[]) => void) => void;
+  } | undefined;
+
+  if (bridge?.on) {
+    bridge.on('editor:open-file', (...args: unknown[]) => {
+      const payload = args[0] as {
+        path?: string;
+        relativePath?: string;
+        line?: number;
+        preview?: boolean;
+      } | undefined;
+      if (!payload?.path) return;
+
+      // Navigate to editor panel and dispatch file-open event for the editor to handle
+      // This allows any mounted editor (Monaco, CodeMirror, etc.) to pick up the file
+      window.dispatchEvent(
+        new CustomEvent('nn:open-file', {
+          detail: {
+            path: payload.path,
+            relativePath: payload.relativePath,
+            line: payload.line,
+            preview: payload.preview,
+          },
+        }),
+      );
+    });
+  }
 }
 
 // Wait for DOM readiness then bootstrap

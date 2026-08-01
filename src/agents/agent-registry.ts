@@ -1,6 +1,11 @@
 // NeuroNest Agent Registry
-// Complete registry of specialized AI agents across 14 departments
+// Complete registry of specialized AI agents across 25 departments
 // Agent count is derived at runtime — see AGENT_COUNT export below.
+
+import type { ImportedAgent } from '../agent-catalog/types';
+import { registerDepartment } from '../agent-catalog/division-mapper';
+import { assignPermissions } from '../agent-catalog/agent-importer';
+import { assignSkillBundle } from '../agent-skills/agent-skill-bundle';
 
 export interface AgentDefinition {
   id: string;
@@ -9,23 +14,36 @@ export interface AgentDefinition {
   department: string;
   specialty: string;
   systemPrompt: string;
+  /** Stores the previous systemPrompt before a quality-based upgrade for rollback. */
+  legacySystemPrompt?: string;
 }
 
 export const DEPARTMENTS: string[] = [
-  'Engineering',
+  'Academic',
+  'Consensus',
+  'Data Science',
   'Design',
+  'DevOps',
+  'Engineering',
+  'Finance',
+  'Game Development',
+  'GIS',
+  'Healthcare',
+  'Infrastructure',
   'Marketing',
+  'NeuroNest Orchestration',
+  'Optimization',
+  'Paid Media',
   'Product',
   'Project Management',
-  'Testing',
-  'Support',
-  'Specialized',
-  'Consensus',
-  'Infrastructure',
-  'Optimization',
   'Research',
+  'Sales',
+  'Security',
   'Software Delivery',
-  'NeuroNest Orchestration',
+  'Spatial Computing',
+  'Specialized',
+  'Support',
+  'Testing',
 ];
 
 export const AGENT_REGISTRY: AgentDefinition[] = [
@@ -1029,12 +1047,35 @@ export const AGENT_TOOL_PERMISSIONS: Record<string, ToolPermission> = {
 /**
  * Authoritative agent count derived from the AGENT_TOOL_PERMISSIONS registry.
  * Used by README, CHANGELOG, badges, and CI drift guards — never hardcoded.
+ *
+ * Note: This is a getter that returns the current size of AGENT_TOOL_PERMISSIONS,
+ * which may grow after importAgents() is called.
+ */
+export function getAgentCount(): number {
+  return Object.keys(AGENT_TOOL_PERMISSIONS).length;
+}
+
+/**
+ * Legacy constant for backward compatibility.
+ * Reflects the agent count at module load time.
+ * Use getAgentCount() for the live count after imports.
  */
 export const AGENT_COUNT = Object.keys(AGENT_TOOL_PERMISSIONS).length;
 
 /**
  * Authoritative total agent count derived from the AGENT_REGISTRY array.
  * This should equal AGENT_COUNT when all registry agents have permission entries.
+ *
+ * Note: This is a getter that returns the current size of AGENT_REGISTRY,
+ * which may grow after importAgents() is called.
+ */
+export function getRegistryAgentCount(): number {
+  return AGENT_REGISTRY.length;
+}
+
+/**
+ * Legacy constant for backward compatibility.
+ * Reflects the registry count at module load time.
  */
 export const REGISTRY_AGENT_COUNT = AGENT_REGISTRY.length;
 
@@ -1124,4 +1165,95 @@ export function getDepartmentCounts(): Record<string, number> {
     counts[agent.department] = (counts[agent.department] || 0) + 1;
   }
   return counts;
+}
+
+// ─────────────────────────────────────────────
+// Agent Import Integration
+// ─────────────────────────────────────────────
+
+/**
+ * Imports agents into the AGENT_REGISTRY and AGENT_TOOL_PERMISSIONS.
+ *
+ * - Avoids duplicates by ID (skips if an agent with the same ID already exists)
+ * - Ensures AGENT_TOOL_PERMISSIONS has an entry for each new agent
+ * - Adds any new departments to the DEPARTMENTS constant in alphabetical order
+ * - Preserves all existing agents unchanged
+ *
+ * Requirements: 16.1, 16.2, 3.1, 3.2, 3.4, 4.7
+ *
+ * @param imported - Array of ImportedAgent objects from the Agent Importer
+ * @returns Object with counts of added and skipped agents
+ */
+export function importAgents(imported: ImportedAgent[]): { added: number; skipped: number } {
+  let added = 0;
+  let skipped = 0;
+
+  // Build a set of existing IDs for O(1) duplicate checking
+  const existingIds = new Set(AGENT_REGISTRY.map((a) => a.id));
+
+  for (const importedAgent of imported) {
+    const { definition } = importedAgent;
+
+    // Skip duplicates by ID
+    if (existingIds.has(definition.id)) {
+      skipped++;
+      continue;
+    }
+
+    // Register the department (adds to DEPARTMENTS in alphabetical order if new)
+    registerDepartment(definition.department);
+
+    // Also register in the local DEPARTMENTS array used by the UI
+    if (!DEPARTMENTS.includes(definition.department)) {
+      DEPARTMENTS.push(definition.department);
+      DEPARTMENTS.sort((a, b) => a.localeCompare(b));
+    }
+
+    // Add to AGENT_REGISTRY
+    AGENT_REGISTRY.push(definition);
+    existingIds.add(definition.id);
+
+    // Ensure AGENT_TOOL_PERMISSIONS has an entry
+    if (!AGENT_TOOL_PERMISSIONS[definition.id]) {
+      AGENT_TOOL_PERMISSIONS[definition.id] = assignPermissions(importedAgent);
+    }
+
+    // Assign skill bundle based on department, specialty, and systemPrompt (Requirement 22.1)
+    assignSkillBundle(definition);
+
+    added++;
+  }
+
+  return { added, skipped };
+}
+
+/**
+ * Upgrades an existing agent's systemPrompt and specialty with new values.
+ * Stores the current systemPrompt as legacySystemPrompt for rollback capability.
+ *
+ * Requirements: 16.3, 2.4
+ *
+ * @param agentId - The ID of the agent to upgrade
+ * @param newSystemPrompt - The new system prompt to apply
+ * @param newSpecialty - The new specialty description to apply
+ * @returns true if the agent was found and upgraded, false otherwise
+ */
+export function upgradeAgent(
+  agentId: string,
+  newSystemPrompt: string,
+  newSpecialty: string,
+): boolean {
+  const agent = AGENT_REGISTRY.find((a) => a.id === agentId);
+  if (!agent) {
+    return false;
+  }
+
+  // Store the current systemPrompt as legacySystemPrompt before overwriting
+  agent.legacySystemPrompt = agent.systemPrompt;
+
+  // Update with new values
+  agent.systemPrompt = newSystemPrompt;
+  agent.specialty = newSpecialty;
+
+  return true;
 }

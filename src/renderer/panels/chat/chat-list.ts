@@ -2,10 +2,20 @@
  * Chat message list component.
  * Renders a scrollable list of chat messages with auto-scroll behavior,
  * timestamp formatting, and sender differentiation.
+ * Integrates enhanced renderers: code blocks, file references, action bar,
+ * collapsible tool call sections, rich content (Mermaid/LaTeX/tables),
+ * step indicators, and typing indicator.
  * Uses vanilla DOM manipulation (matching the project's existing pattern).
  */
 
 import type { ChatListConfig, ChatMessage, MessageId } from './types';
+import { CodeBlockRenderer } from './code-block-renderer';
+import { processFileReferences } from './file-reference-link';
+import { attachActionBar } from './action-bar';
+import { createGroupedToolCallSection, type ToolCallEntry } from './collapsible-section';
+import { RichContentRenderer } from './rich-content-renderer';
+import { TypingIndicatorManager } from './typing-indicator';
+import { createStepIndicator, parseSteps } from './step-indicator';
 
 /** CSS class names scoped to the chat list. */
 const CSS = {
@@ -178,9 +188,15 @@ export class ChatList {
   private config: Required<ChatListConfig>;
   private onLoadMore: (() => void) | null = null;
   private isAtBottom = true;
+  private codeBlockRenderer: CodeBlockRenderer;
+  private richContentRenderer: RichContentRenderer;
+  private typingManager: TypingIndicatorManager | null = null;
+  private actionBars: Map<MessageId, ReturnType<typeof attachActionBar>> = new Map();
 
   constructor(config?: ChatListConfig) {
     this.config = { ...DEFAULTS, ...config };
+    this.codeBlockRenderer = new CodeBlockRenderer();
+    this.richContentRenderer = new RichContentRenderer();
   }
 
   /** Mount the chat list into a DOM container. */
@@ -200,6 +216,9 @@ export class ChatList {
     this.container.appendChild(this.scrollArea);
     parent.appendChild(this.container);
 
+    // Initialize typing indicator manager with the scroll area
+    this.typingManager = new TypingIndicatorManager(this.scrollArea);
+
     this.showEmpty();
   }
 
@@ -208,11 +227,17 @@ export class ChatList {
     if (this.scrollArea) {
       this.scrollArea.removeEventListener('scroll', this.handleScroll);
     }
+    // Detach all action bars
+    for (const bar of this.actionBars.values()) {
+      bar.detach();
+    }
+    this.actionBars.clear();
     if (this.container?.parentElement) {
       this.container.parentElement.removeChild(this.container);
     }
     this.container = null;
     this.scrollArea = null;
+    this.typingManager = null;
     this.messageElements.clear();
   }
 
@@ -281,9 +306,39 @@ export class ChatList {
     const el = this.messageElements.get(messageId);
     if (!el) return;
 
-    const contentEl = el.querySelector(`.${CSS.messageContent}`);
+    const contentEl = el.querySelector(`.${CSS.messageContent}`) as HTMLElement | null;
     if (contentEl) {
       contentEl.textContent = content;
+    }
+
+    if (this.config.autoScroll && this.isAtBottom) {
+      this.scrollToBottom();
+    }
+  }
+
+  /**
+   * Finalize a streaming message: re-render content with enhanced components.
+   * Called when a streaming message transitions from 'sending' to 'sent'.
+   */
+  finalizeMessage(messageId: MessageId, message: ChatMessage): void {
+    const el = this.messageElements.get(messageId);
+    if (!el) return;
+
+    const contentEl = el.querySelector(`.${CSS.messageContent}`) as HTMLElement | null;
+    if (contentEl && message.sender === 'assistant') {
+      // Clear the plain text streaming content and re-render with enhanced components
+      contentEl.innerHTML = '';
+      this.renderEnhancedContent(contentEl, message);
+    }
+
+    // Attach action bar now that streaming is complete
+    if (!this.actionBars.has(messageId)) {
+      const actionBarInstance = attachActionBar(el, {
+        messageId: message.id,
+        content: message.content,
+        sender: message.sender,
+      });
+      this.actionBars.set(messageId, actionBarInstance);
     }
 
     if (this.config.autoScroll && this.isAtBottom) {
@@ -397,11 +452,21 @@ export class ChatList {
       }
     }
 
+    // Render content with enhanced components for assistant messages
     const content = document.createElement('span');
     content.className = CSS.messageContent;
-    content.textContent = message.content;
-    bubble.appendChild(content);
 
+    if (message.sender === 'assistant' && message.status !== 'sending') {
+      this.renderEnhancedContent(content, message);
+    } else {
+      content.textContent = message.content;
+      // Process file references for user messages too
+      if (message.sender === 'user') {
+        processFileReferences(content);
+      }
+    }
+
+    bubble.appendChild(content);
     wrapper.appendChild(bubble);
 
     // Meta (timestamp)
@@ -413,7 +478,140 @@ export class ChatList {
     }
     wrapper.appendChild(meta);
 
+    // Attach action bar on hover (Requirement 23.5)
+    if (message.status !== 'sending') {
+      const actionBarInstance = attachActionBar(wrapper, {
+        messageId: message.id,
+        content: message.content,
+        sender: message.sender,
+      });
+      this.actionBars.set(message.id, actionBarInstance);
+    }
+
     return wrapper;
+  }
+
+  /**
+   * Renders enhanced content for assistant messages using the new renderer components.
+   * Handles: code blocks, file references, step indicators, Mermaid/LaTeX/tables,
+   * and grouped tool call sections.
+   */
+  private renderEnhancedContent(container: HTMLElement, message: ChatMessage): void {
+    const rawContent = message.content;
+
+    // Check if content contains tool call results (metadata-driven)
+    const toolCalls = message.metadata?.toolCalls as Array<{
+      toolName: string;
+      status: string;
+      detail: string;
+      duration?: number;
+    }> | undefined;
+
+    if (toolCalls && toolCalls.length > 0) {
+      // Render grouped tool call section (Requirement 23.3, 23.17)
+      const entries: ToolCallEntry[] = toolCalls.map((tc) => ({
+        toolName: tc.toolName,
+        status: (tc.status as 'success' | 'failure' | 'pending') || 'success',
+        detail: tc.detail || '',
+        duration: tc.duration,
+      }));
+      const toolSection = createGroupedToolCallSection(entries);
+      container.appendChild(toolSection);
+    }
+
+    // Check for numbered plan steps (Requirement 23.4)
+    const steps = parseSteps(rawContent);
+    if (steps) {
+      const stepIndicator = createStepIndicator({
+        messageId: message.id,
+        steps,
+        variant: 'checkbox',
+      });
+      container.appendChild(stepIndicator);
+      return; // Step content is fully handled by the indicator
+    }
+
+    // Check for code blocks in the content
+    const codeBlockRegex = /```(\w*)\s*\n([\s\S]*?)```/g;
+    const hasCodeBlocks = codeBlockRegex.test(rawContent);
+
+    if (hasCodeBlocks) {
+      // Split content around code blocks and render mixed content
+      this.renderMixedContent(container, rawContent);
+    } else {
+      // Plain text content with file references and rich rendering
+      container.textContent = rawContent;
+      // Process file references (Requirement 23.2)
+      processFileReferences(container);
+    }
+
+    // Post-process the rendered HTML for rich content (Mermaid, LaTeX, tables)
+    // Only if it looks like it might contain such content
+    if (rawContent.includes('$$') || rawContent.includes('```mermaid') || rawContent.includes('|')) {
+      const html = container.innerHTML;
+      const processed = this.richContentRenderer.process(html);
+      if (processed !== html) {
+        container.innerHTML = processed;
+      }
+    }
+  }
+
+  /**
+   * Renders content that mixes code blocks with regular text.
+   * Code blocks get the enhanced CodeBlockRenderer; other text gets file references.
+   */
+  private renderMixedContent(container: HTMLElement, rawContent: string): void {
+    const codeBlockRegex = /```(\w*)\s*\n([\s\S]*?)```/g;
+    let lastIndex = 0;
+    let match: RegExpExecArray | null;
+
+    while ((match = codeBlockRegex.exec(rawContent)) !== null) {
+      // Text before this code block
+      if (match.index > lastIndex) {
+        const textBefore = rawContent.slice(lastIndex, match.index);
+        const textSpan = document.createElement('span');
+        textSpan.textContent = textBefore;
+        processFileReferences(textSpan);
+        container.appendChild(textSpan);
+      }
+
+      // Render the code block with CodeBlockRenderer (Requirement 23.1)
+      const language = match[1] || '';
+      const code = match[2].replace(/\n$/, '');
+      const codeBlockEl = this.codeBlockRenderer.render({
+        code,
+        language,
+        showLineNumbers: true,
+        showApplyButton: true,
+      });
+      container.appendChild(codeBlockEl);
+
+      lastIndex = match.index + match[0].length;
+    }
+
+    // Remaining text after last code block
+    if (lastIndex < rawContent.length) {
+      const textAfter = rawContent.slice(lastIndex);
+      const textSpan = document.createElement('span');
+      textSpan.textContent = textAfter;
+      processFileReferences(textSpan);
+      container.appendChild(textSpan);
+    }
+  }
+
+  /** Show typing indicator for an agent. */
+  showTypingIndicator(agentName: string, agentEmoji: string): void {
+    if (!this.typingManager) return;
+    this.typingManager.show({ agentName, agentEmoji });
+    if (this.config.autoScroll && this.isAtBottom) {
+      this.scrollToBottom();
+    }
+  }
+
+  /** Hide the typing indicator. */
+  hideTypingIndicator(): void {
+    if (!this.typingManager) return;
+    this.typingManager.hide();
   }
 
   /** Show empty state placeholder. */

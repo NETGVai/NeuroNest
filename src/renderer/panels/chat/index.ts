@@ -166,6 +166,9 @@ class ChatPanel implements PanelModule {
         localMessage.id = response.message.id;
       }
       this.chatList.updateMessageStatus(localMessage.id, 'sent');
+
+      // Show typing indicator while waiting for assistant response (Requirement 23.18)
+      this.chatList.showTypingIndicator('NeuroNest', '🤖');
     } else {
       localMessage.status = 'error';
       this.chatList.updateMessageStatus(localMessage.id, 'error');
@@ -197,10 +200,13 @@ class ChatPanel implements PanelModule {
   private handleIncomingMessage(message: ChatMessage): void {
     if (message.roomId !== this.currentRoomId) return;
 
+    // Hide typing indicator when a full message arrives (Requirement 23.18)
+    this.chatList.hideTypingIndicator();
+
     // If we were streaming this message, finalize it
     if (this.streamingMessageContent.has(message.id)) {
       this.streamingMessageContent.delete(message.id);
-      this.chatList.updateMessageContent(message.id, message.content);
+      this.chatList.finalizeMessage(message.id, message);
       this.chatList.updateMessageStatus(message.id, message.status);
     } else {
       this.messages.push(message);
@@ -213,7 +219,9 @@ class ChatPanel implements PanelModule {
     const existing = this.streamingMessageContent.get(messageId);
 
     if (existing === undefined) {
-      // First chunk — create a placeholder message in the list
+      // First chunk — hide typing indicator and create a placeholder message in the list
+      this.chatList.hideTypingIndicator();
+
       const placeholderMessage: ChatMessage = {
         id: messageId,
         roomId: this.currentRoomId,

@@ -314,6 +314,14 @@ const INVOKE_CHANNELS = [
   'feature-gate:get-all', 'feature-gate:set', 'feature-gate:audit', 'feature-gate:reset', 'feature-gate:export', 'feature-gate:import',
   // Plan Mode (Task 3.4 — Req 11.8)
   'plan-mode:get-state', 'plan-mode:toggle',
+  // File Tree Panel (Requirement 23.6, 23.7, 23.15)
+  'filetree:get-tree', 'filetree:open-file', 'filetree:get-modified-files',
+  // Chat enhanced renderers (Requirement 23.1, 23.2, 23.5)
+  'chat:apply-code', 'chat:open-file-reference', 'chat:regenerate-message', 'chat:edit-message', 'chat:insert-at-cursor', 'chat:apply-diff', 'chat:mark-step-complete',
+  // Spec Viewer Panel (Requirement 23.9, 23.10, 23.11)
+  'spec:get-document', 'spec:run-workflow', 'spec:get-task-status',
+  // Operations Dashboard (Requirement 15.1-15.6)
+  'ops:get-active-runs', 'ops:get-pending-approvals', 'ops:get-cost-status', 'ops:get-policy-decisions', 'ops:approve-grant', 'ops:subscribe-updates',
 ];
 
 const RECEIVE_CHANNELS = [
@@ -321,6 +329,8 @@ const RECEIVE_CHANNELS = [
   'chat-response', 'project-updated', 'projects-list', 'project-opened',
   'typing-start', 'typing-stop', 'project-files-updated', 'clear-chat', 'update-stats', 'active-project', 'channel-status-update', 'firewall-event', 'model-pull-progress',
   'provider-health-update', 'autonomy-action', 'agentmemory-status',
+  // File Tree Panel — file opened by main process / files changed notifications
+  'editor:open-file', 'filetree:files-changed',
   // Agent Loop progress
   'agent-progress',
   // Codebase analysis progress
@@ -390,6 +400,8 @@ const RECEIVE_CHANNELS = [
   'drift:signal', 'drift:state-update',
   // Plan Mode state updates (Main → Renderer)
   'plan-mode:state-update',
+  // Agent Catalog updates (deferred import completed)
+  'agents:catalog-updated',
   // User profile request (Main → Renderer, response via 'user-profile-response' send channel)
   'request-user-profile',
 ];

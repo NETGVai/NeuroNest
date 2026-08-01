@@ -341,6 +341,27 @@ export const ALLOWED_TABLES: ReadonlySet<string> = new Set([
   'gcf_edit_history',
   'gcf_drift_events',
 
+  // 059 - Knowledge Base system
+  'kb_sources',
+  'kb_chunk_metadata',
+  'kb_freshness',
+  'kb_embedding_config',
+
+  // 060 - Training pipeline
+  'training_jobs',
+  'training_checkpoints',
+  'training_metrics',
+
+  // 061 - Model export and GRPO
+  'training_models',
+  'grpo_preferences',
+  'training_datasets',
+
+  // 062 - Enterprise training
+  'training_schedules',
+  'training_effectiveness',
+  'training_cloud_jobs',
+
   // Additional tables from other migrations
   'adversary_reviews',
   'arch_evolution',

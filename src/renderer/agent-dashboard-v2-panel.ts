@@ -157,6 +157,7 @@
     this._agents = [];
     this._departments = [];
     this._activeProjectHandler = null;
+    this._catalogUpdatedHandler = null;
     this._savedScrollPosition = 0;
     this._unreadCount = 0;
     this._panelVisible = true;
@@ -341,6 +342,9 @@
 
     // Subscribe to active-project event to reload dashboard on project switch (Req 7.3)
     this.subscribeActiveProjectChange();
+
+    // Subscribe to agent catalog updates (import completed after initial render)
+    this.subscribeCatalogUpdated();
 
     // Restore saved scroll position after DOM layout (Req 7.4)
     var savedPos = this._savedScrollPosition;
@@ -1014,6 +1018,38 @@
         a.removeListener('active-project', this._activeProjectHandler);
       }
       this._activeProjectHandler = null;
+    }
+  };
+
+  /**
+   * Listen for 'agents:catalog-updated' event from the main process.
+   * This fires after the deferred async agent catalog import completes,
+   * ensuring the dashboard refreshes its department counts with the full
+   * agent registry (e.g. 305+ instead of the initial 118).
+   */
+  AgentDashboardV2Panel.prototype.subscribeCatalogUpdated = function () {
+    var self = this;
+    var a = api();
+    if (!a || typeof a.on !== 'function') return;
+
+    // Remove previous handler if any
+    this.unsubscribeCatalogUpdated();
+
+    this._catalogUpdatedHandler = function () {
+      self._loadAgentDropdown();
+      self._loadAgentCatalog();
+    };
+
+    a.on('agents:catalog-updated', this._catalogUpdatedHandler);
+  };
+
+  AgentDashboardV2Panel.prototype.unsubscribeCatalogUpdated = function () {
+    if (this._catalogUpdatedHandler) {
+      var a = api();
+      if (a && typeof a.removeListener === 'function') {
+        a.removeListener('agents:catalog-updated', this._catalogUpdatedHandler);
+      }
+      this._catalogUpdatedHandler = null;
     }
   };
 
@@ -2601,6 +2637,7 @@
     this.unsubscribeChatDone();
     this.unsubscribeChatError();
     this.unsubscribeActiveProjectChange();
+    this.unsubscribeCatalogUpdated();
     if (this._livePulseTimer) {
       clearTimeout(this._livePulseTimer);
       this._livePulseTimer = null;

@@ -13,6 +13,7 @@ export const PANEL_ROUTES: PanelRoute[] = [
   { id: 'graph', label: 'Graph', icon: '🔗', lazy: true },
   { id: 'terminal', label: 'Terminal', icon: '⬛' },
   { id: 'workspaces', label: 'Workspaces', icon: '📋', lazy: true },
+  { id: 'file-tree', label: 'File Tree', icon: '📁' },
   { id: 'settings', label: 'Settings', icon: '⚙️' },
 ];
 

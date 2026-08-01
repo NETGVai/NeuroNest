@@ -172,4 +172,26 @@ export const FEATURE_FLAG_METADATA: Record<keyof FeatureGateFlags, FlagMetadata>
   // ─── Native Modules (Platform Hardening) ──────────────────────
   kernel_sandbox: { description: 'OS-level process confinement (Landlock/Seatbelt)', stability: 'experimental', group: 'security' },
   fast_worktree: { description: 'Native CoW worktree creation and pooling', stability: 'experimental', group: 'execution' },
+
+  // ─── Knowledge Training Pipeline ─────────────────────────────
+  neuronest_kb_system: { description: 'Knowledge Base system (Phase 1): connectors, ingest, retrieval', stability: 'experimental', group: 'intelligence' },
+  neuronest_unsloth_bridge: { description: 'Unsloth Bridge (Phase 2): local model fine-tuning via Unsloth', stability: 'experimental', group: 'intelligence' },
+  neuronest_training_pipeline: { description: 'Training Pipeline (Phase 3): dataset generation, orchestrator, export', stability: 'experimental', group: 'intelligence' },
+  neuronest_advanced_training: { description: 'Advanced Training (Phase 4): GRPO, custom embeddings, vision, incremental', stability: 'experimental', group: 'intelligence' },
+  neuronest_training_enterprise: { description: 'Enterprise Training (Phase 5): scheduling, cloud offload, team sharing', stability: 'experimental', group: 'intelligence' },
+
+  // ─── Multi-Repo Agent Integration ─────────────────────────────
+  agent_catalog_import: { description: 'Agent import pipeline from external repositories', stability: 'experimental', group: 'intelligence' },
+  devops_safety_layer: { description: 'Policy engine and argv-only command execution', stability: 'experimental', group: 'security' },
+  capability_grants: { description: 'Time-limited grant system for dangerous operations', stability: 'experimental', group: 'security' },
+  audit_chain: { description: 'Tamper-evident SHA-256-linked event log', stability: 'experimental', group: 'security' },
+  budget_stop_loss: { description: 'Per-run and daily budget stop-loss controls', stability: 'experimental', group: 'execution' },
+  scope_sandboxing: { description: 'Per-scope agent isolation enforcement', stability: 'experimental', group: 'security' },
+  background_workers: { description: 'Cron/watch background task execution', stability: 'experimental', group: 'automation' },
+  security_posture_config: { description: 'Configurable security enforcement levels', stability: 'experimental', group: 'security' },
+  ops_dashboard: { description: 'Operations monitoring dashboard panel', stability: 'experimental', group: 'runtime' },
+  file_tree_panel: { description: 'File tree sidebar panel', stability: 'experimental', group: 'runtime' },
+  spec_viewer_panel: { description: 'Spec document viewer panel', stability: 'experimental', group: 'runtime' },
+  enhanced_chat_renderer: { description: 'VS Code-style chat formatting', stability: 'experimental', group: 'runtime' },
+  skill_git_import: { description: 'Git repository skill import', stability: 'experimental', group: 'extensions' },
 };

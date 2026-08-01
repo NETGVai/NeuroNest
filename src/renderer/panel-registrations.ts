@@ -415,16 +415,102 @@ function registerAllPanels() {
   });
 
   // ────────────────────────────────────────────────────────────────
-  // 19. Metrics Panel (migrated from unmanaged <script> tag)
+  // 19. Knowledge Base Management
+  // ────────────────────────────────────────────────────────────────
+  registry.register({
+    id: 'kb-management',
+    label: 'Knowledge Base',
+    icon: '\uD83D\uDCDA',  // 📚
+    featureGate: 'kb_system',
+    group: 'tools',
+    commandPaletteAction: 'Open Knowledge Base',
+    load: createWindowPanelLoader('./kb-management-panel.js', 'KBManagementPanel', function (container) {
+      return [container, { projectId: window._neuronestActiveProject || 'default' }];
+    }),
+  });
+
+  // ────────────────────────────────────────────────────────────────
+  // 20. Training Progress
+  // ────────────────────────────────────────────────────────────────
+  registry.register({
+    id: 'training-progress',
+    label: 'Training Progress',
+    icon: '\uD83C\uDFCB',  // 🏋
+    featureGate: 'training_pipeline',
+    group: 'tools',
+    commandPaletteAction: 'Open Training Progress',
+    load: createWindowPanelLoader('./training-progress-panel.js', 'TrainingProgressPanel', function (container) {
+      return [container, { projectId: window._neuronestActiveProject || 'default' }];
+    }),
+  });
+
+  // ────────────────────────────────────────────────────────────────
+  // 20b. Training Configuration
+  // ────────────────────────────────────────────────────────────────
+  registry.register({
+    id: 'training-config',
+    label: 'Training Configuration',
+    icon: '\u2699',  // ⚙
+    featureGate: 'training_pipeline',
+    group: 'tools',
+    commandPaletteAction: 'Open Training Configuration',
+    load: createWindowPanelLoader('./training-config-panel.js', 'TrainingConfigPanel', function (container) {
+      return [container];
+    }),
+  });
+
+  // ────────────────────────────────────────────────────────────────
+  // 20c. Model Comparison
+  // ────────────────────────────────────────────────────────────────
+  registry.register({
+    id: 'model-comparison',
+    label: 'Model Comparison',
+    icon: '\u2696',  // ⚖
+    featureGate: 'training_pipeline',
+    group: 'tools',
+    commandPaletteAction: 'Open Model Comparison',
+    load: createWindowPanelLoader('./model-comparison-panel.js', 'ModelComparisonPanel', function (container) {
+      return [container, { projectId: window._neuronestActiveProject || 'default' }];
+    }),
+  });
+
+  // ────────────────────────────────────────────────────────────────
+  // 21. File Tree Panel (sidebar)
+  // ────────────────────────────────────────────────────────────────
+  registry.register({
+    id: 'file-tree',
+    label: 'File Tree',
+    icon: '\uD83D\uDCC1',  // 📁
+    featureGate: 'file_tree_panel',
+    group: 'tools',
+    commandPaletteAction: 'Open File Tree',
+    load: createWindowPanelLoader('./file-tree-panel.js', 'FileTreePanel', function (container) {
+      return [container];
+    }),
+  });
+
+  // ────────────────────────────────────────────────────────────────
+  // 22. Spec Viewer Panel
+  // ────────────────────────────────────────────────────────────────
+  registry.register({
+    id: 'spec-viewer',
+    label: 'Spec Viewer',
+    icon: '\uD83D\uDCCB',  // 📋
+    featureGate: 'spec_viewer_panel',
+    group: 'tools',
+    commandPaletteAction: 'Open Spec Viewer',
+    load: createWindowPanelLoader('./spec-viewer-panel.js', 'SpecViewerPanel', function (container) {
+      return [container];
+    }),
+  });
+
+  // ────────────────────────────────────────────────────────────────
+  // 23. Metrics Panel (migrated from unmanaged <script> tag)
   //
   // Previously loaded exclusively via `<script src="./metrics-panel.js">`
-  // in index.html before the main entry point. Now registered through
-  // the common registry path per Requirement 3.7, 3.8.
-  //
-  // The metrics-panel script tag is retained for backward compatibility
-  // during migration, but the registry is the authoritative load path.
-  // The metrics-panel has no dedicated feature gate — it is always
-  // available when present.
+  // in index.html. Now registered through the common registry path per
+  // Requirement 3.7, 3.8. The metrics-panel script tag is retained for
+  // backward compatibility during migration. No dedicated feature gate.
   // ────────────────────────────────────────────────────────────────
   registry.register({
     id: 'metrics-panel',

@@ -7,6 +7,8 @@
  * Requirements: 0.1, 0.5, 0.6, 0.7, 0.8
  */
 
+import { envFlag } from '../main/performance/feature-flags.js';
+
 // ─── Feature Flags ──────────────────────────────────────────────
 
 /** All feature flags with their default (disabled) state */
@@ -120,6 +122,13 @@ export interface FeatureGateFlags {
   loops_discover: boolean;                   // Loop discovery and suggestion
   loops_scheduler: boolean;                  // Cross-platform scheduled loop runs
 
+  // ─── Knowledge Training Pipeline Flags ────────────────────────────
+  neuronest_kb_system: boolean;              // Phase 1: Knowledgebase system
+  neuronest_unsloth_bridge: boolean;         // Phase 2: Unsloth Bridge (independent)
+  neuronest_training_pipeline: boolean;      // Phase 3: Training pipeline (requires Phase 2)
+  neuronest_advanced_training: boolean;      // Phase 4: Advanced training (requires Phase 3)
+  neuronest_training_enterprise: boolean;    // Phase 5: Enterprise training (requires Phase 3)
+
   // ─── Kilo-Inspired Feature Integration Flags ────────────────────
   inline_autocomplete: boolean;              // Ghost-text code completion (Phase 1)
   semantic_index: boolean;                   // Vector embedding codebase search (Phase 1)
@@ -144,6 +153,21 @@ export interface FeatureGateFlags {
   adoption_dashboard: boolean;               // Adoption analytics dashboard (Phase 6)
   cloud_agent: boolean;                      // Cloud agent HTTP server & integrations (Phase 6, requires headless_mode)
   i18n_system: boolean;                      // Internationalization locale management (Phase 6)
+
+  // ─── Multi-Repo Agent Integration Flags ─────────────────────────
+  agent_catalog_import: boolean;             // Agent import pipeline from external repos
+  devops_safety_layer: boolean;              // Policy engine + argv-only execution
+  capability_grants: boolean;                // Time-limited grant system for dangerous ops
+  audit_chain: boolean;                      // Tamper-evident SHA-256-linked event log
+  budget_stop_loss: boolean;                 // Per-run + daily budget stop-loss controls
+  scope_sandboxing: boolean;                 // Per-scope agent isolation enforcement
+  background_workers: boolean;               // Cron/watch background task execution
+  security_posture_config: boolean;          // Configurable security enforcement levels
+  ops_dashboard: boolean;                    // Operations monitoring dashboard panel
+  file_tree_panel: boolean;                  // File tree sidebar panel
+  spec_viewer_panel: boolean;                // Spec document viewer panel
+  enhanced_chat_renderer: boolean;           // VS Code-style chat formatting
+  skill_git_import: boolean;                 // Git repository skill import
 }
 
 /** Default flags — all disabled */
@@ -257,6 +281,13 @@ export const DEFAULT_FEATURE_FLAGS: FeatureGateFlags = {
   loops_discover: false,
   loops_scheduler: false,
 
+  // ─── Knowledge Training Pipeline Flags ────────────────────────────
+  neuronest_kb_system: envFlag('NEURONEST_KB_SYSTEM', false),
+  neuronest_unsloth_bridge: envFlag('NEURONEST_UNSLOTH_BRIDGE', false),
+  neuronest_training_pipeline: envFlag('NEURONEST_TRAINING_PIPELINE', false),
+  neuronest_advanced_training: envFlag('NEURONEST_ADVANCED_TRAINING', false),
+  neuronest_training_enterprise: envFlag('NEURONEST_TRAINING_ENTERPRISE', false),
+
   // ─── Kilo-Inspired Feature Integration Flags ────────────────────
   inline_autocomplete: false,
   semantic_index: false,
@@ -281,6 +312,21 @@ export const DEFAULT_FEATURE_FLAGS: FeatureGateFlags = {
   adoption_dashboard: false,
   cloud_agent: false,
   i18n_system: false,
+
+  // ─── Multi-Repo Agent Integration Flags ─────────────────────────
+  agent_catalog_import: true,
+  devops_safety_layer: false,
+  capability_grants: false,
+  audit_chain: false,
+  budget_stop_loss: false,
+  scope_sandboxing: false,
+  background_workers: false,
+  security_posture_config: false,
+  ops_dashboard: false,
+  file_tree_panel: false,
+  spec_viewer_panel: false,
+  enhanced_chat_renderer: false,
+  skill_git_import: false,
 };
 
 // ─── Dependency Declarations ────────────────────────────────────
@@ -432,6 +478,33 @@ export const LOOP_ENGINE_DEPENDENCIES: FeatureDependency[] = [
   {
     feature: 'loops_scheduler',
     requires: ['loops_enabled'],
+  },
+];
+
+/**
+ * Knowledge Training Pipeline feature dependency declarations.
+ *
+ * - neuronest_unsloth_bridge has no dependencies (Phase 2 is independent)
+ * - neuronest_training_pipeline requires neuronest_unsloth_bridge (Phase 3 requires Phase 2)
+ * - neuronest_advanced_training requires neuronest_training_pipeline (Phase 4 requires Phase 3)
+ * - neuronest_training_enterprise requires neuronest_training_pipeline (Phase 5 requires Phase 3)
+ * - neuronest_kb_system has no dependencies (Phase 1 is independent)
+ * Note: Phase 3 without Phase 1 = manual dataset mode (user-provided JSONL/CSV)
+ *
+ * Requirements: 25.1, 25.4
+ */
+export const KNOWLEDGE_TRAINING_DEPENDENCIES: FeatureDependency[] = [
+  {
+    feature: 'neuronest_training_pipeline',
+    requires: ['neuronest_unsloth_bridge'],
+  },
+  {
+    feature: 'neuronest_advanced_training',
+    requires: ['neuronest_training_pipeline'],
+  },
+  {
+    feature: 'neuronest_training_enterprise',
+    requires: ['neuronest_training_pipeline'],
   },
 ];
 

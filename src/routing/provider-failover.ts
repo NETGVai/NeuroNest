@@ -135,7 +135,8 @@ export class ProviderFailover {
     const failoverEvents: FailoverEvent[] = [];
 
     for (let providerIndex = 0; providerIndex < chain.length; providerIndex++) {
-      const { providerId, model } = chain[providerIndex];
+      const entry = chain[providerIndex]!;
+      const { providerId, model } = entry;
 
       for (let attempt = 0; attempt < this.config.maxRetries; attempt++) {
         try {

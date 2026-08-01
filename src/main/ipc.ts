@@ -1045,6 +1045,25 @@ async function initDeferredModules(): Promise<void> {
       console.log('[IPC] Bundled catalog and design templates loaded');
     } catch (e) { console.warn('[IPC] Catalog/template load error:', e); }
 
+    // Import bundled agent catalog from markdown files
+    if (isFeatureEnabled('agent_catalog_import')) {
+      try {
+        const { join } = await import('node:path');
+        const { importDirectory } = await import('../agent-catalog/agent-importer');
+        const { importAgents } = await import('../agents/agent-registry');
+        const agentsDataPath = join(__dirname, '..', 'data', 'agents');
+        const result = await importDirectory(agentsDataPath);
+        const { added, skipped } = importAgents(result.imported);
+        console.log(`[IPC] Agent catalog import: ${added} agents added, ${skipped} skipped, ${result.errors.length} errors`);
+        // Notify renderer to refresh department data now that full catalog is loaded
+        if (_ipcMainWindow && !_ipcMainWindow.isDestroyed()) {
+          _ipcMainWindow.webContents.send('agents:catalog-updated', { added, skipped, total: AGENT_REGISTRY.length });
+        }
+      } catch (err) {
+        console.warn('[IPC] Agent catalog import failed:', err);
+      }
+    }
+
     // Pre-fetch local model lists in background
     refreshLocalModelLists();
 
@@ -1281,6 +1300,25 @@ async function completeLazyDeferredInit(): Promise<void> {
       console.log('[IPC] Bundled catalog and design templates loaded');
     } catch (e) { console.warn('[IPC] Catalog/template load error:', e); }
 
+    // Import bundled agent catalog from markdown files
+    if (isFeatureEnabled('agent_catalog_import')) {
+      try {
+        const { join } = await import('node:path');
+        const { importDirectory } = await import('../agent-catalog/agent-importer');
+        const { importAgents } = await import('../agents/agent-registry');
+        const agentsDataPath = join(__dirname, '..', 'data', 'agents');
+        const result = await importDirectory(agentsDataPath);
+        const { added, skipped } = importAgents(result.imported);
+        console.log(`[IPC] Agent catalog import: ${added} agents added, ${skipped} skipped, ${result.errors.length} errors`);
+        // Notify renderer to refresh department data now that full catalog is loaded
+        if (_ipcMainWindow && !_ipcMainWindow.isDestroyed()) {
+          _ipcMainWindow.webContents.send('agents:catalog-updated', { added, skipped, total: AGENT_REGISTRY.length });
+        }
+      } catch (err) {
+        console.warn('[IPC] Agent catalog import failed:', err);
+      }
+    }
+
     // Pre-fetch local model lists in background
     refreshLocalModelLists();
 
@@ -1480,6 +1518,29 @@ function ensureInit() {
           loadCatalogAndTemplates(db);
           console.log('[IPC] Bundled catalog and design templates loaded');
         } catch (e) { console.warn('[IPC] Catalog/template load error:', e); }
+
+        // Import bundled agent catalog from markdown files
+        if (isFeatureEnabled('agent_catalog_import')) {
+          try {
+            const path = require('node:path');
+            const { importDirectory } = require('../agent-catalog/agent-importer');
+            const { importAgents } = require('../agents/agent-registry');
+            const agentsDataPath = path.join(__dirname, '..', 'data', 'agents');
+            importDirectory(agentsDataPath).then((result: any) => {
+              const { added, skipped } = importAgents(result.imported);
+              console.log(`[IPC] Agent catalog import: ${added} agents added, ${skipped} skipped, ${result.errors.length} errors`);
+              // Notify renderer to refresh department data now that full catalog is loaded
+              if (_ipcMainWindow && !_ipcMainWindow.isDestroyed()) {
+                _ipcMainWindow.webContents.send('agents:catalog-updated', { added, skipped, total: AGENT_REGISTRY.length });
+              }
+            }).catch((err: any) => {
+              console.warn('[IPC] Agent catalog import failed:', err);
+            });
+          } catch (err) {
+            console.warn('[IPC] Agent catalog import failed:', err);
+          }
+        }
+
         // Pre-fetch local model lists in background
         refreshLocalModelLists();
 
@@ -1577,6 +1638,25 @@ export async function initDeferredSubsystems(): Promise<void> {
       loadCatalogAndTemplates(db);
       console.log('[IPC] Bundled catalog and design templates loaded');
     } catch (e) { console.warn('[IPC] Catalog/template load error:', e); }
+
+    // Import bundled agent catalog from markdown files
+    if (isFeatureEnabled('agent_catalog_import')) {
+      try {
+        const { join } = await import('node:path');
+        const { importDirectory } = await import('../agent-catalog/agent-importer');
+        const { importAgents } = await import('../agents/agent-registry');
+        const agentsDataPath = join(__dirname, '..', 'data', 'agents');
+        const result = await importDirectory(agentsDataPath);
+        const { added, skipped } = importAgents(result.imported);
+        console.log(`[IPC] Agent catalog import: ${added} agents added, ${skipped} skipped, ${result.errors.length} errors`);
+        // Notify renderer to refresh department data now that full catalog is loaded
+        if (_ipcMainWindow && !_ipcMainWindow.isDestroyed()) {
+          _ipcMainWindow.webContents.send('agents:catalog-updated', { added, skipped, total: AGENT_REGISTRY.length });
+        }
+      } catch (err) {
+        console.warn('[IPC] Agent catalog import failed:', err);
+      }
+    }
 
     // Pre-fetch local model lists in background
     refreshLocalModelLists();
@@ -8725,6 +8805,42 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
     console.log('[IPC] Automation Pipeline IPC handlers registered');
   } catch (error) {
     console.error('[IPC] Failed to register Automation Pipeline IPC handlers:', error);
+  }
+
+  // registerFileTreeIPC — serves the live filetree:get-tree/open-file/get-modified-files
+  // channels for the File Tree Panel sidebar (Requirement 23.6, 23.7, 23.15).
+  try {
+    const { registerFileTreeIPC, setFileTreeWorkspaceDir } = require('./filetree-ipc.js');
+    registerFileTreeIPC(mainWindow);
+    // Set workspace dir to current project if available
+    const workspaceDir = getDataDirectoryForBenchmark();
+    if (workspaceDir) {
+      setFileTreeWorkspaceDir(workspaceDir);
+    }
+    console.log('[IPC] File Tree IPC handlers registered');
+  } catch (error) {
+    console.error('[IPC] Failed to register File Tree IPC handlers:', error);
+  }
+
+  // registerSpecViewerIPC — serves the live spec:get-document/run-workflow/get-task-status
+  // channels for the Spec Viewer Panel (Requirement 23.9, 23.10, 23.11).
+  try {
+    const { registerSpecViewerIPC } = require('./spec-viewer-ipc.js');
+    registerSpecViewerIPC(mainWindow, getDataDirectoryForBenchmark());
+    console.log('[IPC] Spec Viewer IPC handlers registered');
+  } catch (error) {
+    console.error('[IPC] Failed to register Spec Viewer IPC handlers:', error);
+  }
+
+  // registerOpsDashboardIPC — serves the live ops:get-active-runs/get-pending-approvals/
+  // get-cost-status/get-policy-decisions/approve-grant/subscribe-updates channels
+  // for the Operations Dashboard (Requirement 15.1-15.6).
+  try {
+    const { registerOpsDashboardIPC } = require('./ops-dashboard-ipc.js');
+    registerOpsDashboardIPC({ mainWindow, db });
+    console.log('[IPC] Operations Dashboard IPC handlers registered');
+  } catch (error) {
+    console.error('[IPC] Failed to register Operations Dashboard IPC handlers:', error);
   }
 
   // registerSpecHandoffIPC — serves the live spec:action 'build' handoff from

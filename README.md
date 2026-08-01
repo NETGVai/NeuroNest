@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  118 specialized AI agents. 14 departments. One desktop app.<br/>
+  300+ specialized AI agents. 22+ divisions. One desktop app.<br/>
   Ship software faster with swarm intelligence, not just autocomplete.
 </p>
 
@@ -17,8 +17,9 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-000?style=flat-square&logo=electron" alt="Platforms" />
-  <img src="https://img.shields.io/badge/version-0.1.668-blue?style=flat-square" alt="Version" />
-  <img src="https://img.shields.io/badge/agents-118-purple?style=flat-square" alt="Agents" />
+  <img src="https://img.shields.io/badge/version-0.1.670-blue?style=flat-square" alt="Version" />
+  <img src="https://img.shields.io/badge/agents-300%2B-purple?style=flat-square" alt="Agents" />
+  <img src="https://img.shields.io/badge/divisions-22%2B-orange?style=flat-square" alt="Divisions" />
   <img src="https://img.shields.io/badge/providers-11-green?style=flat-square" alt="Providers" />
   <a href="./LICENSE"><img src="https://img.shields.io/badge/License-BUSL--1.1-yellow?style=flat-square" alt="License: BUSL-1.1" /></a>
 </p>
@@ -27,7 +28,7 @@
 
 ## What is NeuroNest?
 
-NeuroNest is a desktop AI development environment that goes beyond code completion. Instead of a single copilot, you get an entire engineering organization — 118 specialist agents across 14 departments — that collaborates through swarm orchestration to tackle complex software tasks.
+NeuroNest is a desktop AI development environment that goes beyond code completion. Instead of a single copilot, you get an entire engineering organization — 300+ specialist agents across 22+ divisions — that collaborates through swarm orchestration to tackle complex software tasks.
 
 Ask it to build a feature. It plans the architecture, assigns specialists, selects the optimal execution mode, runs agents in parallel, verifies results with an adversarial reviewer, and delivers tested code with an immutable receipt.
 
@@ -35,9 +36,9 @@ Ask it to build a feature. It plans the architecture, assigns specialists, selec
 
 ## Key Features
 
-### 118 Specialized AI Agents
+### 300+ Specialized AI Agents
 
-A full engineering team across 14 departments: Engineering, Design, Marketing, Product, Project Management, Testing, Support, Specialized, Consensus, Infrastructure, Optimization, Research, Software Delivery, and NeuroNest Orchestration. Each agent has focused expertise, domain-specific system prompts, and scoped tool permissions.
+A full engineering team across 22+ divisions: Engineering, Design, Marketing, Product, Project Management, Testing, Support, Specialized, Consensus, Infrastructure, Optimization, Research, Software Delivery, NeuroNest Orchestration, Sales, Paid Media, Spatial Computing, Finance, Game Development, Academic, GIS, Healthcare, Security, DevOps, and Data Science. Each agent has focused expertise, domain-specific system prompts, and scoped tool permissions.
 
 ### Swarm Orchestration with 5 Execution Modes
 
@@ -171,7 +172,7 @@ Detect your project's tech stack, install dependencies, and run services with li
 
 ### Skills System
 
-133 bundled skills with dynamic auto-assignment to all 118 agents. Bundled catalog, design templates, custom skills, workspace-specific skills, and skill packs. Skills are auto-assigned at startup based on keyword matching between skill tags and agent department/specialty, and reinforced through usage tracking. Includes a skill learner that extracts new skills from successful executions.
+133 bundled skills with dynamic auto-assignment to all 300+ agents. Bundled catalog, design templates, custom skills, workspace-specific skills, and skill packs. Skills are auto-assigned at startup based on keyword matching between skill tags and agent department/specialty, and reinforced through usage tracking. Includes a skill learner that extracts new skills from successful executions.
 
 ### Brainstorm Mode
 
@@ -184,6 +185,160 @@ Learns patterns, preferences, and pitfalls specific to each project. Conventions
 ### Crash Recovery & Checkpoints
 
 Session state is auto-saved every 30 seconds. Loop runs persist after each pass. Partial passes are cleaned up on restart. Resume exactly where you left off after any interruption.
+
+### Agent Catalog
+
+NeuroNest's agent catalog aggregates 300+ specialized agents from multiple sources, including the agency-agents repository (230+ external agents) merged with the original 118 NeuroNest agents. Duplicate detection and quality-based resolution ensures only the best version of each specialist survives.
+
+| Division | Agents | Specialty |
+|----------|--------|-----------|
+| Engineering | 16+ | Frontend, backend, fullstack, mobile, systems, ML, DevEx |
+| Design | 8+ | UI/UX, visual design, design systems, prototyping |
+| Marketing | 8+ | Content, SEO, social media, brand strategy, copywriting |
+| Product | 6+ | Product management, strategy, analytics, roadmapping |
+| Project Management | 6+ | Agile, scrum, resource planning, delivery coordination |
+| Testing | 8+ | QA, test automation, performance, security testing |
+| Support | 6+ | Customer success, technical support, documentation |
+| Infrastructure | 10+ | Cloud, networking, monitoring, capacity planning |
+| Security | 10+ | AppSec, cloud security, compliance, incident response |
+| DevOps | 10+ | CI/CD, container orchestration, IaC, SRE |
+| Research | 6+ | AI/ML research, data analysis, literature review |
+| Sales | 8+ | Sales engineering, pipeline management, demo preparation |
+| Finance | 6+ | Financial analysis, budgeting, forecasting, compliance |
+| Healthcare | 6+ | Health informatics, clinical workflows, HIPAA compliance |
+| Game Development | 8+ | Game design, engine programming, asset pipelines |
+| Academic | 6+ | Research methodology, paper writing, peer review |
+| GIS | 4+ | Geospatial analysis, mapping, spatial data engineering |
+| Spatial Computing | 4+ | AR/VR development, 3D rendering, spatial UX |
+| Paid Media | 6+ | PPC, programmatic advertising, media buying |
+| Data Science | 8+ | Statistics, ML modeling, data engineering, visualization |
+| Software Delivery | 8+ | Release management, deployment, observability |
+| Optimization | 4+ | Performance tuning, cost optimization, efficiency |
+
+**Catalog features:**
+- Quality-based duplicate resolution (4-dimension scoring: prompt specificity, deliverable structure, workflow completeness, domain depth)
+- Version snapshots with one-click rollback (last 10 versions retained)
+- Automatic tool permission assignment based on division profiles
+- Backward-compatible — all original agents preserved with rollback capability
+
+### DevOps Safety
+
+The DevOps Safety Layer provides hardened infrastructure operation capabilities for agent-driven DevOps tasks. Inspired by production-grade safety patterns, it ensures agents cannot accidentally (or maliciously) harm your infrastructure.
+
+**Argv-Only Execution:**
+```
+✓ Commands executed as argv arrays (shell=false)
+✗ Shell metacharacters blocked: | ; && || ` $() > < &
+✗ Interpreter invocations blocked: bash, sh, zsh, cmd, powershell, python -c, node -e
+✓ Secrets resolved via {{secret:NAME}} patterns → environment variables
+✓ Output scrubbed of API keys, JWTs, and high-entropy tokens
+```
+
+**Fail-Closed Policy Engine:**
+- Default-deny for all unrecognized tools, unlisted targets, and unmapped agents
+- Rule precedence: explicit deny → capability grant override → environment rules → base rules
+- Internal errors always result in denial (never fail-open)
+- Every decision logged to the tamper-evident audit chain
+
+**Capability Grant System:**
+- Time-limited, scope-bound permissions for dangerous operations
+- Proposer/approver separation enforced (same identity cannot propose and approve)
+- Automatic revocation on lifetime expiry or execution count exhaustion
+- Mandatory dry-run option for destructive operations
+
+**Budget Controls:**
+- Per-run USD cost limits with automatic termination on breach
+- Daily stop-loss threshold rejecting new runs until next UTC day
+- Real-time cost accumulation with per-model pricing tables
+- All terminations recorded in the audit chain
+
+**Audit Chain:**
+- SHA-256-linked event sequence (tamper-evident hash chain)
+- Every tool invocation recorded: timestamp, agent, tool, args (redacted), result, duration, cost
+- Structural integrity verification with broken-link detection
+- Secrets and high-entropy tokens automatically redacted before storage
+
+### Security Postures
+
+Configure the enforcement level for agent operations based on your risk tolerance. Security postures are configurable at workspace and project level, with project settings able to only tighten (never loosen) workspace settings.
+
+| Posture | Behavior | Best For |
+|---------|----------|----------|
+| **Strict** | All tool calls require explicit human approval before execution | Production environments, sensitive operations |
+| **Auto** | Risk classifier screens operations; only escalates high-risk calls above threshold | Day-to-day development with safety guardrails |
+| **Autonomous** | No approval pauses except for policy engine denials | Trusted environments, batch processing |
+
+**Key behaviors:**
+- Posture changes apply immediately to all subsequent tool calls (no restart required)
+- Project-level posture can only be equal to or stricter than workspace level
+- Strictness ordering: strict > auto > autonomous
+- Auto mode uses a configurable risk threshold (0-1) for the escalation classifier
+
+### Background Workers
+
+Schedule agent tasks to run automatically without manual invocation. Background workers handle routine operations like CI monitoring, drift detection, log summarization, and recurring maintenance.
+
+**Cron Scheduling:**
+```json
+{
+  "agentId": "infrastructure-monitor",
+  "trigger": { "type": "cron", "expression": "0 */6 * * *" },
+  "name": "Infrastructure drift check every 6 hours"
+}
+```
+
+**File-Watch Triggers:**
+```json
+{
+  "agentId": "test-runner",
+  "trigger": { "type": "watch", "patterns": ["src/**/*.ts"], "debounceMs": 1000 },
+  "name": "Run tests on source file changes"
+}
+```
+
+**Safety guarantees:**
+- All background tasks respect the active Security Posture
+- Budget Manager limits enforced during background execution
+- Single-instance guarantee prevents concurrent execution of the same task
+- Failed tasks retry with exponential backoff (max 3 retries)
+- All failures recorded in the Audit Chain
+- Task status API exposes last run, next run, and current state
+
+### Operations Dashboard
+
+A unified real-time monitoring view for governing agent behavior across all subsystems.
+
+| Panel | Displays |
+|-------|----------|
+| **Active Runs** | Agent identity, status, elapsed time, accumulated cost |
+| **Approval Queue** | Pending capability grants with requesting agent, target, time remaining |
+| **Cost Chart** | Per-model spend progression with daily stop-loss threshold line |
+| **Policy Log** | Recent allow/deny/escalate decisions with matched rule and correlation ID |
+
+**Capabilities:**
+- Approve or deny pending capability grants directly from the dashboard (processed within 2 seconds)
+- Real-time updates within 3 seconds of any state change (new run, cost update, approval resolution)
+- Push-based event subscription for live data streaming
+- Correlation IDs link policy decisions to their originating agent runs
+
+### Knowledge Base & Training Pipeline
+
+NeuroNest includes an optional knowledge base system with a multi-phase training pipeline for fine-tuning models on project-specific data.
+
+| Phase | Component | Description |
+|-------|-----------|-------------|
+| 1 | KB System | Document ingestion, chunking, embedding, and semantic retrieval |
+| 2 | Unsloth Bridge | Efficient fine-tuning adapter connecting to the Unsloth framework |
+| 3 | Training Pipeline | Full training orchestration with dataset preparation and checkpointing |
+| 4 | Advanced Training | Multi-stage training with curriculum learning and evaluation |
+| 5 | Enterprise Training | GGUF export, quantization, and enterprise deployment packaging |
+
+**Features:**
+- Semantic retrieval integrated into the GCF prompt enrichment pipeline
+- Reciprocal Rank Fusion merges KB results with code search results
+- Feature-gated phases (each phase independently toggleable)
+- Phase dependency enforcement (Phase 3 requires Phase 2, etc.)
+- Zero overhead when disabled — no-op implementation with no runtime cost
 
 ---
 
@@ -393,7 +548,7 @@ Policy presets: Standard, Strict, Enterprise. Per-agent and per-project policy o
 | | Community | Professional | Enterprise |
 |---|-----------|-------------|-----------|
 | Price | Free | $29/month | Contact Sales |
-| AI Agents | 118 | 118 | 118 |
+| AI Agents | 300+ | 300+ | 300+ |
 | Swarm Orchestration | ✓ | ✓ | ✓ |
 | Loop Engine | ✓ | ✓ | ✓ |
 | Multi-Model Support | ✓ | ✓ | ✓ |
@@ -447,7 +602,7 @@ Policy presets: Standard, Strict, Enterprise. Per-agent and per-project policy o
 All performance and feature flags are controllable via environment variables:
 
 - **Naming convention:** `NEURONEST_<FLAG_NAME>=true|false` (e.g., `NEURONEST_ASYNC_COMMANDS=false`)
-- **22 independently toggleable feature flags** for safe incremental rollout
+- **35+ independently toggleable feature flags** for safe incremental rollout
 - **`.env` file support** for local development (auto-loaded at startup)
 
 ---
