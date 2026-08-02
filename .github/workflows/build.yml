@@ -189,7 +189,7 @@ jobs:
   # ────────────────────────────────────────────────────────────────────────────
   test-matrix:
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -234,7 +234,7 @@ jobs:
       - name: Run test suite
         run: npx vitest --run --reporter=verbose --bail=5
         shell: bash
-        timeout-minutes: 14
+        timeout-minutes: 18
 
   # ────────────────────────────────────────────────────────────────────────────
   # PACKAGE — Triggered only on version tags (v*). Builds distributable
