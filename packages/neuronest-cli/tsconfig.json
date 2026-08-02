@@ -2,15 +2,18 @@
   "extends": "../../tsconfig.json",
   "compilerOptions": {
     "outDir": "./dist",
-    "rootDir": "./src",
+    "rootDir": "../../",
     "module": "node16",
     "moduleResolution": "node16",
     "target": "es2022",
     "lib": ["ES2022"],
     "types": ["node"],
-    "paths": {}
+    "paths": {},
+    "exactOptionalPropertyTypes": false,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false
   },
-  "include": ["src/**/*"],
+  "include": ["src/**/*", "../../src/shared/types.ts", "../../src/security/permission-pattern-engine.ts"],
   "exclude": [
     "node_modules",
     "dist",

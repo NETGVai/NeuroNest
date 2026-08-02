@@ -13,6 +13,8 @@
 import { execFile, execFileSync } from 'node:child_process';
 import path from 'node:path';
 
+import { buildSanitizedEnv } from '../pipeline/tool-executor';
+
 // ─── Interfaces ─────────────────────────────────────────────────
 
 export interface SafeExecOptions {
@@ -94,13 +96,19 @@ export function safeExecFile(
   options?: SafeExecOptions,
 ): Promise<SafeExecResult> {
   return new Promise((resolve, reject) => {
+    // Build sanitized env base — never spread full process.env (Requirement 30.1)
+    const sanitizedBase = buildSanitizedEnv(options?.cwd ?? process.cwd());
+    const execEnv = options?.env
+      ? { ...sanitizedBase, ...options.env }
+      : sanitizedBase;
+
     const child = execFile(
       command,
       args,
       {
         cwd: options?.cwd,
         timeout: options?.timeout ?? 0,
-        env: options?.env ? { ...process.env, ...options.env } : undefined,
+        env: execEnv,
         shell: false,
         maxBuffer: 10 * 1024 * 1024, // 10MB
       },
@@ -169,10 +177,16 @@ export function safeExecFileSync(
   options?: SafeExecOptions,
 ): SafeExecResult {
   try {
+    // Build sanitized env base — never spread full process.env (Requirement 30.1)
+    const sanitizedBase = buildSanitizedEnv(options?.cwd ?? process.cwd());
+    const execEnv = options?.env
+      ? { ...sanitizedBase, ...options.env }
+      : sanitizedBase;
+
     const stdout = execFileSync(command, args, {
       cwd: options?.cwd,
       timeout: options?.timeout ?? 0,
-      env: options?.env ? { ...process.env, ...options.env } : undefined,
+      env: execEnv,
       shell: false,
       maxBuffer: 10 * 1024 * 1024, // 10MB
       encoding: 'utf-8',

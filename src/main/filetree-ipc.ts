@@ -339,18 +339,20 @@ export function registerFileTreeIPC(mainWindow: BrowserWindow): void {
           return makeError('FILE_NOT_FOUND', new Error(`File not found: ${args.path}`));
         }
 
-        // Ensure the resolved path is within the workspace (security check)
-        const normalizedWorkspace = path.resolve(workspaceDir);
-        const normalizedFile = path.resolve(resolvedPath);
-        if (!normalizedFile.startsWith(normalizedWorkspace)) {
+        // Resolve symlinks using fs.realpathSync() to eliminate TOCTOU race conditions (Requirement 27.3)
+        const normalizedWorkspace = fs.realpathSync(path.resolve(workspaceDir));
+        const realFilePath = fs.realpathSync(resolvedPath);
+
+        // Ensure the real (symlink-resolved) path is within the workspace (Requirement 27.4)
+        if (!realFilePath.startsWith(normalizedWorkspace + path.sep) && realFilePath !== normalizedWorkspace) {
           return makeError('PATH_OUTSIDE_WORKSPACE', new Error('Cannot open files outside workspace'));
         }
 
-        // Send the file open event to the renderer with line info
+        // Send the file open event to the renderer with the resolved real path
         if (mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send('editor:open-file', {
-            path: normalizedFile,
-            relativePath: path.relative(workspaceDir, normalizedFile),
+            path: realFilePath,
+            relativePath: path.relative(normalizedWorkspace, realFilePath),
             line: args.line ?? undefined,
             preview: args.preview ?? false,
           });

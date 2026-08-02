@@ -13,7 +13,7 @@
  *   - 'escalate' → pause and request human approval via ApprovalQueue
  */
 
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -24,6 +24,7 @@ import { logger } from '../utils/logger';
 import { PolicyEngine } from '../devops-engine/policy-engine';
 import type { PolicyEvaluation } from '../devops-engine/types';
 import type { ApprovalQueue } from './approval-queue';
+import { validatePath } from '../security/path-guard';
 
 // ─── P0 Sanitized Environment (Requirement 2) ──────────────────────────────
 // Names copied from process.env ONLY if present. Never the whole process.env.
@@ -67,6 +68,87 @@ export function buildSanitizedEnv(projectDir: string): NodeJS.ProcessEnv {
   return env;
 }
 
+// ─── Command Allowlist (Requirement 26.2) ───────────────────────────────────
+// Only commands in this list may be executed. All others are rejected.
+
+/** Commands permitted for execution. Cross-platform. */
+export const COMMAND_ALLOWLIST: readonly string[] = [
+  'node',
+  'npm',
+  'npx',
+  'git',
+  'tsc',
+  'vitest',
+  'eslint',
+  'prettier',
+  // Platform-specific tools
+  ...(process.platform === 'win32'
+    ? ['cmd', 'powershell', 'pwsh', 'where']
+    : ['sh', 'bash', 'cat', 'ls', 'grep', 'find', 'which', 'echo', 'mkdir', 'cp', 'mv', 'rm', 'touch']),
+];
+
+/**
+ * Parse a command string into an executable name and argument array.
+ * Handles quoted arguments and whitespace-separated tokens.
+ */
+export function parseCommand(command: string): { cmd: string; args: string[] } {
+  const tokens: string[] = [];
+  let current = '';
+  let inSingleQuote = false;
+  let inDoubleQuote = false;
+
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i];
+
+    if (ch === "'" && !inDoubleQuote) {
+      inSingleQuote = !inSingleQuote;
+    } else if (ch === '"' && !inSingleQuote) {
+      inDoubleQuote = !inDoubleQuote;
+    } else if (ch === ' ' && !inSingleQuote && !inDoubleQuote) {
+      if (current.length > 0) {
+        tokens.push(current);
+        current = '';
+      }
+    } else {
+      current += ch;
+    }
+  }
+  if (current.length > 0) {
+    tokens.push(current);
+  }
+
+  const cmd = tokens[0] || '';
+  const args = tokens.slice(1);
+  return { cmd, args };
+}
+
+/**
+ * Validate a command executable against the command allowlist.
+ * Uses basename comparison to handle full paths (e.g., `/usr/bin/git` matches `git`).
+ *
+ * Requirements: 26.1, 26.2, 26.3
+ */
+export function isAllowlistedCommand(command: string): { allowed: boolean; reason?: string } {
+  if (!command || command.trim().length === 0) {
+    return { allowed: false, reason: 'Empty command is not permitted' };
+  }
+
+  const { cmd } = parseCommand(command.trim());
+  const cmdBasename = path.basename(cmd);
+
+  const allowed = COMMAND_ALLOWLIST.some(
+    (entry) => cmd === entry || cmdBasename === entry || cmdBasename === `${entry}.exe` || cmdBasename === `${entry}.cmd`,
+  );
+
+  if (!allowed) {
+    return {
+      allowed: false,
+      reason: `Command "${cmdBasename}" is not in the allowlist. Permitted commands: ${COMMAND_ALLOWLIST.join(', ')}`,
+    };
+  }
+  return { allowed: true };
+}
+
 export type ToolType = 'terminal' | 'file_read' | 'file_write' | 'file_list' | 'file_delete';
 
 export interface ToolExecRequest {
@@ -103,6 +185,14 @@ export interface PolicyEnforcementConfig {
   approvalQueue: ApprovalQueue;
   /** Feature gate check — returns true if devops_safety_layer is enabled. */
   isEnabled: () => boolean;
+  /** Optional target allowlist for validating tool execution targets. */
+  targetAllowlist?: TargetAllowlistInterface;
+}
+
+/** Minimal interface for TargetAllowlist consumed by tool-executor. */
+export interface TargetAllowlistInterface {
+  isAllowed(contextType: string, targetValue: string, requiredAccess: string): boolean;
+  hasAnyEntries(contextType: string): boolean;
 }
 
 /** Singleton policy enforcement configuration. Set via configurePolicyEnforcement(). */
@@ -158,6 +248,75 @@ function evaluatePolicy(request: ToolExecRequest): PolicyEvaluation | null {
       reason: `Policy evaluation failed: ${error instanceof Error ? error.message : String(error)}`,
     };
   }
+}
+
+/**
+ * Validate a tool execution target against the target allowlist.
+ * Returns null if allowlist is not configured or devops_safety_layer is disabled (proceed normally).
+ * Returns a denial result if the target is not allowed.
+ *
+ * Requirements: 5.1, 5.2, 5.3
+ */
+function validateTargetAllowlist(request: ToolExecRequest): ToolExecResult | null {
+  if (!policyEnforcement) return null;
+  if (!policyEnforcement.isEnabled()) return null;
+  if (!policyEnforcement.targetAllowlist) return null;
+
+  const allowlist = policyEnforcement.targetAllowlist;
+
+  // Determine context type and target value from the request
+  let contextType: string | null = null;
+  let targetValue: string | null = null;
+
+  if (request.tool === 'terminal' && request.command) {
+    // For terminal commands, check if the command targets a known context
+    // e.g., kubectl commands target kubernetes contexts, git commands target github repos
+    if (request.command.startsWith('kubectl') || request.command.includes('kubectl ')) {
+      contextType = 'kubernetes';
+      // Extract the context/cluster from the command (--context flag or current context)
+      const contextMatch = request.command.match(/--context[=\s]+(\S+)/);
+      targetValue = contextMatch ? contextMatch[1] : 'default';
+    } else if (request.command.startsWith('ssh') || request.command.includes('ssh ')) {
+      contextType = 'ssh';
+      // Extract the host from the ssh command
+      const sshMatch = request.command.match(/ssh\s+(?:-[^\s]+\s+)*(\S+@)?(\S+)/);
+      targetValue = sshMatch ? (sshMatch[2] || '') : '';
+    }
+  } else if (request.filePath) {
+    // For file operations, the target is the file path — these go through
+    // path validation, not the target allowlist. Skip allowlist check.
+    return null;
+  }
+
+  // If no recognized context type, allowlist doesn't apply to this request
+  if (!contextType || !targetValue) return null;
+
+  // Check if the allowlist has any entries for this context type
+  if (!allowlist.hasAnyEntries(contextType)) {
+    // Allowlist enabled but no entries configured for this context type — deny
+    return {
+      success: false,
+      tool: request.tool,
+      output: '',
+      error: `Target allowlist: no entries configured for context type "${contextType}". Add allowlist entries before executing commands targeting ${contextType} resources.`,
+      durationMs: 0,
+    };
+  }
+
+  // Validate the target against the allowlist
+  const requiredAccess = (request.tool === 'file_read' || request.tool === 'file_list') ? 'read-only' : 'read-write';
+  if (!allowlist.isAllowed(contextType, targetValue, requiredAccess)) {
+    return {
+      success: false,
+      tool: request.tool,
+      output: '',
+      error: `Target allowlist denied: "${targetValue}" is not in the ${contextType} allowlist with ${requiredAccess} access.`,
+      durationMs: 0,
+    };
+  }
+
+  // Target is allowed — proceed
+  return null;
 }
 
 /**
@@ -237,7 +396,19 @@ export function executeTerminal(request: ToolExecRequest): ToolExecResult {
   const projectDir = getProjectDir(request.projectId);
   const timeout = request.timeoutMs || 30000;
 
-  // Safety check
+  // Allowlist validation BEFORE execution (Requirement 26.1, 26.3)
+  const allowlistCheck = isAllowlistedCommand(command);
+  if (!allowlistCheck.allowed) {
+    return {
+      success: false,
+      tool: 'terminal',
+      output: '',
+      error: allowlistCheck.reason,
+      durationMs: Date.now() - start,
+    };
+  }
+
+  // Safety check (existing blocked patterns)
   const safety = isSafeCommand(command);
   if (!safety.safe) {
     const result: ToolExecResult = { success: false, tool: 'terminal', output: '', durationMs: Date.now() - start };
@@ -251,12 +422,16 @@ export function executeTerminal(request: ToolExecRequest): ToolExecResult {
       fs.mkdirSync(projectDir, { recursive: true });
     }
 
-    const output = execSync(command, {
+    // Parse command into executable + args array (Requirement 26.1)
+    const { cmd, args } = parseCommand(command);
+
+    const output = execFileSync(cmd, args, {
       cwd: projectDir,
       encoding: 'utf-8',
       timeout,
       maxBuffer: 1024 * 1024, // 1MB
       env: buildSanitizedEnv(projectDir),
+      shell: false, // No shell interpretation — prevents injection
     });
 
     return { success: true, tool: 'terminal', output: output.slice(0, 50000), durationMs: Date.now() - start, exitCode: 0 };
@@ -270,13 +445,15 @@ export function executeTerminal(request: ToolExecRequest): ToolExecResult {
 export function executeFileRead(request: ToolExecRequest): ToolExecResult {
   const start = Date.now();
   const projectDir = getProjectDir(request.projectId);
-  const filePath = path.join(projectDir, request.filePath || '');
 
   try {
-    // Prevent path traversal
-    if (!filePath.startsWith(projectDir)) {
-      return { success: false, tool: 'file_read', output: '', error: 'Path traversal blocked', durationMs: Date.now() - start };
+    // Validate path using PathGuard — resolves symlinks before comparison (Requirement 27.1, 27.2)
+    const validation = validatePath(request.filePath || '', projectDir);
+    if (!validation.safe) {
+      return { success: false, tool: 'file_read', output: '', error: 'PATH_OUTSIDE_WORKSPACE', durationMs: Date.now() - start };
     }
+
+    const filePath = validation.resolved;
     if (!fs.existsSync(filePath)) {
       return { success: false, tool: 'file_read', output: '', error: `File not found: ${request.filePath}`, durationMs: Date.now() - start };
     }
@@ -290,12 +467,15 @@ export function executeFileRead(request: ToolExecRequest): ToolExecResult {
 export function executeFileWrite(request: ToolExecRequest): ToolExecResult {
   const start = Date.now();
   const projectDir = getProjectDir(request.projectId);
-  const filePath = path.join(projectDir, request.filePath || '');
 
   try {
-    if (!filePath.startsWith(projectDir)) {
-      return { success: false, tool: 'file_write', output: '', error: 'Path traversal blocked', durationMs: Date.now() - start };
+    // Validate path using PathGuard — resolves symlinks before comparison (Requirement 27.1, 27.2)
+    const validation = validatePath(request.filePath || '', projectDir);
+    if (!validation.safe) {
+      return { success: false, tool: 'file_write', output: '', error: 'PATH_OUTSIDE_WORKSPACE', durationMs: Date.now() - start };
     }
+
+    const filePath = validation.resolved;
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     fs.writeFileSync(filePath, request.content || '');
     return { success: true, tool: 'file_write', output: `Written ${(request.content || '').length} bytes to ${request.filePath}`, durationMs: Date.now() - start };
@@ -307,12 +487,15 @@ export function executeFileWrite(request: ToolExecRequest): ToolExecResult {
 export function executeFileList(request: ToolExecRequest): ToolExecResult {
   const start = Date.now();
   const projectDir = getProjectDir(request.projectId);
-  const dirPath = path.join(projectDir, request.filePath || '');
 
   try {
-    if (!dirPath.startsWith(projectDir)) {
-      return { success: false, tool: 'file_list', output: '', error: 'Path traversal blocked', durationMs: Date.now() - start };
+    // Validate path using PathGuard — resolves symlinks before comparison (Requirement 27.1, 27.2)
+    const validation = validatePath(request.filePath || '', projectDir);
+    if (!validation.safe) {
+      return { success: false, tool: 'file_list', output: '', error: 'PATH_OUTSIDE_WORKSPACE', durationMs: Date.now() - start };
     }
+
+    const dirPath = validation.resolved;
     if (!fs.existsSync(dirPath)) {
       return { success: false, tool: 'file_list', output: '', error: `Directory not found: ${request.filePath}`, durationMs: Date.now() - start };
     }
@@ -327,12 +510,15 @@ export function executeFileList(request: ToolExecRequest): ToolExecResult {
 export function executeFileDelete(request: ToolExecRequest): ToolExecResult {
   const start = Date.now();
   const projectDir = getProjectDir(request.projectId);
-  const filePath = path.join(projectDir, request.filePath || '');
 
   try {
-    if (!filePath.startsWith(projectDir)) {
-      return { success: false, tool: 'file_delete', output: '', error: 'Path traversal blocked', durationMs: Date.now() - start };
+    // Validate path using PathGuard — resolves symlinks before comparison (Requirement 27.1, 27.2)
+    const validation = validatePath(request.filePath || '', projectDir);
+    if (!validation.safe) {
+      return { success: false, tool: 'file_delete', output: '', error: 'PATH_OUTSIDE_WORKSPACE', durationMs: Date.now() - start };
     }
+
+    const filePath = validation.resolved;
     if (!fs.existsSync(filePath)) {
       return { success: false, tool: 'file_delete', output: '', error: `File not found: ${request.filePath}`, durationMs: Date.now() - start };
     }
@@ -349,6 +535,12 @@ export function executeFileDelete(request: ToolExecRequest): ToolExecResult {
  * against the PolicyEngine before execution. Handles allow/deny/escalate decisions.
  */
 export function executeTool(request: ToolExecRequest): ToolExecResult {
+  // Target allowlist pre-execution check (Requirements 5.1, 5.2, 5.3)
+  const allowlistDenial = validateTargetAllowlist(request);
+  if (allowlistDenial) {
+    return allowlistDenial;
+  }
+
   // Policy enforcement pre-execution hook (Requirements 6.5, 6.7)
   const policyDecision = evaluatePolicy(request);
   if (policyDecision) {
@@ -389,6 +581,12 @@ export function executeTool(request: ToolExecRequest): ToolExecResult {
  * Requirements: 6.5, 6.7
  */
 export async function executeToolAsync(request: ToolExecRequest): Promise<ToolExecResult> {
+  // Target allowlist pre-execution check (Requirements 5.1, 5.2, 5.3)
+  const allowlistDenial = validateTargetAllowlist(request);
+  if (allowlistDenial) {
+    return allowlistDenial;
+  }
+
   // Policy enforcement pre-execution hook
   const policyDecision = evaluatePolicy(request);
   if (policyDecision) {

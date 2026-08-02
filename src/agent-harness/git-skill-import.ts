@@ -13,11 +13,42 @@
  * Requirements: 20.1, 20.2, 20.3, 20.4, 20.5, 20.6, 11.4, 11.5, 11.6
  */
 
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, readdirSync, statSync, rmSync, existsSync } from 'node:fs';
 import { join, extname, basename } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { ScopeDescriptor } from './types';
+import { buildSanitizedEnv } from '../pipeline/tool-executor';
+
+// ─── URL Allowlist ──────────────────────────────────────────────
+
+/**
+ * Allowed URL patterns for git skill import.
+ * Only repositories hosted at these origins are permitted.
+ */
+const ALLOWED_URL_PATTERNS: RegExp[] = [
+  /^https:\/\/github\.com\//,
+  /^https:\/\/gitlab\.com\//,
+  /^git@github\.com:/,
+  /^git@gitlab\.com:/,
+];
+
+/**
+ * Validates a repository URL against the allowlist of permitted origins.
+ * Rejects any URL that does not match a known-safe pattern.
+ *
+ * @param repoUrl - The repository URL to validate.
+ * @throws Error if the URL does not match any allowed pattern.
+ */
+export function validateRepoUrl(repoUrl: string): void {
+  const isAllowed = ALLOWED_URL_PATTERNS.some((pattern) => pattern.test(repoUrl));
+  if (!isAllowed) {
+    throw new Error(
+      `Repository URL "${repoUrl}" is not allowed. ` +
+      `Permitted patterns: https://github.com/*, https://gitlab.com/*, git@github.com:*, git@gitlab.com:*`,
+    );
+  }
+}
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -103,18 +134,30 @@ const TEMP_DIR_PREFIX = 'neuronest-git-skill-import-';
  * Clone a git repository to a temporary directory.
  * Uses shallow clone (depth=1) by default for efficiency.
  *
+ * Security: Uses execFileSync with argument arrays (shell: false by default)
+ * to prevent command injection via crafted repository URLs.
+ *
  * @returns Path to the cloned repository directory.
  * @throws Error with descriptive message including URL and failure reason.
  */
 function cloneRepository(repoUrl: string, depth: number = 1): string {
+  // Validate URL against allowlist BEFORE any git operation
+  validateRepoUrl(repoUrl);
+
   const tempDir = mkdtempSync(join(tmpdir(), TEMP_DIR_PREFIX));
 
   try {
-    const depthArg = depth > 0 ? `--depth ${depth}` : '';
-    execSync(`git clone ${depthArg} -- "${repoUrl}" "${tempDir}"`, {
+    const args: string[] = ['clone'];
+    if (depth > 0) {
+      args.push('--depth', String(depth));
+    }
+    args.push('--', repoUrl, tempDir);
+
+    execFileSync('git', args, {
       stdio: 'pipe',
       timeout: 60_000, // 60 second timeout for clone
       encoding: 'utf-8',
+      env: buildSanitizedEnv(tempDir),
     });
   } catch (err: unknown) {
     // Clean up temp dir on failure
@@ -130,16 +173,18 @@ function cloneRepository(repoUrl: string, depth: number = 1): string {
 
 /**
  * Get the current HEAD commit SHA from a local repository.
+ * Uses execFileSync with argument arrays (shell: false) for safety.
  */
 function getCommitSha(repoPath: string): string {
   try {
-    const sha = execSync('git rev-parse HEAD', {
+    const result = execFileSync('git', ['rev-parse', 'HEAD'], {
       cwd: repoPath,
       stdio: 'pipe',
       encoding: 'utf-8',
       timeout: 10_000,
+      env: buildSanitizedEnv(repoPath),
     });
-    return sha.trim();
+    return result.trim();
   } catch {
     return 'unknown';
   }
@@ -543,4 +588,5 @@ export {
   hasRequiredFields,
   simpleYamlParse,
   SKILL_EXTENSIONS,
+  ALLOWED_URL_PATTERNS,
 };

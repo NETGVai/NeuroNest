@@ -13,6 +13,7 @@
 
 import { spawn } from 'node:child_process';
 import type { CommandRequest, CommandResult } from './types';
+import { buildSanitizedEnv } from '../pipeline/tool-executor';
 
 // ─────────────────────────────────────────────
 // Constants
@@ -231,9 +232,11 @@ export async function execute(request: CommandRequest, _agentId: string): Promis
     };
   }
 
-  // Step 3: Build environment combining request env, resolved secrets, and process env
+  // Step 3: Build environment using sanitized base (Requirement 30.2)
+  // Never spread full process.env — only allowlisted vars + request overrides + resolved secrets
+  const sanitizedBase = buildSanitizedEnv(request.cwd ?? process.cwd());
   const env: Record<string, string> = {
-    ...process.env as Record<string, string>,
+    ...sanitizedBase as Record<string, string>,
     ...(request.env ?? {}),
     ...envVars,
   };

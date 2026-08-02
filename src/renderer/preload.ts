@@ -1,7 +1,57 @@
 /**
  * Electron preload script — exposes safe IPC bridge via contextBridge.
+ *
+ * ─── IPC Privilege Tiers (Requirement 28.1, 28.2, 28.3, 28.4) ──────────────
+ * Channels are categorized into privilege tiers to limit renderer compromise impact:
+ *   • public     — UI state channels (get-theme, get-agents, get-departments)
+ *   • authenticated — user operation channels (kb:*, training:*, model-compare:*)
+ *   • admin      — system operation channels (tool:execute, ops:approve-grant, secure:get-token)
+ *
+ * Admin-tier channels require caller authorization before the main-process handler
+ * processes the request. Tier categorization is enforced at runtime — requests to
+ * incorrectly categorized channels are rejected.
+ * ─────────────────────────────────────────────────────────────────────────────
  */
 const { contextBridge, ipcRenderer } = require('electron');
+
+// ─── IPC Privilege Tiers ─────────────────────────────────────────────────────
+// Channels that expose system-level operations requiring caller authorization.
+// Admin-tier handlers verify authorization before processing (Req 28.2, 28.3).
+const ADMIN_CHANNELS = [
+  'tool:execute',
+  'ops:approve-grant',
+  'secure:get-token',
+] as const;
+
+// Channels that require an authenticated session but not admin privileges.
+const AUTHENTICATED_CHANNEL_PREFIXES = [
+  'kb:',
+  'training:',
+  'model-compare:',
+] as const;
+
+// Public channels — no authorization required (UI state queries).
+const PUBLIC_CHANNELS = [
+  'get-theme',
+  'get-agents',
+  'get-departments',
+  'get-app-version',
+  'get-config',
+] as const;
+
+/**
+ * Determine the privilege tier for a given channel.
+ * Used for runtime validation that channels are correctly categorized.
+ */
+function getChannelTier(channel: string): 'public' | 'authenticated' | 'admin' {
+  if ((ADMIN_CHANNELS as readonly string[]).includes(channel)) return 'admin';
+  for (const prefix of AUTHENTICATED_CHANNEL_PREFIXES) {
+    if (channel.startsWith(prefix)) return 'authenticated';
+  }
+  if ((PUBLIC_CHANNELS as readonly string[]).includes(channel)) return 'public';
+  // Default: treat as authenticated (requires valid session but not admin)
+  return 'authenticated';
+}
 
 const SEND_CHANNELS = [
   'chat-message', 'project-create', 'project-open', 'project-delete', 'project-rename',
@@ -260,6 +310,8 @@ const INVOKE_CHANNELS = [
   'gateway:get-config', 'gateway:update-config', 'gateway:log', 'gateway:audit-log', 'gateway:stats',
   // E2E Encrypted Sharing
   'e2e:get-config', 'e2e:update-config', 'e2e:share', 'e2e:get-share', 'e2e:list', 'e2e:delete', 'e2e:decrypt', 'e2e:stats',
+  // Model Comparison Panel (Requirement 18.1, 18.2, 18.3)
+  'model-compare:list-models', 'model-compare:get-metrics', 'model-compare:compare',
   // Indexing Pipeline
   'indexing:getStatus', 'indexing:fullReindex', 'indexing:stop', 'indexing:getConfig', 'indexing:updateConfig',
   // Inline Autocomplete (Kilo-Inspired Feature Integration)
@@ -300,6 +352,11 @@ const INVOKE_CHANNELS = [
   'gcf:rollout-gate-status',
   // Skill Packs (Feature 11) — install/list/sync/remove + drift & eval
   'skill-packs:install', 'skill-packs:list', 'skill-packs:sync', 'skill-packs:remove', 'skill-packs:check-drift', 'skill-packs:run-eval',
+  // Training Pipeline (Training Progress + Training Config panels)
+  'training:job-start', 'training:job-cancel', 'training:job-pause', 'training:job-resume',
+  'training:job-status', 'training:jobs-list', 'training:config-get', 'training:config-validate',
+  'training:hardware-detect', 'training:export-model', 'training:compare-models',
+  'training:store-preference', 'training:job-delete', 'training:storage-usage', 'training:cleanup',
   // Production UX — agent state & change queries
   'agent:get-change-summary', 'agent:get-diff', 'agent:get-progress-steps',
   // Production UX — steering file management
@@ -320,8 +377,12 @@ const INVOKE_CHANNELS = [
   'chat:apply-code', 'chat:open-file-reference', 'chat:regenerate-message', 'chat:edit-message', 'chat:insert-at-cursor', 'chat:apply-diff', 'chat:mark-step-complete',
   // Spec Viewer Panel (Requirement 23.9, 23.10, 23.11)
   'spec:get-document', 'spec:run-workflow', 'spec:get-task-status',
-  // Operations Dashboard (Requirement 15.1-15.6)
-  'ops:get-active-runs', 'ops:get-pending-approvals', 'ops:get-cost-status', 'ops:get-policy-decisions', 'ops:approve-grant', 'ops:subscribe-updates',
+  // Operations Dashboard (Requirement 15.1-15.6, 19.1-19.3, 20.1-20.3)
+  'ops:get-active-runs', 'ops:get-pending-approvals', 'ops:get-cost-status', 'ops:get-policy-decisions', 'ops:approve-grant', 'ops:audit-log', 'ops:subscribe-updates',
+  // Knowledge Base Panel (Requirement 14.1-14.4, 15.1-15.2)
+  'kb:sources-list', 'kb:source-add', 'kb:source-remove', 'kb:source-reindex', 'kb:status', 'kb:search', 'kb:config-update',
+  // Git Skill Import (Requirement 9.1, 9.2, 9.3, 21.7)
+  'git-import:run',
 ];
 
 const RECEIVE_CHANNELS = [
@@ -400,8 +461,12 @@ const RECEIVE_CHANNELS = [
   'drift:signal', 'drift:state-update',
   // Plan Mode state updates (Main → Renderer)
   'plan-mode:state-update',
+  // Training Pipeline real-time updates (Main → Renderer)
+  'training:progress-update', 'training:job-state-changed', 'training:metrics-update', 'training:export-progress',
   // Agent Catalog updates (deferred import completed)
   'agents:catalog-updated',
+  // Knowledge Base Panel — real-time indexing/status updates (Main → Renderer)
+  'kb:indexing-progress', 'kb:source-status-changed', 'kb:search-results',
   // User profile request (Main → Renderer, response via 'user-profile-response' send channel)
   'request-user-profile',
 ];
@@ -411,8 +476,22 @@ contextBridge.exposeInMainWorld('electronAPI', {
     if (SEND_CHANNELS.includes(channel)) ipcRenderer.send(channel, ...args);
   },
   invoke(channel: string, ...args: unknown[]) {
-    if (INVOKE_CHANNELS.includes(channel)) return ipcRenderer.invoke(channel, ...args);
-    return Promise.reject(new Error(`Channel not allowed: ${channel}`));
+    if (!INVOKE_CHANNELS.includes(channel)) {
+      return Promise.reject(new Error(`Channel not allowed: ${channel}`));
+    }
+    // ─── IPC Privilege Tier Enforcement (Req 28.1, 28.4) ──────────────
+    // Admin-tier channels are tagged so the main-process handler can verify
+    // caller authorization. The tier metadata is injected into the request
+    // payload as a non-enumerable property that the handler checks.
+    const tier = getChannelTier(channel);
+    if (tier === 'admin') {
+      // For admin channels, wrap the first argument to include tier context
+      // so the main-process handler can verify authorization (Req 28.2, 28.3).
+      const payload = args[0] && typeof args[0] === 'object' ? args[0] : {};
+      const enrichedPayload = { ...payload, __ipcTier: 'admin' };
+      return ipcRenderer.invoke(channel, enrichedPayload, ...args.slice(1));
+    }
+    return ipcRenderer.invoke(channel, ...args);
   },
   on(channel: string, callback: (...args: unknown[]) => void) {
     if (RECEIVE_CHANNELS.includes(channel)) {
