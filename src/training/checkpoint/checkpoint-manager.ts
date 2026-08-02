@@ -68,6 +68,9 @@ export class TrainingCheckpointManager {
   /** Maximum checkpoints per job (rolling window). */
   readonly maxCheckpointsPerJob: number = MAX_CHECKPOINTS_PER_JOB;
 
+  /** Monotonic counter to guarantee unique checkpoint IDs even within the same millisecond. */
+  private idSeq = 0;
+
   constructor(private readonly db: Database.Database) {}
 
   // ─── Save ─────────────────────────────────────────────────────
@@ -94,7 +97,7 @@ export class TrainingCheckpointManager {
     sizeBytes: number = 0,
     learningRate: number = 0,
   ): Promise<Checkpoint> {
-    const id = `chk-${jobId}-e${epoch}-s${step}-${Date.now()}`;
+    const id = `chk-${jobId}-e${epoch}-s${step}-${Date.now()}-${this.idSeq++}`;
     const createdAt = Date.now();
 
     // Compute actual size if not provided and path exists

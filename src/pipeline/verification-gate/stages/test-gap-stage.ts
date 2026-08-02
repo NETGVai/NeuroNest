@@ -426,17 +426,34 @@ export class DefaultDockerSandboxRunner implements DockerSandboxRunner {
    */
   private isDockerAvailable(): Promise<boolean> {
     return new Promise((resolve) => {
+      let settled = false;
       const proc = spawn('docker', ['info'], {
         stdio: ['ignore', 'pipe', 'pipe'],
-        timeout: 10_000,
       });
 
+      // Force-kill after 5 seconds to avoid hanging on macOS when daemon is not running
+      const timer = setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          try { proc.kill('SIGKILL'); } catch { /* ignore */ }
+          resolve(false);
+        }
+      }, 5_000);
+
       proc.on('close', (code) => {
-        resolve(code === 0);
+        if (!settled) {
+          settled = true;
+          clearTimeout(timer);
+          resolve(code === 0);
+        }
       });
 
       proc.on('error', () => {
-        resolve(false);
+        if (!settled) {
+          settled = true;
+          clearTimeout(timer);
+          resolve(false);
+        }
       });
     });
   }

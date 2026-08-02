@@ -29,22 +29,23 @@ export function isPathSafe(targetPath: string, projectDir: string): boolean {
     // Reject null bytes and control characters
     if (/[\x00-\x1f]/.test(targetPath)) return false;
 
-    // Resolve to absolute path
-    const resolved = path.resolve(projectDir, targetPath);
+    // Resolve both paths to absolute canonical form
+    const resolvedProjectDir = path.resolve(projectDir);
+    const resolved = path.resolve(resolvedProjectDir, targetPath);
 
     // The resolved path must be the project dir itself or a child of it
-    const projectDirWithSep = projectDir.endsWith(path.sep)
-      ? projectDir
-      : projectDir + path.sep;
+    const projectDirWithSep = resolvedProjectDir.endsWith(path.sep)
+      ? resolvedProjectDir
+      : resolvedProjectDir + path.sep;
 
-    if (resolved !== projectDir && !resolved.startsWith(projectDirWithSep)) {
+    if (resolved !== resolvedProjectDir && !resolved.startsWith(projectDirWithSep)) {
       return false;
     }
 
     // If the file/dir already exists, resolve through symlinks and re-check
     if (fs.existsSync(resolved)) {
       const realPath = fs.realpathSync(resolved);
-      const realProjectDir = fs.realpathSync(projectDir);
+      const realProjectDir = fs.realpathSync(resolvedProjectDir);
       const realProjectDirWithSep = realProjectDir.endsWith(path.sep)
         ? realProjectDir
         : realProjectDir + path.sep;

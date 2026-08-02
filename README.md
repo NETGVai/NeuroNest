@@ -18,7 +18,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-000?style=flat-square&logo=electron" alt="Platforms" />
   <img src="https://img.shields.io/badge/version-0.1.670-blue?style=flat-square" alt="Version" />
-  <img src="https://img.shields.io/badge/agents-118%2B-purple?style=flat-square" alt="Agents" />
+  <img src="https://img.shields.io/badge/agents-118-purple?style=flat-square" alt="Agents" />
   <img src="https://img.shields.io/badge/divisions-22%2B-orange?style=flat-square" alt="Divisions" />
   <img src="https://img.shields.io/badge/providers-11-green?style=flat-square" alt="Providers" />
   <a href="./LICENSE"><img src="https://img.shields.io/badge/License-BUSL--1.1-yellow?style=flat-square" alt="License: BUSL-1.1" /></a>
@@ -548,7 +548,7 @@ Policy presets: Standard, Strict, Enterprise. Per-agent and per-project policy o
 | | Community | Professional | Enterprise |
 |---|-----------|-------------|-----------|
 | Price | Free | $29/month | Contact Sales |
-| AI Agents | 300+ | 300+ | 300+ |
+| AI Agents | 118 | 118 | 118 |
 | Swarm Orchestration | ✓ | ✓ | ✓ |
 | Loop Engine | ✓ | ✓ | ✓ |
 | Multi-Model Support | ✓ | ✓ | ✓ |
