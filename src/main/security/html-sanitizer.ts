@@ -30,9 +30,18 @@ export function stripHtmlTags(input: string): string {
   if (typeof input !== 'string') {
     return '';
   }
-  // Remove all HTML/XML tags (opening, closing, self-closing, with attributes)
-  // The pattern matches < followed by a letter or / then any chars except > then >
-  return input.replace(/<[a-zA-Z/][^>]*>/g, '');
+  // Remove all HTML/XML tags (opening, closing, self-closing, with attributes).
+  // The regex accounts for quoted attribute values that may contain '>' characters.
+  // It iterates until no tag-like patterns remain, handling edge cases where
+  // removing one tag exposes content that forms a new tag-like pattern.
+  let result = input;
+  const tagRegex = /<[a-zA-Z/!][^"'>]*(?:"[^"]*"[^"'>]*|'[^']*'[^"'>]*)*\/?>/g;
+  result = result.replace(tagRegex, '');
+  // Iterative fallback: strip any remaining simple tags that slipped through
+  while (/<[a-zA-Z/][^>]*>/.test(result)) {
+    result = result.replace(/<[a-zA-Z/][^>]*>/g, '');
+  }
+  return result;
 }
 
 /**

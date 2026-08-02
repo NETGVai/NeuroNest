@@ -121,7 +121,7 @@ export class PlanModeGateImpl implements PlanModeGate {
     // Mutations targeting a different path → deny (Req 11.2)
     return {
       verdict: 'deny',
-      reason: `Plan Mode active: mutation blocked. Target "${targetPath}" is not the plan file "${planFilePath}".`,
+      reason: `Plan Mode active: mutation blocked. Target "${targetPath.replace(/\\/g, '/')}" is not the plan file "${planFilePath.replace(/\\/g, '/')}".`,
     };
   }
 
