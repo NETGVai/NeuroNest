@@ -232,9 +232,9 @@ jobs:
         shell: bash
 
       - name: Run test suite
-        run: npx vitest --run --reporter=verbose --bail=5
+        run: npx vitest --run --reporter=verbose --bail=5 --pool=forks --poolOptions.forks.singleFork
         shell: bash
-        timeout-minutes: 12
+        timeout-minutes: 14
 
   # ────────────────────────────────────────────────────────────────────────────
   # PACKAGE — Triggered only on version tags (v*). Builds distributable

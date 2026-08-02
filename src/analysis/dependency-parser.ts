@@ -30,6 +30,15 @@ const SKIP_DIRS = new Set([
   '.next', '.nuxt', '.output', '.cache', '.neuronest',
 ]);
 
+/**
+ * Normalize a file path to always use forward slashes.
+ * On Windows, path.relative/join produce backslashes which breaks
+ * cross-platform graph node lookups.
+ */
+function toForwardSlash(p: string): string {
+  return p.split(path.sep).join('/');
+}
+
 // ─── Import Pattern Regexes ──────────────────────────────────────────────────
 
 /**
@@ -110,7 +119,7 @@ export class DependencyParser {
     // Build a lookup map: relative path → absolute path
     const projectFiles = new Map<string, string>();
     for (const absPath of filePaths) {
-      const relPath = path.relative(projectPath, absPath);
+      const relPath = toForwardSlash(path.relative(projectPath, absPath));
       projectFiles.set(relPath, absPath);
     }
 
@@ -193,7 +202,7 @@ export class DependencyParser {
     const filePaths = await this.discoverSourceFiles(projectPath, extensions);
     const projectFiles = new Map<string, string>();
     for (const absPath of filePaths) {
-      const relPath = path.relative(projectPath, absPath);
+      const relPath = toForwardSlash(path.relative(projectPath, absPath));
       projectFiles.set(relPath, absPath);
     }
 
@@ -446,7 +455,7 @@ export class DependencyParser {
 
     // Resolve relative to the source file's directory
     const sourceDir = path.dirname(sourceRelPath);
-    const resolvedRel = path.normalize(path.join(sourceDir, specifier));
+    const resolvedRel = toForwardSlash(path.normalize(path.join(sourceDir, specifier)));
 
     // Try exact match first
     if (projectFiles.has(resolvedRel)) {
@@ -463,7 +472,7 @@ export class DependencyParser {
 
     // Try index files (./dir → ./dir/index.ext)
     for (const ext of SUPPORTED_EXTENSIONS) {
-      const indexPath = path.join(resolvedRel, 'index' + ext);
+      const indexPath = toForwardSlash(path.join(resolvedRel, 'index' + ext));
       if (projectFiles.has(indexPath)) {
         return indexPath;
       }
