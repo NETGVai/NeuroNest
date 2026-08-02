@@ -182,6 +182,7 @@ const panelRendererFiles = [
   'extensions-workspace-panel.ts',
   'quality-review-security-workspace-panel.ts',
   'management-surfaces-panel.ts',
+  'agent-dashboard-v2-base.ts',
   'agent-dashboard-v2-panel.ts',
   'mermaid-renderer.ts',
   'chat-enhancements.ts',

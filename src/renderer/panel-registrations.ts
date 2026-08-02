@@ -409,9 +409,23 @@ function registerAllPanels() {
     featureGate: null,
     group: 'tools',
     commandPaletteAction: 'Open Agent Dashboard',
-    load: createWindowPanelLoader('./agent-dashboard-v2-panel.js', 'AgentDashboardV2Panel', function (container) {
-      return [container];
-    }),
+    load: function () {
+      // Load base utilities first, then the main panel
+      return loadScript('./agent-dashboard-v2-base.js').then(function () {
+        return loadScript('./agent-dashboard-v2-panel.js');
+      }).then(function () {
+        var Ctor = window.AgentDashboardV2Panel;
+        if (!Ctor) throw new Error('AgentDashboardV2Panel not found on window');
+        return {
+          render: function (container) {
+            var instance = new Ctor(container);
+            if (typeof instance.render === 'function') instance.render();
+            return instance;
+          },
+          destroy: function () { },
+        };
+      });
+    },
   });
 
   // ────────────────────────────────────────────────────────────────
