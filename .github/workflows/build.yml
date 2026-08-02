@@ -224,7 +224,7 @@ jobs:
             ${{ runner.os }}-native-
 
       - name: Install dependencies
-        run: npm ci || (rm -rf node_modules && npm ci)
+        run: npm ci --ignore-scripts || (rm -rf node_modules && npm ci --ignore-scripts)
         shell: bash
 
       - name: Rebuild native modules
