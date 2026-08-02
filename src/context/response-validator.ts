@@ -19,6 +19,18 @@ import type { ValidationResult, Diagnostic } from './types.js';
 const execFileAsync = promisify(execFile);
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Normalize a file path to forward slashes for consistent map lookups.
+ * The TypeScript compiler uses forward slashes internally regardless of platform.
+ */
+function normalizeToForwardSlash(p: string): string {
+  return p.replace(/\\/g, '/');
+}
+
+// ---------------------------------------------------------------------------
 // Public Types
 // ---------------------------------------------------------------------------
 
@@ -294,6 +306,8 @@ export class ResponseValidator {
     }
 
     // Create a file map for the targets (virtual overlay)
+    // Keys are normalized to forward slashes for consistent lookups —
+    // the TypeScript compiler uses forward slashes internally on all platforms.
     const fileMap = new Map<string, string>();
     const fileNames: string[] = [];
 
@@ -301,8 +315,9 @@ export class ResponseValidator {
       const resolvedPath = path.isAbsolute(target.path)
         ? target.path
         : path.resolve(this.projectDir, target.path);
-      fileMap.set(resolvedPath, target.content);
-      fileNames.push(resolvedPath);
+      const normalizedPath = normalizeToForwardSlash(resolvedPath);
+      fileMap.set(normalizedPath, target.content);
+      fileNames.push(normalizedPath);
     }
 
     // Create a custom compiler host that serves our virtual files
@@ -310,17 +325,17 @@ export class ResponseValidator {
     const customHost: ts.CompilerHost = {
       ...defaultHost,
       getSourceFile(fileName, languageVersion) {
-        const virtualContent = fileMap.get(fileName);
+        const virtualContent = fileMap.get(normalizeToForwardSlash(fileName));
         if (virtualContent !== undefined) {
           return ts.createSourceFile(fileName, virtualContent, languageVersion);
         }
         return defaultHost.getSourceFile(fileName, languageVersion);
       },
       fileExists(fileName) {
-        return fileMap.has(fileName) || defaultHost.fileExists(fileName);
+        return fileMap.has(normalizeToForwardSlash(fileName)) || defaultHost.fileExists(fileName);
       },
       readFile(fileName) {
-        const virtualContent = fileMap.get(fileName);
+        const virtualContent = fileMap.get(normalizeToForwardSlash(fileName));
         if (virtualContent !== undefined) {
           return virtualContent;
         }
@@ -333,7 +348,7 @@ export class ResponseValidator {
 
     for (const diag of tsDiagnostics) {
       // Only report diagnostics for our target files
-      if (!diag.file || !fileMap.has(diag.file.fileName)) {
+      if (!diag.file || !fileMap.has(normalizeToForwardSlash(diag.file.fileName))) {
         continue;
       }
 
