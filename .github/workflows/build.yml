@@ -232,8 +232,9 @@ jobs:
         shell: bash
 
       - name: Run test suite
-        run: npx vitest --run --reporter=verbose
+        run: npx vitest --run --reporter=verbose --bail=5
         shell: bash
+        timeout-minutes: 12
 
   # ────────────────────────────────────────────────────────────────────────────
   # PACKAGE — Triggered only on version tags (v*). Builds distributable
