@@ -87,7 +87,7 @@ export class AnalysisCache {
 
     // Check for modified or new files
     for (const filePath of currentFiles) {
-      const relativePath = path.relative(projectPath, filePath);
+      const relativePath = path.relative(projectPath, filePath).replace(/\\/g, '/');
       const cachedHash = cachedHashes.get(relativePath);
 
       if (!cachedHash) {
@@ -109,7 +109,7 @@ export class AnalysisCache {
 
     // Check for deleted files (in cache but not on disk)
     const currentRelativePaths = new Set(
-      currentFiles.map((f) => path.relative(projectPath, f))
+      currentFiles.map((f) => path.relative(projectPath, f).replace(/\\/g, '/'))
     );
     for (const cachedPath of cachedHashes.keys()) {
       if (!currentRelativePaths.has(cachedPath)) {
