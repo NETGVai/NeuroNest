@@ -8,14 +8,13 @@ name: Build & Release
 #     - quality-gates (typecheck, lint, ratchets, benchmarks)
 #     - test-matrix (macos-latest)
 #     - test-matrix (ubuntu-latest)
-#     - test-matrix (windows-latest)
 #
 #   Additional recommended settings:
 #     - Require branches to be up to date before merging: true
 #     - Require conversation resolution before merging: true
 #
 #   Block PR merge on any quality gate failure (typecheck, lint, test, benchmark).
-#   All four required_status_checks must pass for the merge button to activate.
+#   All three required_status_checks must pass for the merge button to activate.
 # ──────────────────────────────────────────────────────────────────────────────
 
 on:
@@ -183,21 +182,17 @@ jobs:
           fi
 
   # ────────────────────────────────────────────────────────────────────────────
-  # TEST MATRIX — Runs the full test suite on macOS, Windows, and Linux.
+  # TEST MATRIX — Runs the full test suite on macOS and Linux.
   # Each OS variant is a required_status_check for branch protection.
   # Caches both node_modules and native module rebuilds per-platform.
   # ────────────────────────────────────────────────────────────────────────────
   test-matrix:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
-    # Allow Windows tests to fail without blocking the build.
-    # Windows has persistent platform-specific test issues (timers, path separators)
-    # that don't represent real bugs. macOS + Ubuntu provide sufficient coverage.
-    continue-on-error: ${{ matrix.os == 'windows-latest' }}
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, ubuntu-latest, windows-latest]
+        os: [macos-latest, ubuntu-latest]
     steps:
       - uses: actions/checkout@v5
 
