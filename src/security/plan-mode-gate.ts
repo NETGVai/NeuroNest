@@ -197,7 +197,7 @@ export class PlanModeGateImpl implements PlanModeGate {
       for (const field of pathFields) {
         const value = (args as Record<string, unknown>)[field];
         if (typeof value === 'string' && value.trim() !== '') {
-          return path.normalize(value);
+          return path.normalize(value).replace(/\\/g, '/');
         }
       }
     } catch {
@@ -211,6 +211,9 @@ export class PlanModeGateImpl implements PlanModeGate {
    * Compare two file paths for equality (normalized, case-sensitive on Unix).
    */
   private pathsMatch(targetPath: string, planFilePath: string): boolean {
-    return path.normalize(targetPath) === path.normalize(planFilePath);
+    // Normalize both paths to forward slashes for consistent comparison across platforms
+    const normTarget = path.normalize(targetPath).replace(/\\/g, '/');
+    const normPlan = path.normalize(planFilePath).replace(/\\/g, '/');
+    return normTarget === normPlan;
   }
 }
