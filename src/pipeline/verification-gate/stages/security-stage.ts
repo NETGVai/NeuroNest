@@ -96,7 +96,7 @@ export class SecurityStage implements VerificationStage {
 
       // Determine relative path for diagnostics
       const relPath = path.isAbsolute(filePath)
-        ? path.relative(context.rootDir, filePath)
+        ? path.relative(context.rootDir, filePath).replace(/\\/g, '/')
         : filePath;
 
       // Run RealtimeCodeAnalyzer

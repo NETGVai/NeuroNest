@@ -39,7 +39,7 @@ export class PlanModeState {
       throw new Error(`Plan file path must be absolute. Received: ${planFilePath}`);
     }
     this._active = true;
-    this._planFilePath = planFilePath;
+    this._planFilePath = path.posix.normalize(planFilePath);
   }
 
   /**
