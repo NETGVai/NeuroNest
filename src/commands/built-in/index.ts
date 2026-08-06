@@ -41,7 +41,7 @@ export const builtInCommands: CommandDefinition[] = [
         '/mode <flash|standard|pro|ultra> — Set execution mode\n' +
         '/remember <fact> — Store a fact in long-term memory\n' +
         '/forget <fact> — Delete a fact from long-term memory\n' +
-        '/channel <platform> <config> — Configure IM channel\n' +
+        '/channel <channelId> <config> — Configure IM channel\n' +
         '/sandbox <local|docker> — Set sandbox backend\n' +
         '/mcp <list|add|remove> — Manage MCP servers\n' +
         '/commit — Generate commit message from staged changes\n' +
@@ -255,11 +255,29 @@ export const builtInCommands: CommandDefinition[] = [
     }
   },
   {
-    id: 'channel', name: 'channel', description: 'Configure IM channel connection', usage: '/channel <platform> <config>',
-    execute: async (args) => {
-      if (args.length < 2) return err('Usage: /channel <whatsapp|telegram|slack|discord> <config>');
+    id: 'channel', name: 'channel', description: 'Configure IM channel connection', usage: '/channel <channelId> <config>',
+    execute: async (args, ctx) => {
+      if (args.length < 2) return err('Usage: /channel <channelId> <config>');
       const platform = args[0].toLowerCase();
-      if (!['whatsapp', 'telegram', 'slack', 'discord'].includes(platform)) return err('Unsupported platform: ' + platform + '. Supported: whatsapp, telegram, slack, discord');
+      // REQ 27.1 — accept any registered channelId from the Adapter_Registry
+      let registered: string[];
+      if (ctx['channelManager'] && typeof (ctx['channelManager'] as any).listRegisteredChannels === 'function') {
+        registered = (ctx['channelManager'] as any).listRegisteredChannels();
+      } else {
+        // Lazy fallback: import the ChannelManager module to access the singleton
+        try {
+          const { ChannelManager } = await import('../../channels/channel-manager');
+          const mgr = new ChannelManager();
+          registered = mgr.listRegisteredChannels();
+        } catch {
+          // If registry is unavailable, fall back gracefully
+          registered = [];
+        }
+      }
+      // REQ 27.2 — reject unknown channelIds with the full valid set
+      if (!registered.includes(platform)) {
+        return err(`Unknown channel '${platform}'. Registered channels: ${registered.join(', ')}`);
+      }
       return ok('__CHANNEL__' + JSON.stringify({ platform, config: args.slice(1).join(' ') }));
     }
   },

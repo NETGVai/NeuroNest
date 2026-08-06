@@ -383,6 +383,8 @@ const INVOKE_CHANNELS = [
   'kb:sources-list', 'kb:source-add', 'kb:source-remove', 'kb:source-reindex', 'kb:status', 'kb:search', 'kb:config-update',
   // Git Skill Import (Requirement 9.1, 9.2, 9.3, 21.7)
   'git-import:run',
+  // Channel Adapter System (Requirement 25.2)
+  'channel:list', 'channel:metadata',
 ];
 
 const RECEIVE_CHANNELS = [
@@ -469,6 +471,8 @@ const RECEIVE_CHANNELS = [
   'kb:indexing-progress', 'kb:source-status-changed', 'kb:search-results',
   // User profile request (Main → Renderer, response via 'user-profile-response' send channel)
   'request-user-profile',
+  // Channel Adapter System — registry change broadcast (Requirement 25.2)
+  'channel-registry-update',
 ];
 
 contextBridge.exposeInMainWorld('electronAPI', {

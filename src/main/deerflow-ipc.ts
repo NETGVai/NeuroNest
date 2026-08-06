@@ -208,6 +208,7 @@ async function getIMGateway() {
       disconnect: async () => {},
       sendMessage: async () => ({ success: true, message: 'sent' }),
       onMessage: () => {},
+      listRegisteredChannels: () => [] as string[],
     };
     const stubFirewall = { evaluate: () => ({ allowed: true }) };
     const stubSwarm = { execute: async () => ({ output: '' }) };

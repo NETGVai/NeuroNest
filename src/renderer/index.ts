@@ -7,6 +7,7 @@ window._neuronestActiveProject = null;
 var chatMessageStore = [];
 var activeView = 'chat';
 var chatUnreadCount = 0;
+var _channelsViewUnsubscribe = null;
 
 // ── Performance: BoundedMessageStore (gated behind PERF_FLAGS.BOUNDED_MESSAGES) ──
 var _PERF_BOUNDED_MESSAGES = true; // Feature flag — matches PERF_FLAGS.BOUNDED_MESSAGES
@@ -8636,6 +8637,11 @@ function showView(view) {
   if (view !== 'chat') {
     cleanupStreamListeners();
   }
+  // Clean up channels-view event subscriptions when navigating away (REQ 31.7)
+  if (view !== 'channels' && _channelsViewUnsubscribe) {
+    _channelsViewUnsubscribe();
+    _channelsViewUnsubscribe = null;
+  }
   // Preserve enhanced firewall navigation state before switching views
   if (enhancedFirewallUIState) {
     enhancedFirewallUIState.navigationState.lastView = view;
@@ -9350,103 +9356,32 @@ function showEditorView() {
 }
 
 function showChannelsView() {
+  // Clean up previous channels-view subscriptions if any
+  if (_channelsViewUnsubscribe) {
+    _channelsViewUnsubscribe();
+    _channelsViewUnsubscribe = null;
+  }
+
   var mc = $$('#main-content');
-  mc.innerHTML = '<div class="view-panel view-panel-wide" id="channels-view"><h2>Channels</h2><div id="ch-grid-area">' + showThinkingAnimation() + '</div></div>';
-  var panel = $$('#channels-view');
+  mc.innerHTML = '<div class="view-panel view-panel-wide" id="channels-view"></div>';
+  var container = $$('#channels-view');
 
-  Promise.all([
-    eapi().invoke('get-integrations'),
-    eapi().invoke('get-channel-configs'),
-    eapi().invoke('get-channel-status', { channelId: 'whatsapp' }),
-    eapi().invoke('get-channel-status', { channelId: 'telegram' }),
-    eapi().invoke('get-channel-status', { channelId: 'discord' }),
-    eapi().invoke('get-channel-status', { channelId: 'slack' })
-  ]).then(function(results) {
-    var intgResult = results[0] || {};
-    var integrations = intgResult.integrations || intgResult || [];
-    if (!Array.isArray(integrations)) integrations = [];
-    var configs = results[1] || {};
-    // Build live status map from actual connection state
-    var liveStatus = {};
-    var statusChannels = ['whatsapp', 'telegram', 'discord', 'slack'];
-    for (var si = 0; si < statusChannels.length; si++) {
-      var st = results[si + 2];
-      if (st && st.status) liveStatus[statusChannels[si]] = st.status;
-    }
-    var html = '<h2>Channels</h2>';
-    if (integrations.length === 0) {
-      html += '<p style="color:var(--text-dim);">No integrations available.</p>';
-    } else {
-      // Determine configured/connected status for each channel
-      function isChannelConfigured(chId, cfg) {
-        if (!cfg) return false;
-        // Channel-specific credential checks (don't use cfg.connected — that's runtime state, not config)
-        if (chId === 'github') return !!(cfg.username && cfg.token);
-        if (chId === 'whatsapp') return !!(cfg.phoneNumberId || cfg.apiKey || cfg.token);
-        if (chId === 'telegram') return !!cfg.botToken;
-        if (chId === 'discord') return !!cfg.botToken;
-        if (chId === 'slack') return !!(cfg.botToken || cfg.token);
-        if (chId === 'email') return !!(cfg.smtpHost && cfg.smtpUser);
-        // Generic: has a token or apiKey or password
-        return !!(cfg.token || cfg.apiKey || cfg.botToken || cfg.password);
-      }
+  // Render the channels view from the registry-driven module (REQ 31.1, REQ 31.2)
+  if (window.renderChannelsView) {
+    window.renderChannelsView(container).then(function() {
+      wireChannelButtons(container);
+    }).catch(function(err) {
+      console.error('[channels-view] render failed:', err);
+      container.innerHTML = '<h2>Channels</h2><p style="color:var(--red);">Failed to load channels.</p>';
+    });
+  } else {
+    container.innerHTML = '<h2>Channels</h2><p style="color:var(--text-dim);">Channels view not available.</p>';
+  }
 
-      // Sort: live-connected first, then configured, then unconfigured
-      var sorted = integrations.slice().sort(function(a, b) {
-        var aId = a.id || a.name;
-        var bId = b.id || b.name;
-        var aCfg = configs[aId];
-        var bCfg = configs[bId];
-        var aConn = liveStatus[aId] === 'connected' ? 2 : isChannelConfigured(aId, aCfg) ? 1 : 0;
-        var bConn = liveStatus[bId] === 'connected' ? 2 : isChannelConfigured(bId, bCfg) ? 1 : 0;
-        return bConn - aConn;
-      });
-
-      html += '<div class="ch-grid">';
-      for (var i = 0; i < sorted.length; i++) {
-        var intg = sorted[i];
-        var chId = intg.id || intg.name || i;
-        var chName = intg.name || 'Channel';
-        var emoji = intg.emoji || '\ud83d\udd0c';
-        var desc = intg.description || '';
-        var cfg = configs[chId];
-        var configured = isChannelConfigured(chId, cfg);
-        // Use live connection status if available; if no live status, default to disconnected
-        // (stale cfg.connected from a previous session should not show as ON)
-        var liveState = liveStatus[chId];
-        var connected = liveState === 'connected' ? true : false;
-        var cardBorder = connected ? 'border:2px solid var(--green);' : configured ? 'border:2px solid var(--accent);' : '';
-        var modeLabel = cfg && cfg.processingMode === 'full' ? '🚀 Full' : '⚡ Smart';
-        html += '<div class="ch-card' + (connected ? ' ch-connected' : '') + '" data-chid="' + escHtml(String(chId)) + '" data-chname="' + escHtml(chName) + '" style="cursor:pointer;' + cardBorder + '">' +
-          '<div class="ch-card-header"><span class="ch-emoji">' + emoji + '</span><span class="ch-name">' + escHtml(chName) + '</span>' +
-          '<span class="ch-status ' + (connected ? 'ch-on' : 'ch-off') + '">' + (connected ? 'ON' : 'OFF') + '</span></div>' +
-          '<div class="ch-desc">' + escHtml(desc) + '</div>' +
-          '<div class="ch-actions">';
-        var actions = intg.actions || [];
-        for (var j = 0; j < actions.length; j++) {
-          html += '<span class="ch-action-tag">' + escHtml(actions[j]) + '</span>';
-        }
-        html += '</div><div class="ch-controls" style="display:flex;justify-content:space-between;align-items:center;">';
-        if (connected) {
-          html += '<button class="setting-btn ch-config-btn" data-chid="' + escHtml(String(chId)) + '" data-chname="' + escHtml(chName) + '">Configure</button>';
-        } else if (chId === 'whatsapp' || chId === 'telegram' || chId === 'discord' || chId === 'slack' || chId === 'email' || chId === 'github') {
-          html += '<button class="setting-btn ch-config-btn" data-chid="' + escHtml(String(chId)) + '" data-chname="' + escHtml(chName) + '">' + (configured ? 'Configure' : 'Setup') + '</button>';
-        } else {
-          html += '<button class="setting-btn ch-config-btn" data-connect="' + escHtml(String(chId)) + '" disabled style="opacity:0.4;cursor:not-allowed;">Not Available</button>';
-        }
-        // Show mode indicator at bottom-right for messaging channels
-        if (chId === 'whatsapp' || chId === 'telegram' || chId === 'discord' || chId === 'slack') {
-          html += '<span style="font-size:10px;color:var(--text-dim);padding:2px 6px;border-radius:4px;background:var(--bg-input);border:1px solid var(--border-color);">' + modeLabel + '</span>';
-        }
-        html += '</div></div>';
-      }
-      html += '</div>';
-    }
-    panel.innerHTML = html;
-    wireChannelButtons(panel);
-  }).catch(function() {
-    panel.innerHTML = '<h2>Channels</h2><p style="color:var(--red);">Failed to load channels.</p>';
-  });
+  // Subscribe to registry and status events for live updates (REQ 31.7)
+  if (window.subscribeToRegistryEvents) {
+    _channelsViewUnsubscribe = window.subscribeToRegistryEvents(container);
+  }
 }
 
 function wireChannelButtons(panel) {

@@ -112,7 +112,7 @@ import { PROVIDER_URLS } from '../pipeline/llm-client';
 import { createLLMClientWithProMode } from '../pipeline/pro-mode-state';
 import { CostStore } from '../storage/cost-store';
 import { loadPricingTable, calculateCost, type PricingTable } from '../pipeline/cost-calculator';
-import { ChannelManager } from '../channels/channel-manager';
+import { ChannelManager, CHANNEL_REGISTRY_EVENT } from '../channels/channel-manager';
 import { FirewallEngine } from '../firewall/firewall-engine';
 import { EnhancedFirewallEngine } from '../firewall/enhanced-firewall-engine';
 import { FirewallConfigManager } from '../firewall/firewall-config';
@@ -2224,6 +2224,12 @@ export async function initDeferredSubsystems(): Promise<void> {
         _ipcMainWindow.webContents.send('channel-status-update', status);
       });
 
+      // Wire channel-registry events to renderer (REQ 27.5, REQ 31.7)
+      (channelManager as any).emitter.on(CHANNEL_REGISTRY_EVENT, (payload: any) => {
+        if (!_ipcMainWindow || _ipcMainWindow.isDestroyed()) return;
+        _ipcMainWindow.webContents.send('channel-registry-update', payload);
+      });
+
       console.log('[IPC] Channel manager wired (deferred)');
     } catch (e) {
       console.warn('[IPC] Deferred channel wiring error:', e);
@@ -3009,6 +3015,18 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
       }
     }
   });
+
+  // Wire channel-registry events to renderer (REQ 27.5, REQ 31.7)
+  // When registerAdapter is called at runtime, forward to all renderer windows
+  (channelManager as any).emitter.on(CHANNEL_REGISTRY_EVENT, (payload: any) => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    try {
+      mainWindow.webContents.send('channel-registry-update', payload);
+      console.log('[IPC] Sent channel-registry-update to renderer:', payload?.channelId, payload?.action);
+    } catch (e: any) {
+      console.warn('[IPC] Failed to send channel-registry-update:', e?.message);
+    }
+  });
   } // end if (channelManager)
 
   /**
@@ -3119,7 +3137,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
     'get-ollama-status', 'get-llamacpp-status', 'install-llamacpp',
     'get-project-files', 'read-project-file', 'connect-channel', 'disconnect-channel',
     'send-channel-message', 'get-channel-status', 'get-channel-configs',
-    'get-integrations', 'get-dashboard-stats', 'get-project-cost', 'get-cost-breakdown', 'get-system-stats', 'download-project-zip',
+    'get-integrations', 'channel:list', 'channel:metadata', 'get-dashboard-stats', 'get-project-cost', 'get-cost-breakdown', 'get-system-stats', 'download-project-zip',
     'webauthn-register-start', 'webauthn-register-finish', 'webauthn-login-start', 'webauthn-login-finish', 'git-push-project', 'firewall-get-rules', 'firewall-get-events', 'firewall-get-stats', 'firewall-toggle-rule', 'firewall-update-action',
     // Enhanced firewall handlers
     'enhanced-firewall-get-config', 'enhanced-firewall-update-policy', 'enhanced-firewall-update-redaction-config', 'enhanced-firewall-set-agent-policy', 'enhanced-firewall-set-project-policy', 'enhanced-firewall-apply-preset', 'enhanced-firewall-enable-llm', 'enhanced-firewall-get-stats', 'enhanced-firewall-test-input', 'enhanced-firewall-reset-config', 'enhanced-firewall-export-config',
@@ -7567,8 +7585,49 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
   });
 
   ipcMain.handle('get-integrations', async () => {
+    // REQ 27.4 — return the canonical list from channelManager.listRegisteredChannels()
+    // alongside the legacy integration categories for backward compatibility.
     const { INTEGRATION_CATEGORIES, INTEGRATIONS } = require('../integrations/integration-registry');
-    return { categories: INTEGRATION_CATEGORIES, integrations: INTEGRATIONS };
+    return {
+      categories: INTEGRATION_CATEGORIES,
+      integrations: INTEGRATIONS,
+      channels: channelManager ? channelManager.listRegisteredChannels() : [],
+    };
+  });
+
+  // ── Channel Adapter System: channel:list and channel:metadata (REQ 27.4, REQ 27.5, REQ 31.7) ──
+
+  ipcMain.handle('channel:list', async () => {
+    if (!channelManager) return [];
+    return channelManager.listRegisteredChannels();
+  });
+
+  ipcMain.handle('channel:metadata', async (_ev, arg: any) => {
+    try {
+      const channelId = typeof arg === 'object' && arg !== null ? arg.channelId : arg;
+      if (!channelId || typeof channelId !== 'string') {
+        return { error: 'channelId is required' };
+      }
+      if (!channelManager) {
+        return { error: 'ChannelManager not initialized' };
+      }
+      // Verify the channelId is registered
+      const registered = channelManager.listRegisteredChannels();
+      if (!registered.includes(channelId)) {
+        return { error: `Channel "${channelId}" is not registered` };
+      }
+      // Lazily instantiate the adapter to read its tileMetadata and capabilities
+      // The registry's instantiate() constructs but does NOT connect — it's safe
+      // for metadata reading (REQ 22.4: construction is lazy, connection is explicit).
+      // Access the internal registry through the channelManager's instantiate path
+      const adapter = (channelManager as any).registry.instantiate(channelId);
+      return {
+        tileMetadata: adapter.tileMetadata,
+        capabilities: adapter.capabilities,
+      };
+    } catch (e: any) {
+      return { error: e?.message || 'Failed to retrieve channel metadata' };
+    }
   });
 
   // Avatar generation — local SVG robot avatars

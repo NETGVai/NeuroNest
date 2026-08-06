@@ -195,6 +195,7 @@ const panelRendererFiles = [
   'chat-theming.ts',
   'diff-viewer-component.ts',
   'terminal-output-component.ts',
+  'channels-view.ts',
 ];
 
 for (const fileName of panelRendererFiles) {

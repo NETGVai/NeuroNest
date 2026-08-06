@@ -1,834 +1,523 @@
-// NeuroNest Channel Manager
-// Unified connection manager for all messaging platform integrations.
-// Each SDK is dynamically required so the app won't crash if a package is missing.
-/* eslint-disable @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires, no-empty, @typescript-eslint/ban-ts-comment */
+// ─── ChannelManager Orchestrator ────────────────────────────────
+// Lean orchestrator: owns the AdapterRegistry, fans out events,
+// schedules reconnects, and constructs a per-adapter AdapterContext.
+// All provider-specific logic lives in individual adapter files.
+//
+// Requirements: REQ 3.4, REQ 3.5, REQ 5.1–5.4, REQ 6.3–6.5,
+// REQ 14.1–14.5, REQ 15.1–15.6, REQ 20.1–20.5, REQ 21.4,
+// REQ 22.2–22.4, REQ 24.3–24.7, REQ 26.5, REQ 27.5, REQ 27.6,
+// REQ 28.1–28.7
 
-import * as path from 'path';
-import * as os from 'os';
-import * as fs from 'fs';
 import { EventEmitter } from 'events';
+import { AdapterRegistry } from './registry';
+import type { ChannelAdapter, AdapterContext, AdapterFactory } from './types/adapter';
+import type {
+  IncomingMessage,
+  OutgoingMessage,
+  ConnectResult,
+  SendResult,
+  ChannelConnection,
+} from './types/messages';
+import type { ChannelStatus } from './types/capabilities';
+import type { ErrorCode } from './types/errors';
+import type { ListenerConfig } from './listener-config';
 import {
-  type ListenerConfig,
-  WHATSAPP_WEBHOOK_DEFAULT_PORT,
-  DEFAULT_BIND_HOST,
   buildListenerConfig,
+  validateListenerPair,
 } from './listener-config';
-import { APP_NAME } from '../branding';
-import { safeImport } from './import-validator';
 
-// ── Public types ────────────────────────────────────────────────────
+// ── Re-export types so existing `import { ..., type X } from '../channels/channel-manager'` compile ──
 
-export interface ChannelConnection {
-  id: string;
-  status: 'disconnected' | 'connecting' | 'connected' | 'error';
-  error?: string;
-}
+export type { ChannelConnection, IncomingMessage, ConnectResult, SendResult };
 
-export interface IncomingMessage {
-  channelId: string;
-  from: string;
-  content: string;
-  timestamp: Date;
-}
+// ── Event constants ─────────────────────────────────────────────
 
-export type ConnectResult = {
-  success: boolean;
-  message: string;
-  qrCode?: string;
-};
-
-export type SendResult = {
-  success: boolean;
-  message: string;
-};
-
-// ── Internal handle kept per active channel ─────────────────────────
-
-interface ChannelHandle {
-  connection: ChannelConnection;
-  /** Platform-specific teardown */
-  stop: () => void;
-  /** Platform-specific send */
-  send: (to: string, message: string) => Promise<SendResult>;
-}
-
-// ── Channel status event constant (R22.1, R22.2) ───────────────────
-
-/**
- * The single shared constant for all channel-status-transition events.
- * Every emitter and the `onStatusChange` subscriber reference this constant.
- */
 export const CHANNEL_STATUS_EVENT = 'channel-status' as const;
+export const CHANNEL_REGISTRY_EVENT = 'channel-registry' as const;
 
-// ── Supported channel IDs that have real SDK wiring ─────────────────
+// ── Payload / Diagnostics types ─────────────────────────────────
 
-const SUPPORTED_CHANNELS = new Set([
-  'whatsapp',
-  'telegram',
-  'discord',
-  'slack',
-  'email',
-  'github',
-]);
+export interface ChannelStatusPayload {
+  channelId: string;
+  status: ChannelStatus;
+  qrCode?: string;
+  error?: string;
+  errorCode?: ErrorCode;
+}
 
-// ── ChannelManager ──────────────────────────────────────────────────
+export interface Diagnostics {
+  status: ChannelStatus;
+  lastError?: string | undefined;
+  reconnectAttempts: number;
+  listenerConfig?: ListenerConfig | undefined;
+}
+
+// ── Per-adapter runtime state ───────────────────────────────────
+
+interface ActiveInstance {
+  adapter: ChannelAdapter;
+  status: ChannelStatus;
+  lastError?: string | undefined;
+  reconnectAttempts: number;
+  reconnectTimer?: ReturnType<typeof setTimeout> | undefined;
+  listenerConfig?: ListenerConfig | undefined;
+  lastConfig?: unknown;
+}
+
+// ── Scoped logger factory ───────────────────────────────────────
+
+function makeScopedLogger(channelId: string) {
+  const prefix = `[ChannelAdapter:${channelId}]`;
+  return {
+    info(msg: string, _extra?: Record<string, unknown>) {
+      console.log(`${prefix} ${msg}`);
+    },
+    warn(msg: string, _extra?: Record<string, unknown>) {
+      console.warn(`${prefix} ${msg}`);
+    },
+    error(msg: string, _extra?: Record<string, unknown>) {
+      console.error(`${prefix} ${msg}`);
+    },
+  };
+}
+
+// ── ChannelManager ──────────────────────────────────────────────
 
 export class ChannelManager {
-  private channels = new Map<string, ChannelHandle>();
-  private emitter = new EventEmitter();
+  private readonly registry = new AdapterRegistry();
+  private readonly instances = new Map<string, ActiveInstance>();
+  private readonly emitter = new EventEmitter();
 
   /**
-   * The currently active WhatsApp webhook listener config, if connected.
-   * Used for port-conflict detection with other listeners (R22.8).
+   * Backward-compat shim: the pre-refactor ChannelManager exposed an internal
+   * `channels` Map<string, { connection, stop, send }>`. Existing property tests
+   * (REQ 25.4) insert mock handles via this map. This getter returns a proxy Map
+   * that bridges old-format entries to the new ActiveInstance layout so those
+   * tests continue to pass without assertion changes.
+   * @internal — test-only compatibility surface; NOT part of the public API.
    */
-  private _whatsAppWebhookListenerConfig: ListenerConfig | null = null;
-
-  /** Get the active WhatsApp webhook listener config (null if not connected). */
-  getWhatsAppWebhookListenerConfig(): ListenerConfig | null {
-    return this._whatsAppWebhookListenerConfig;
+  get channels(): Map<string, any> {
+    const self = this;
+    return new Proxy(this.instances as any, {
+      get(target: Map<string, ActiveInstance>, prop: string | symbol) {
+        if (prop === 'set') {
+          return (channelId: string, handle: any) => {
+            // Bridge old-format { connection, stop, send } → ActiveInstance
+            const status = handle?.connection?.status ?? 'connected';
+            const instance: ActiveInstance = {
+              adapter: {
+                channelId,
+                capabilities: { direction: 'bidirectional', supportsTyping: false, supportsRichMedia: false, deliveryMode: 'push', requiresListener: false, implementationStatus: 'available' },
+                tileMetadata: { displayName: channelId, emoji: '', description: '', actionTags: [] },
+                configSchema: { safeParse: () => ({ success: true, data: {} }) } as any,
+                connect: async () => ({ success: true, message: 'mock' }),
+                disconnect: handle?.stop ?? (async () => {}),
+                isConnected: () => status === 'connected',
+                send: handle?.send ?? (async () => ({ success: true, message: 'mock' })),
+              },
+              status: status as ChannelStatus,
+              reconnectAttempts: 0,
+            };
+            self.instances.set(channelId, instance);
+          };
+        }
+        if (prop === 'size') {
+          return self.instances.size;
+        }
+        if (prop === 'has') {
+          return (key: string) => self.instances.has(key);
+        }
+        if (prop === 'get') {
+          return (key: string) => self.instances.get(key);
+        }
+        if (prop === 'delete') {
+          return (key: string) => self.instances.delete(key);
+        }
+        return Reflect.get(target, prop);
+      },
+    });
   }
 
-  // ── Public API ──────────────────────────────────────────────────
+  constructor() {
+    // Attempt to register built-in adapters. During early development phases
+    // the adapters/index module may not exist yet — handle gracefully (REQ 24.3).
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { registerBuiltIns } = require('./adapters/index');
+      registerBuiltIns(this.registry);
+    } catch (_err) {
+      // Built-in registration not available yet or failed — registry remains empty.
+      // The manager is still functional: connect/send will return appropriate errors.
+      console.warn('[ChannelManager] built-in registration skipped or failed:', (_err as Error)?.message);
+    }
+  }
 
-  async connect(channelId: string, config: any): Promise<ConnectResult> {
-    // If already connected, disconnect first
-    if (this.channels.has(channelId)) {
-      await this.disconnect(channelId);
+  // ── Public API — signatures preserved (REQ 14) ─────────────────
+
+  async connect(channelId: string, config: unknown): Promise<ConnectResult> {
+    // Empty registry check (REQ 24.4) — must precede the per-channel check
+    if (this.registry.list().length === 0) {
+      return { success: false, message: 'No adapters registered' };
     }
 
-    if (!SUPPORTED_CHANNELS.has(channelId)) {
+    // Check registry has this channelId
+    if (!this.registry.has(channelId)) {
       return {
         success: false,
-        message: `Channel "${channelId}" is not supported yet. The required SDK needs to be installed and a connector implemented.`,
+        message: `Channel "${channelId}" is not registered.`,
       };
     }
 
+    // If already connected, disconnect first
+    if (this.instances.has(channelId)) {
+      await this.disconnect(channelId);
+    }
+
+    // Instantiate adapter (lazy construction — REQ 22.4)
+    let adapter: ChannelAdapter;
     try {
-      switch (channelId) {
-        case 'whatsapp':
-          return await this.connectWhatsApp(channelId, config);
-        case 'telegram':
-          return await this.connectTelegram(channelId, config);
-        case 'discord':
-          return await this.connectDiscord(channelId, config);
-        case 'slack':
-          return await this.connectSlack(channelId, config);
-        case 'email':
-          return await this.connectEmail(channelId, config);
-        case 'github':
-          return await this.connectGitHub(channelId, config);
-        default:
-          return { success: false, message: `No connector for "${channelId}".` };
-      }
+      adapter = this.registry.instantiate(channelId);
     } catch (err: any) {
       const msg = err?.message ?? String(err);
-      console.error(`[ChannelManager] connect(${channelId}) failed:`, msg);
-      this.upsertHandle(channelId, {
-        connection: { id: channelId, status: 'error', error: msg },
-        stop: () => {},
-        send: async () => ({ success: false, message: 'Channel is in error state' }),
+      this.emitter.emit(CHANNEL_STATUS_EVENT, {
+        channelId,
+        status: 'error',
+        error: msg,
+        errorCode: 'PROVIDER_ERROR' as ErrorCode,
       });
-      return { success: false, message: msg };
+      return { success: false, message: msg, error: { code: 'PROVIDER_ERROR', message: msg } };
+    }
+
+    // Validate config via adapter's Zod schema (REQ 5.1, 5.2, 5.3)
+    const parsed = adapter.configSchema.safeParse(config);
+    if (!parsed.success) {
+      const fields = parsed.error.issues.map((i: any) => i.path.join('.')).join(', ');
+      const errorMsg = `Invalid config for '${channelId}': fields = ${fields}`;
+      this.emitter.emit(CHANNEL_STATUS_EVENT, {
+        channelId,
+        status: 'error',
+        error: errorMsg,
+        errorCode: 'CONFIG_INVALID' as ErrorCode,
+      });
+      return { success: false, message: errorMsg, error: { code: 'CONFIG_INVALID', message: `Invalid fields: ${fields}` } };
+    }
+
+    // Create active instance record
+    const instance: ActiveInstance = {
+      adapter,
+      status: 'connecting',
+      reconnectAttempts: 0,
+      lastConfig: config,
+    };
+    this.instances.set(channelId, instance);
+
+    // Emit connecting status
+    this.emitter.emit(CHANNEL_STATUS_EVENT, { channelId, status: 'connecting' });
+
+    // Build adapter context (REQ 2.5, REQ 15.1)
+    const ctx = this.buildContext(channelId, instance);
+
+    // Invoke adapter.connect with validated config (REQ 5.4)
+    try {
+      const result = await adapter.connect(parsed.data, ctx);
+      if (result.success) {
+        instance.status = 'connected';
+        this.emitter.emit(CHANNEL_STATUS_EVENT, { channelId, status: 'connected', qrCode: result.qrCode });
+      } else {
+        instance.status = 'error';
+        instance.lastError = result.message;
+        this.emitter.emit(CHANNEL_STATUS_EVENT, {
+          channelId,
+          status: 'error',
+          error: result.message,
+          errorCode: result.error?.code,
+        });
+        // Schedule reconnect for transient failures
+        if (result.error?.code && result.error.code !== 'AUTH_FAILED' && result.error.code !== 'CONFIG_INVALID' && result.error.code !== 'SDK_MISSING') {
+          this.scheduleReconnect(channelId, result.error.code);
+        }
+      }
+      return result;
+    } catch (err: any) {
+      const msg = err?.message ?? String(err);
+      instance.status = 'error';
+      instance.lastError = msg;
+      this.emitter.emit(CHANNEL_STATUS_EVENT, {
+        channelId,
+        status: 'error',
+        error: msg,
+        errorCode: 'PROVIDER_ERROR' as ErrorCode,
+      });
+      return { success: false, message: msg, error: { code: 'PROVIDER_ERROR', message: msg } };
     }
   }
 
   async disconnect(channelId: string): Promise<void> {
-    const handle = this.channels.get(channelId);
-    if (!handle) return;
+    const instance = this.instances.get(channelId);
+    if (!instance) return;
+
+    // Cancel any pending reconnect timer (REQ 20.5)
+    if (instance.reconnectTimer) {
+      clearTimeout(instance.reconnectTimer);
+      delete instance.reconnectTimer;
+    }
+
+    // Emit status event synchronously so callers observe the transition immediately
+    // (REQ 15.4, REQ 25.4 backward compat with existing property tests)
+    instance.status = 'disconnected';
+    delete instance.lastError;
+    this.instances.delete(channelId);
+    this.emitter.emit(CHANNEL_STATUS_EVENT, { channelId, status: 'disconnected' });
+
+    // Perform async adapter cleanup after the event is emitted
     try {
-      handle.stop();
+      await instance.adapter.disconnect();
     } catch (err: any) {
       console.error(`[ChannelManager] disconnect(${channelId}) error:`, err?.message);
     }
-    handle.connection.status = 'disconnected';
-    handle.connection.error = undefined;
-    this.channels.delete(channelId);
-    // Clear webhook listener config on WhatsApp disconnect (R22.8)
-    if (channelId === 'whatsapp') {
-      this._whatsAppWebhookListenerConfig = null;
-    }
-    this.emitter.emit(CHANNEL_STATUS_EVENT, { channelId, status: 'disconnected' });
-    console.log(`[ChannelManager] ${channelId} disconnected`);
   }
 
   async sendMessage(channelId: string, to: string, message: string): Promise<SendResult> {
-    const handle = this.channels.get(channelId);
-    if (!handle) {
+    // Empty registry check (REQ 24.4)
+    if (this.registry.list().length === 0) {
+      return { success: false, message: 'No adapters registered' };
+    }
+
+    const instance = this.instances.get(channelId);
+    if (!instance) {
       return { success: false, message: `Channel "${channelId}" is not connected.` };
     }
-    if (handle.connection.status !== 'connected') {
-      return { success: false, message: `Channel "${channelId}" is ${handle.connection.status}, not connected.` };
+    if (instance.status !== 'connected') {
+      return { success: false, message: `Channel "${channelId}" is ${instance.status}, not connected.` };
     }
+
+    // Construct OutgoingMessage (REQ 3.4)
+    const outgoing: OutgoingMessage = { to, content: message };
+
+    // Discriminator mismatch check (REQ 3.5)
+    // Note: providerMetadata is not passed via the simple sendMessage signature,
+    // but we guard against it for internal/future usage
+    if ((outgoing as any).providerMetadata && (outgoing as any).providerMetadata.channelId !== channelId) {
+      return {
+        success: false,
+        message: `providerMetadata.channelId '${(outgoing as any).providerMetadata.channelId}' does not match send channelId '${channelId}'`,
+      };
+    }
+
     try {
-      return await handle.send(to, message);
+      return await instance.adapter.send(outgoing);
     } catch (err: any) {
       const msg = err?.message ?? String(err);
-      console.error(`[ChannelManager] sendMessage(${channelId}) error:`, msg);
       return { success: false, message: msg };
     }
   }
 
   getStatus(channelId: string): ChannelConnection {
-    const handle = this.channels.get(channelId);
-    return handle?.connection ?? { id: channelId, status: 'disconnected' };
+    const instance = this.instances.get(channelId);
+    if (!instance) {
+      return { id: channelId, status: 'disconnected' };
+    }
+    const conn: ChannelConnection = { id: channelId, status: instance.status };
+    if (instance.lastError) {
+      conn.error = instance.lastError;
+    }
+    return conn;
   }
 
   getAllStatuses(): ChannelConnection[] {
-    return Array.from(this.channels.values()).map((h) => ({ ...h.connection }));
+    return Array.from(this.instances.entries()).map(([id, inst]) => {
+      const conn: ChannelConnection = { id, status: inst.status };
+      if (inst.lastError) {
+        conn.error = inst.lastError;
+      }
+      return conn;
+    });
   }
 
   onMessage(handler: (msg: IncomingMessage) => void): void {
     this.emitter.on('message', handler);
   }
 
-  onStatusChange(handler: (status: { channelId: string; status: string; qrCode?: string; error?: string }) => void): void {
+  onStatusChange(handler: (status: ChannelStatusPayload) => void): void {
     this.emitter.on(CHANNEL_STATUS_EVENT, handler);
   }
 
-  stopAll(): void {
-    for (const [id] of this.channels) {
-      try {
-        this.channels.get(id)?.stop();
-      } catch (err: any) {
-        console.error(`[ChannelManager] stopAll – error stopping ${id}:`, err?.message);
+  async stopAll(): Promise<void> {
+    const entries = Array.from(this.instances.entries());
+
+    // Emit disconnected for every adapter synchronously first, and clean up
+    // (REQ 15.4, REQ 25.4 backward compat with existing property tests that
+    // do not await stopAll)
+    for (const [id] of entries) {
+      // Cancel reconnect timers synchronously
+      const instance = this.instances.get(id);
+      if (instance?.reconnectTimer) {
+        clearTimeout(instance.reconnectTimer);
+        delete instance.reconnectTimer;
       }
       this.emitter.emit(CHANNEL_STATUS_EVENT, { channelId: id, status: 'disconnected' });
     }
-    this.channels.clear();
-    this._whatsAppWebhookListenerConfig = null;
+    this.instances.clear();
     this.emitter.removeAllListeners();
-    console.log('[ChannelManager] all channels stopped');
-  }
 
-  // ── Helpers ─────────────────────────────────────────────────────
-
-  private upsertHandle(channelId: string, handle: ChannelHandle): void {
-    this.channels.set(channelId, handle);
-  }
-
-  private emit(msg: IncomingMessage): void {
-    this.emitter.emit('message', msg);
-  }
-
-  // ── WhatsApp (Cloud API only) ──────────────────────────────────────
-
-  private async connectWhatsApp(channelId: string, _config: any): Promise<ConnectResult> {
-    return this.connectWhatsAppCloud(channelId, _config);
-  }
-
-  // Cloud API mode — official, reliable, never blocked
-  private async connectWhatsAppCloud(channelId: string, _config: any): Promise<ConnectResult> {
-    const accessToken = _config?.accessToken || '';
-    const phoneNumberId = _config?.phoneNumberId || '';
-    const verifyToken = _config?.verifyToken || 'neuronest-whatsapp-verify';
-
-    if (!accessToken || !phoneNumberId) {
-      return { 
-        success: false, 
-        message: 'WhatsApp Cloud API requires an Access Token and Phone Number ID.\n\n' +
-          'Setup steps:\n' +
-          '1. Go to developers.facebook.com → Create App → Business type\n' +
-          '2. Add WhatsApp product → API Setup\n' +
-          '3. Copy the "Temporary access token" and "Phone number ID"\n' +
-          '4. Connect with: /channel whatsapp accessToken=<token> phoneNumberId=<id>\n\n' +
-          'The Cloud API is free for up to 1,000 conversations/month.\n' +
-          'WhatsApp integration uses the official Cloud API exclusively.'
-      };
-    }
-
-    const https = require('node:https');
-    const verify = await new Promise<{ ok: boolean; error?: string }>((resolve) => {
-      const req = https.get('https://graph.facebook.com/v21.0/' + phoneNumberId, {
-        headers: { 'Authorization': 'Bearer ' + accessToken }, timeout: 10000,
-      }, (res: any) => {
-        let body = '';
-        res.on('data', (c: any) => body += c);
-        res.on('end', () => {
-          if (res.statusCode < 300) resolve({ ok: true });
-          else { try { resolve({ ok: false, error: JSON.parse(body)?.error?.message || 'HTTP ' + res.statusCode }); } catch { resolve({ ok: false, error: 'HTTP ' + res.statusCode }); } }
-        });
-      });
-      req.on('error', (e: any) => resolve({ ok: false, error: e.message }));
-      req.on('timeout', () => { req.destroy(); resolve({ ok: false, error: 'Timeout' }); });
-    });
-
-    if (!verify.ok) {
-      return { success: false, message: 'API verification failed: ' + verify.error };
-    }
-
-    // Start a local webhook server to receive incoming messages from WhatsApp
-    const http = require('node:http');
-    let webhookServer: any = null;
-    // Use configured port or distinct default; bind loopback unless remote access configured (R22.5, R22.6)
-    const webhookListenerConfig = buildListenerConfig(
-      {
-        port: _config?.webhookPort,
-        host: _config?.webhookHost,
-        remoteAccessExplicit: !!_config?.webhookHost && _config.webhookHost !== DEFAULT_BIND_HOST,
-      },
-      { port: WHATSAPP_WEBHOOK_DEFAULT_PORT },
-      'WhatsApp Cloud webhook',
+    // Then perform async adapter cleanup
+    const results = await Promise.allSettled(
+      entries.map(async ([id, instance]) => {
+        await instance.adapter.disconnect();
+        return id;
+      }),
     );
-    const webhookPort = webhookListenerConfig.port;
-    const webhookHost = webhookListenerConfig.host;
 
-    // Store the listener config for port-conflict detection (R22.8)
-    this._whatsAppWebhookListenerConfig = webhookListenerConfig;
-
-    try {
-      webhookServer = http.createServer((req: any, res: any) => {
-        // Webhook verification (GET request from Meta)
-        if (req.method === 'GET' && req.url?.includes('hub.mode=subscribe')) {
-          const url = new URL(req.url, 'http://localhost');
-          const mode = url.searchParams.get('hub.mode');
-          const token = url.searchParams.get('hub.verify_token');
-          const challenge = url.searchParams.get('hub.challenge');
-          if (mode === 'subscribe' && token === verifyToken) {
-            res.writeHead(200, { 'Content-Type': 'text/plain' });
-            res.end(challenge);
-            return;
-          }
-          res.writeHead(403);
-          res.end('Forbidden');
-          return;
-        }
-
-        // Incoming message webhook (POST from Meta)
-        if (req.method === 'POST') {
-          let body = '';
-          req.on('data', (chunk: any) => body += chunk);
-          req.on('end', () => {
-            res.writeHead(200);
-            res.end('OK');
-            try {
-              const data = JSON.parse(body);
-              const entry = data?.entry?.[0];
-              const changes = entry?.changes?.[0];
-              const value = changes?.value;
-              const messages = value?.messages;
-              if (messages && messages.length > 0) {
-                for (const msg of messages) {
-                  if (msg.type === 'text' && msg.text?.body) {
-                    this.emit({
-                      channelId,
-                      from: msg.from || 'unknown',
-                      content: msg.text.body,
-                      timestamp: new Date((msg.timestamp || 0) * 1000),
-                    });
-                  }
-                }
-              }
-            } catch (e: any) {
-              console.error('[WhatsApp:Cloud] Webhook parse error:', e?.message);
-            }
-          });
-          return;
-        }
-
-        res.writeHead(404);
-        res.end('Not Found');
-      });
-
-      webhookServer.listen(webhookPort, webhookHost);
-      console.log('[WhatsApp:Cloud] Webhook server listening on', webhookHost + ':' + webhookPort);
-    } catch (e: any) {
-      console.warn('[WhatsApp:Cloud] Could not start webhook server:', e?.message);
-      // Continue anyway — outbound messaging still works
+    // Collect rejected channelIds and log once (REQ 22.3)
+    const rejected: string[] = [];
+    for (let i = 0; i < results.length; i++) {
+      const r = results[i]!;
+      if (r.status === 'rejected') {
+        rejected.push(entries[i]![0]);
+      }
     }
-
-    this.upsertHandle(channelId, {
-      connection: { id: channelId, status: 'connected' },
-      stop: () => {
-        if (webhookServer) { try { webhookServer.close(); } catch { /* best-effort */ } }
-      },
-      send: async (to: string, message: string) => {
-        const payload = JSON.stringify({ messaging_product: 'whatsapp', to: to.replace(/[^0-9]/g, ''), type: 'text', text: { body: message } });
-        return new Promise((resolve) => {
-          const req = https.request('https://graph.facebook.com/v21.0/' + phoneNumberId + '/messages', {
-            method: 'POST', headers: { 'Authorization': 'Bearer ' + accessToken, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) }, timeout: 15000,
-          }, (res: any) => {
-            let body = '';
-            res.on('data', (c: any) => body += c);
-            res.on('end', () => {
-              if (res.statusCode < 300) resolve({ success: true, message: 'Sent via WhatsApp' });
-              else { try { resolve({ success: false, message: JSON.parse(body)?.error?.message || 'HTTP ' + res.statusCode }); } catch { resolve({ success: false, message: 'HTTP ' + res.statusCode }); } }
-            });
-          });
-          req.on('error', (e: any) => resolve({ success: false, message: e.message }));
-          req.write(payload); req.end();
-        });
-      },
-    });
-
-    this.emitter.emit(CHANNEL_STATUS_EVENT, { channelId, status: 'connected' });
-    return { success: true, message: 'WhatsApp Cloud API connected! Webhook on ' + webhookHost + ':' + webhookPort + '. Configure your Meta webhook URL to point to this machine.' };
+    if (rejected.length > 0) {
+      console.error(`[ChannelManager] stopAll – errors disconnecting: ${rejected.join(', ')}`);
+    }
   }
 
-  // ── Telegram via grammy ──────────────────────────────────────────
+  // ── New public API ─────────────────────────────────────────────
 
-  private async connectTelegram(channelId: string, config: any): Promise<ConnectResult> {
-    let BotClass: any;
+  /** REQ 6.4, REQ 27.4 — canonical enumeration for slash/IPC/IMGateway */
+  listRegisteredChannels(): string[] {
+    return this.registry.list();
+  }
 
-    try {
-      const grammy = await safeImport('grammy').catch(() => null) as any;
-      if (!grammy) throw new Error('not installed');
-      BotClass = grammy.Bot;
-    } catch {
-      return {
-        success: false,
-        message: 'Telegram SDK not installed. Run: npm install grammy',
-      };
+  /** REQ 21.4 — diagnostics for a given channel */
+  getDiagnostics(channelId: string): Diagnostics {
+    const instance = this.instances.get(channelId);
+    if (!instance) {
+      return { status: 'disconnected', reconnectAttempts: 0 };
     }
-
-    const botToken = config?.botToken;
-    if (!botToken) {
-      return { success: false, message: 'Telegram bot token is required. Add it in channel settings.' };
+    const diag: Diagnostics = {
+      status: instance.status,
+      reconnectAttempts: instance.reconnectAttempts,
+    };
+    if (instance.lastError) {
+      diag.lastError = instance.lastError;
     }
+    if (instance.listenerConfig) {
+      diag.listenerConfig = instance.listenerConfig;
+    }
+    return diag;
+  }
 
-    this.upsertHandle(channelId, {
-      connection: { id: channelId, status: 'connecting' },
-      stop: () => {},
-      send: async () => ({ success: false, message: 'Still connecting' }),
-    });
+  /** REQ 8.3, REQ 8.4 — retained WhatsApp webhook helper */
+  getWhatsAppWebhookListenerConfig(): ListenerConfig | null {
+    const instance = this.instances.get('whatsapp');
+    return instance?.listenerConfig ?? null;
+  }
 
-    try {
-      const bot = new BotClass(botToken);
+  /** REQ 27.5 — runtime registration; emits CHANNEL_REGISTRY_EVENT */
+  registerAdapter(channelId: string, factory: AdapterFactory): void {
+    this.registry.registerAdapter(channelId, factory);
+    this.emitter.emit(CHANNEL_REGISTRY_EVENT, { channelId, action: 'added' });
+  }
 
-      // Incoming messages
-      bot.on('message:text', (ctx: any) => {
-        try {
-          // Send typing indicator while processing
-          ctx.api.sendChatAction(ctx.chat.id, 'typing').catch(() => {});
+  // ── Private — AdapterContext builder ───────────────────────────
 
-          this.emit({
+  private buildContext(channelId: string, instance: ActiveInstance): AdapterContext {
+    const self = this;
+    return {
+      emit(msg: IncomingMessage) {
+        // Enforce channelId matches the adapter that emitted (REQ 26.5)
+        // Cross-adapter emissions are refused: emit error status AND throw
+        if (msg.channelId !== channelId) {
+          self.emitter.emit(CHANNEL_STATUS_EVENT, {
             channelId,
-            from: String(ctx.from?.id ?? ctx.chat?.id ?? 'unknown'),
-            content: ctx.message?.text ?? '',
-            timestamp: new Date((ctx.message?.date ?? 0) * 1000),
+            status: 'error',
+            error: `adapter emitted a message with foreign channelId '${msg.channelId}'`,
+            errorCode: 'PROVIDER_ERROR' as ErrorCode,
           });
-        } catch (err: any) {
-          console.error('[ChannelManager] Telegram message parse error:', err?.message);
+          throw new Error(
+            `Cross-adapter emission refused: adapter '${channelId}' attempted to emit for '${msg.channelId}'`,
+          );
         }
-      });
-
-      // Start polling with auto-reconnect on error
-      bot.catch((err: any) => {
-        console.error('[ChannelManager] Telegram bot error (will auto-recover):', err?.message);
-      });
-
-      bot.start({
-        onStart: () => {
-          console.log('[ChannelManager] Telegram bot started polling');
-        },
-      });
-
-      const stopFn = () => {
-        try { bot.stop(); } catch { /* ignore */ }
-      };
-
-      this.upsertHandle(channelId, {
-        connection: { id: channelId, status: 'connected' },
-        stop: stopFn,
-        send: async (to: string, message: string) => {
-          try {
-            // Show typing indicator before sending
-            await bot.api.sendChatAction(to, 'typing').catch(() => {});
-            await bot.api.sendMessage(to, message, { parse_mode: 'Markdown' }).catch(async () => {
-              // Fallback: send without markdown if parsing fails
-              await bot.api.sendMessage(to, message);
-            });
-            return { success: true, message: 'Message sent via Telegram' };
-          } catch (err: any) {
-            return { success: false, message: err?.message ?? 'Telegram send failed' };
-          }
-        },
-      });
-
-      console.log('[ChannelManager] Telegram connected');
-      return { success: true, message: 'Telegram bot connected and polling for messages' };
-    } catch (err: any) {
-      const msg = err?.message ?? 'Telegram connection failed';
-      console.error('[ChannelManager] Telegram error:', msg);
-      this.upsertHandle(channelId, {
-        connection: { id: channelId, status: 'error', error: msg },
-        stop: () => {},
-        send: async () => ({ success: false, message: 'Channel is in error state' }),
-      });
-      return { success: false, message: msg };
-    }
-  }
-
-  // ── Discord via discord.js ───────────────────────────────────────
-
-  private async connectDiscord(channelId: string, config: any): Promise<ConnectResult> {
-    let ClientClass: any;
-    let GatewayIntentBits: any;
-
-    try {
-      const discordjs = await safeImport('discord.js').catch(() => null) as any;
-      if (!discordjs) throw new Error('not installed');
-      ClientClass = discordjs.Client;
-      GatewayIntentBits = discordjs.GatewayIntentBits;
-    } catch {
-      return {
-        success: false,
-        message: 'Discord SDK not installed. Run: npm install discord.js',
-      };
-    }
-
-    const token = config?.token;
-    if (!token) {
-      return { success: false, message: 'Discord bot token is required. Add it in channel settings.' };
-    }
-
-    this.upsertHandle(channelId, {
-      connection: { id: channelId, status: 'connecting' },
-      stop: () => {},
-      send: async () => ({ success: false, message: 'Still connecting' }),
-    });
-
-    try {
-      const client = new ClientClass({
-        intents: [
-          GatewayIntentBits.Guilds,
-          GatewayIntentBits.GuildMessages,
-          GatewayIntentBits.MessageContent,
-        ],
-      });
-
-      // Incoming messages
-      client.on('messageCreate', (msg: any) => {
-        try {
-          if (msg.author?.bot) return;
-          this.emit({
-            channelId,
-            from: msg.author?.tag ?? msg.author?.id ?? 'unknown',
-            content: msg.content ?? '',
-            timestamp: msg.createdAt ?? new Date(),
-          });
-        } catch (err: any) {
-          console.error('[ChannelManager] Discord message parse error:', err?.message);
-        }
-      });
-
-      await client.login(token);
-
-      const stopFn = () => {
-        try { client.destroy(); } catch { /* ignore */ }
-      };
-
-      this.upsertHandle(channelId, {
-        connection: { id: channelId, status: 'connected' },
-        stop: stopFn,
-        send: async (to: string, message: string) => {
-          try {
-            const channel = await client.channels.fetch(to);
-            if (!channel || !('send' in channel)) {
-              return { success: false, message: `Discord channel ${to} not found or not a text channel` };
-            }
-            // Show typing indicator
-            if ('sendTyping' in channel) await (channel as any).sendTyping().catch(() => {});
-            // Split long messages (Discord 2000 char limit)
-            if (message.length > 1900) {
-              const chunks = message.match(/[\s\S]{1,1900}/g) || [message];
-              for (const chunk of chunks) await (channel as any).send(chunk);
-            } else {
-              await (channel as any).send(message);
-            }
-            return { success: true, message: 'Message sent via Discord' };
-          } catch (err: any) {
-            return { success: false, message: err?.message ?? 'Discord send failed' };
-          }
-        },
-      });
-
-      console.log('[ChannelManager] Discord connected');
-      return { success: true, message: 'Discord bot connected and listening for messages' };
-    } catch (err: any) {
-      const msg = err?.message ?? 'Discord connection failed';
-      console.error('[ChannelManager] Discord error:', msg);
-      this.upsertHandle(channelId, {
-        connection: { id: channelId, status: 'error', error: msg },
-        stop: () => {},
-        send: async () => ({ success: false, message: 'Channel is in error state' }),
-      });
-      return { success: false, message: msg };
-    }
-  }
-
-  // ── Slack via @slack/bolt ────────────────────────────────────────
-
-  private async connectSlack(channelId: string, config: any): Promise<ConnectResult> {
-    let AppClass: any;
-
-    try {
-      const bolt = await safeImport('@slack/bolt').catch(() => null) as any;
-      if (!bolt) throw new Error('not installed');
-      AppClass = bolt.App;
-    } catch {
-      return {
-        success: false,
-        message: 'Slack SDK not installed. Run: npm install @slack/bolt',
-      };
-    }
-
-    const botToken = config?.botToken;
-    const appToken = config?.appToken;
-    if (!botToken || !appToken) {
-      return {
-        success: false,
-        message: 'Slack requires both a Bot Token (xoxb-...) and an App Token (xapp-...). Add them in channel settings.',
-      };
-    }
-
-    this.upsertHandle(channelId, {
-      connection: { id: channelId, status: 'connecting' },
-      stop: () => {},
-      send: async () => ({ success: false, message: 'Still connecting' }),
-    });
-
-    try {
-      const app = new AppClass({
-        token: botToken,
-        appToken: appToken,
-        socketMode: true,
-      });
-
-      // Incoming messages
-      app.message(async ({ message: msg }: any) => {
-        try {
-          if (msg.subtype) return; // skip bot messages, edits, etc.
-          this.emit({
-            channelId,
-            from: msg.user ?? 'unknown',
-            content: msg.text ?? '',
-            timestamp: new Date(parseFloat(msg.ts ?? '0') * 1000),
-          });
-        } catch (err: any) {
-          console.error('[ChannelManager] Slack message parse error:', err?.message);
-        }
-      });
-
-      await app.start();
-
-      const stopFn = () => {
-        try { app.stop(); } catch { /* ignore */ }
-      };
-
-      this.upsertHandle(channelId, {
-        connection: { id: channelId, status: 'connected' },
-        stop: stopFn,
-        send: async (to: string, message: string) => {
-          try {
-            await app.client.chat.postMessage({
-              channel: to,
-              text: message,
-            });
-            return { success: true, message: 'Message sent via Slack' };
-          } catch (err: any) {
-            return { success: false, message: err?.message ?? 'Slack send failed' };
-          }
-        },
-      });
-
-      console.log('[ChannelManager] Slack connected (socket mode)');
-      return { success: true, message: 'Slack bot connected in socket mode and listening for messages' };
-    } catch (err: any) {
-      const msg = err?.message ?? 'Slack connection failed';
-      console.error('[ChannelManager] Slack error:', msg);
-      this.upsertHandle(channelId, {
-        connection: { id: channelId, status: 'error', error: msg },
-        stop: () => {},
-        send: async () => ({ success: false, message: 'Channel is in error state' }),
-      });
-      return { success: false, message: msg };
-    }
-  }
-
-  // ── Email via nodemailer ─────────────────────────────────────────
-
-  private async connectEmail(channelId: string, config: any): Promise<ConnectResult> {
-    let nodemailer: any;
-
-    try {
-      nodemailer = await safeImport('nodemailer').catch(() => null) as any;
-      if (!nodemailer) throw new Error('not installed');
-    } catch {
-      return {
-        success: false,
-        message: 'Email SDK not installed. Run: npm install nodemailer',
-      };
-    }
-
-    const smtpHost = config?.smtpHost;
-    const smtpPort = parseInt(config?.smtpPort ?? '587', 10);
-    const username = config?.username;
-    const password = config?.password;
-
-    if (!smtpHost || !username || !password) {
-      return {
-        success: false,
-        message: 'Email requires SMTP host, username, and password. Add them in channel settings.',
-      };
-    }
-
-    this.upsertHandle(channelId, {
-      connection: { id: channelId, status: 'connecting' },
-      stop: () => {},
-      send: async () => ({ success: false, message: 'Still connecting' }),
-    });
-
-    try {
-      const transporter = nodemailer.createTransport({
-        host: smtpHost,
-        port: smtpPort,
-        secure: smtpPort === 465,
-        auth: { user: username, pass: password },
-      });
-
-      // Verify SMTP connection
-      await transporter.verify();
-
-      const stopFn = () => {
-        try { transporter.close(); } catch { /* ignore */ }
-      };
-
-      this.upsertHandle(channelId, {
-        connection: { id: channelId, status: 'connected' },
-        stop: stopFn,
-        send: async (to: string, message: string) => {
-          try {
-            await transporter.sendMail({
-              from: username,
-              to,
-              subject: `${APP_NAME} Message`,
-              text: message,
-            });
-            return { success: true, message: 'Email sent successfully' };
-          } catch (err: any) {
-            return { success: false, message: err?.message ?? 'Email send failed' };
-          }
-        },
-      });
-
-      console.log('[ChannelManager] Email SMTP connected');
-      return {
-        success: true,
-        message: 'Email connected (send-only — receiving requires IMAP integration which is not currently implemented)',
-      };
-    } catch (err: any) {
-      const msg = err?.message ?? 'Email connection failed';
-      console.error('[ChannelManager] Email error:', msg);
-      this.upsertHandle(channelId, {
-        connection: { id: channelId, status: 'error', error: msg },
-        stop: () => {},
-        send: async () => ({ success: false, message: 'Channel is in error state' }),
-      });
-      return { success: false, message: msg };
-    }
-  }
-
-  // ── GitHub via REST API ─────────────────────────────────────────
-
-  private async connectGitHub(channelId: string, config: any): Promise<ConnectResult> {
-    const username = config?.username || '';
-    const token = config?.token || '';
-
-    if (!username || !token) {
-      return { success: false, message: 'GitHub username and personal access token are required.' };
-    }
-
-    // Validate credentials by calling the GitHub API
-    const https = require('node:https');
-
-    const validateResult = await new Promise<{ valid: boolean; user?: string; error?: string }>((resolve) => {
-      const req = https.request('https://api.github.com/user', {
-        method: 'GET',
-        headers: {
-          'Authorization': 'token ' + token,
-          'User-Agent': 'NeuroNest/1.0',
-          'Accept': 'application/vnd.github.v3+json',
-        },
-        timeout: 15000,
-      }, (res: any) => {
-        let data = '';
-        res.on('data', (chunk: any) => data += chunk);
-        res.on('end', () => {
-          try {
-            const parsed = JSON.parse(data);
-            if (res.statusCode === 200 && parsed.login) {
-              resolve({ valid: true, user: parsed.login });
-            } else {
-              resolve({ valid: false, error: parsed.message || 'Authentication failed (HTTP ' + res.statusCode + ')' });
-            }
-          } catch {
-            resolve({ valid: false, error: 'Invalid response from GitHub API' });
-          }
-        });
-      });
-      req.on('error', (e: any) => resolve({ valid: false, error: e.message }));
-      req.on('timeout', () => { req.destroy(); resolve({ valid: false, error: 'Request timed out' }); });
-      req.end();
-    });
-
-    if (!validateResult.valid) {
-      const errMsg = 'GitHub authentication failed: ' + (validateResult.error || 'Unknown error');
-      this.upsertHandle(channelId, {
-        connection: { id: channelId, status: 'error', error: errMsg },
-        stop: () => {},
-        send: async () => ({ success: false, message: errMsg }),
-      });
-      this.emitter.emit(CHANNEL_STATUS_EVENT, { channelId, status: 'error', error: errMsg });
-      return { success: false, message: errMsg };
-    }
-
-    console.log('[ChannelManager] GitHub connected as:', validateResult.user);
-
-    this.upsertHandle(channelId, {
-      connection: { id: channelId, status: 'connected' },
-      stop: () => {
-        console.log('[ChannelManager] GitHub disconnected');
+        // REQ 26.5: propagate exceptions from downstream handlers to caller.
+        // Node.js EventEmitter.emit() is synchronous — if a listener throws,
+        // the exception propagates up through this call.
+        self.emitter.emit('message', msg);
       },
-      send: async (to: string, message: string) => {
-        // "send" for GitHub = create an issue on the specified repo
-        try {
-          const [owner, repo] = to.split('/');
-          if (!owner || !repo) return { success: false, message: 'Recipient must be owner/repo format' };
-          const body = JSON.stringify({ title: message.slice(0, 100), body: message });
-          const result = await new Promise<{ success: boolean; message: string }>((resolve) => {
-            const req2 = https.request('https://api.github.com/repos/' + owner + '/' + repo + '/issues', {
-              method: 'POST',
-              headers: {
-                'Authorization': 'token ' + token,
-                'User-Agent': 'NeuroNest/1.0',
-                'Accept': 'application/vnd.github.v3+json',
-                'Content-Type': 'application/json',
-                'Content-Length': Buffer.byteLength(body),
-              },
-              timeout: 15000,
-            }, (res2: any) => {
-              let d = '';
-              res2.on('data', (c: any) => d += c);
-              res2.on('end', () => {
-                if (res2.statusCode === 201) {
-                  resolve({ success: true, message: 'Issue created' });
-                } else {
-                  resolve({ success: false, message: 'Failed: HTTP ' + res2.statusCode });
-                }
-              });
-            });
-            req2.on('error', (e: any) => resolve({ success: false, message: e.message }));
-            req2.write(body);
-            req2.end();
-          });
-          return result;
-        } catch (e: any) {
-          return { success: false, message: e.message };
+      setStatus(status: ChannelStatus, err?: { code: ErrorCode; message: string }) {
+        // REQ 15.1: only emit on actual state change
+        if (instance.status === status) return;
+        instance.status = status;
+        if (err) {
+          instance.lastError = err.message;
+        } else {
+          delete instance.lastError;
         }
+        const payload: ChannelStatusPayload = { channelId, status };
+        if (err) {
+          payload.error = err.message;
+          payload.errorCode = err.code;
+        }
+        self.emitter.emit(CHANNEL_STATUS_EVENT, payload);
       },
-    });
+      logger: makeScopedLogger(channelId),
+      reserveListener(opts) {
+        const buildOpts: { port?: number; host?: string; remoteAccessExplicit?: boolean } = {};
+        if (opts.port !== undefined) buildOpts.port = opts.port;
+        if (opts.host !== undefined) buildOpts.host = opts.host;
+        if (opts.remoteAccessExplicit !== undefined) buildOpts.remoteAccessExplicit = opts.remoteAccessExplicit;
+        const cfg = buildListenerConfig(
+          buildOpts,
+          { port: opts.defaultPort },
+          opts.name,
+        );
+        // Detect cross-adapter conflicts against every currently-reserved listener
+        for (const [otherId, other] of self.instances) {
+          if (otherId !== channelId && other.listenerConfig) {
+            validateListenerPair(
+              { config: cfg, name: opts.name },
+              { config: other.listenerConfig, name: otherId },
+            );
+          }
+        }
+        instance.listenerConfig = cfg;
+        return cfg;
+      },
+      releaseListener() { delete instance.listenerConfig; },
+    };
+  }
 
-    this.emitter.emit(CHANNEL_STATUS_EVENT, { channelId, status: 'connected' });
-    return { success: true, message: 'Connected to GitHub as ' + validateResult.user };
+  // ── Private — Reconnect scheduling (REQ 20) ───────────────────
+
+  private scheduleReconnect(channelId: string, failureCode?: ErrorCode): void {
+    const instance = this.instances.get(channelId);
+    if (!instance) return;
+
+    // REQ 20.4 — cancel on auth failure; do NOT emit a duplicate status event
+    // since the caller (connect) already emitted the 'error' status.
+    if (failureCode === 'AUTH_FAILED') {
+      if (instance.reconnectTimer) clearTimeout(instance.reconnectTimer);
+      delete instance.reconnectTimer;
+      instance.reconnectAttempts = 0;
+      return;
+    }
+
+    // REQ 20.1 — increment BEFORE scheduling
+    instance.reconnectAttempts++;
+    const n = instance.reconnectAttempts;
+    const delay = Math.min(1000 * Math.pow(2, n - 1), 60000);
+
+    instance.reconnectTimer = setTimeout(async () => {
+      delete instance.reconnectTimer;
+      if (!this.instances.has(channelId)) return; // disconnected during backoff
+      try {
+        const result = await this.connect(channelId, instance.lastConfig);
+        if (result.success) {
+          instance.reconnectAttempts = 0; // REQ 20.2
+        }
+        // If not successful, connect() itself will schedule the next reconnect
+      } catch {
+        this.scheduleReconnect(channelId);
+      }
+    }, delay);
   }
 }

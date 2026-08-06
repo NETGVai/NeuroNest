@@ -34,6 +34,7 @@ export const ALLOWED_IMPORT_DIRS = new Set([
   'node_modules/discord.js',
   'node_modules/@slack/bolt',
   'node_modules/nodemailer',
+  'node_modules/botbuilder',
 ]);
 
 // ── Implementation ──────────────────────────────────────────────────

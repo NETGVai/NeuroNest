@@ -38,6 +38,7 @@
     "src/renderer/network-activity-panel.ts",
     "src/renderer/marketplace-panel.ts",
     "src/renderer/notebook-panel.ts",
-    "src/renderer/analytics-dashboard-panel.ts"
+    "src/renderer/analytics-dashboard-panel.ts",
+    "src/renderer/channels-view.ts"
   ]
 }

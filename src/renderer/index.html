@@ -2794,6 +2794,12 @@
        Requirements: 8.1-8.5 -->
   <script src="./terminal-output-component.js"></script>
 
+  <!-- Registry-driven Channels-View renderer (channel-adapter-system).
+       Exposes window.renderChannelsView and window.subscribeToRegistryEvents
+       for the channels panel in index.js. Must load before index.js.
+       Requirements: REQ 30.5, REQ 31.1, REQ 31.7 -->
+  <script src="./channels-view.js"></script>
+
   <script src="./index.js"></script>
 
 </body>

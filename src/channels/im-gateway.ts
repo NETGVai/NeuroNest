@@ -15,6 +15,7 @@ export interface ChannelManagerLike {
   disconnect(channelId: string): Promise<void>;
   sendMessage(channelId: string, to: string, message: string): Promise<SendResult>;
   onMessage(handler: (msg: { channelId: string; from: string; content: string; timestamp: Date }) => void): void;
+  listRegisteredChannels(): string[];
 }
 
 export interface FirewallEngineLike {
@@ -73,8 +74,8 @@ export class IMGateway {
   async connect(config: IMConfig): Promise<ConnectResult> {
     const { platform, credentials } = config;
 
-    // Validate platform
-    if (!['whatsapp', 'telegram', 'slack', 'discord'].includes(platform)) {
+    // Validate platform — REQ 27.3: defer to channelManager registry
+    if (!this.channelManager.listRegisteredChannels().includes(platform)) {
       return { success: false, message: `Unsupported platform: ${platform}` };
     }
 
