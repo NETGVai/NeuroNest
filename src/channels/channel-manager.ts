@@ -10,6 +10,8 @@
 
 import { EventEmitter } from 'events';
 import { AdapterRegistry } from './registry';
+import { SessionContextStore } from './session-context-store';
+import type { SessionEntry } from './session-context-store';
 import type { ChannelAdapter, AdapterContext, AdapterFactory } from './types/adapter';
 import type {
   IncomingMessage,
@@ -18,7 +20,7 @@ import type {
   SendResult,
   ChannelConnection,
 } from './types/messages';
-import type { ChannelStatus } from './types/capabilities';
+import type { ChannelStatus, AdapterCapabilities } from './types/capabilities';
 import type { ErrorCode } from './types/errors';
 import type { ListenerConfig } from './listener-config';
 import {
@@ -26,14 +28,74 @@ import {
   validateListenerPair,
 } from './listener-config';
 
+// ── AI Pipeline Interface ───────────────────────────────────────
+
+/**
+ * Contract for the AI processing pipeline that handles inbound channel
+ * messages. Callers provide an implementation (e.g., the LLM client or
+ * SwarmCoordinator) when wiring the channel manager.
+ *
+ * @satisfies REQ 2.1, REQ 2.5
+ */
+export interface AIPipelineInterface {
+  /**
+   * Process user input with conversation history context.
+   * @param message - The user's message content
+   * @param history - Previous messages in the session (oldest first)
+   * @param metadata - Routing metadata (channelId, senderId)
+   * @returns The AI-generated response text
+   */
+  process(
+    message: string,
+    history: Array<{ role: 'user' | 'assistant'; content: string }>,
+    metadata: { channelId: string; senderId: string },
+  ): Promise<string>;
+
+  /**
+   * Process user input and stream response tokens as they generate.
+   * Optional — when present and the adapter supports streaming delivery,
+   * the ChannelManager will use this to pipe partial tokens to the channel.
+   *
+   * @param message - The user's message content
+   * @param history - Previous messages in the session (oldest first)
+   * @param metadata - Routing metadata (channelId, senderId)
+   * @returns An async iterable of response token chunks
+   *
+   * @satisfies REQ 12.4
+   */
+  processStream?(
+    message: string,
+    history: Array<{ role: 'user' | 'assistant'; content: string }>,
+    metadata: { channelId: string; senderId: string },
+  ): AsyncIterable<string>;
+}
+
 // ── Re-export types so existing `import { ..., type X } from '../channels/channel-manager'` compile ──
 
-export type { ChannelConnection, IncomingMessage, ConnectResult, SendResult };
+export type { ChannelConnection, IncomingMessage, ConnectResult, SendResult, SessionEntry };
 
 // ── Event constants ─────────────────────────────────────────────
 
 export const CHANNEL_STATUS_EVENT = 'channel-status' as const;
 export const CHANNEL_REGISTRY_EVENT = 'channel-registry' as const;
+export const DELIVERY_FAILURE_EVENT = 'delivery-failure' as const;
+export const CHANNEL_RELAY_EVENT = 'channel-relay' as const;
+
+// ── Reconnection & Retry constants (REQ 11.1, 11.3) ─────────────
+
+/** Maximum number of auto-reconnect attempts before giving up */
+const RECONNECT_MAX_ATTEMPTS = 5;
+/** Base delay (ms) for exponential reconnect backoff */
+const RECONNECT_BASE_DELAY_MS = 1000;
+/** Maximum delay (ms) between reconnect attempts — capped at 60s */
+const RECONNECT_MAX_DELAY_MS = 60000;
+
+/** Maximum number of send retries for transient errors */
+const SEND_RETRY_MAX = 3;
+/** Base delay (ms) for exponential send retry backoff */
+const SEND_RETRY_BASE_MS = 500;
+/** Maximum delay (ms) for send retry backoff */
+const SEND_RETRY_MAX_DELAY_MS = 5000;
 
 // ── Payload / Diagnostics types ─────────────────────────────────
 
@@ -43,6 +105,45 @@ export interface ChannelStatusPayload {
   qrCode?: string;
   error?: string;
   errorCode?: ErrorCode;
+}
+
+export interface DeliveryFailurePayload {
+  channelId: string;
+  to: string;
+  error: string;
+  attempts: number;
+}
+
+/**
+ * Payload emitted on the 'channel-relay' event after processInbound
+ * handles an inbound message. Contains the relay display metadata
+ * for the chat-response IPC event (channelSource and relayTarget).
+ *
+ * @satisfies REQ 3.1, REQ 3.2, REQ 3.3, REQ 12.1, REQ 12.2, REQ 12.3
+ */
+export interface ChannelRelayPayload {
+  /** The inbound message role ('user' for source display, 'assistant' for relay response). */
+  role: 'user' | 'assistant';
+  /** The message content to display. */
+  content: string;
+  /** Source metadata for inbound channel messages (present on role=user). */
+  channelSource?: {
+    channelId: string;
+    displayName: string;
+    emoji: string;
+    from: string;
+  };
+  /** Relay metadata for outbound responses (present on role=assistant). */
+  relayTarget?: {
+    channelId: string;
+    displayName: string;
+    emoji: string;
+    success: boolean;
+  };
+  /** Whether this is a channel-sourced message. */
+  isChannelMessage: boolean;
+  /** Whether the AI is currently streaming for this channel message. */
+  isChannelStreaming?: boolean;
 }
 
 export interface Diagnostics {
@@ -87,6 +188,8 @@ export class ChannelManager {
   private readonly registry = new AdapterRegistry();
   private readonly instances = new Map<string, ActiveInstance>();
   private readonly emitter = new EventEmitter();
+  private readonly sessionStore = new SessionContextStore();
+  private aiPipeline: AIPipelineInterface | null = null;
 
   /**
    * Backward-compat shim: the pre-refactor ChannelManager exposed an internal
@@ -169,6 +272,8 @@ export class ChannelManager {
     }
 
     // If already connected, disconnect first
+    // Preserve reconnect attempts count for reconnection logic (REQ 11.1)
+    const previousReconnectAttempts = this.instances.get(channelId)?.reconnectAttempts ?? 0;
     if (this.instances.has(channelId)) {
       await this.disconnect(channelId);
     }
@@ -202,11 +307,11 @@ export class ChannelManager {
       return { success: false, message: errorMsg, error: { code: 'CONFIG_INVALID', message: `Invalid fields: ${fields}` } };
     }
 
-    // Create active instance record
+    // Create active instance record (preserve reconnectAttempts if reconnecting)
     const instance: ActiveInstance = {
       adapter,
       status: 'connecting',
-      reconnectAttempts: 0,
+      reconnectAttempts: previousReconnectAttempts,
       lastConfig: config,
     };
     this.instances.set(channelId, instance);
@@ -222,6 +327,7 @@ export class ChannelManager {
       const result = await adapter.connect(parsed.data, ctx);
       if (result.success) {
         instance.status = 'connected';
+        instance.reconnectAttempts = 0; // REQ 11.1 — reset on successful connection
         this.emitter.emit(CHANNEL_STATUS_EVENT, { channelId, status: 'connected', qrCode: result.qrCode });
       } else {
         instance.status = 'error';
@@ -235,6 +341,9 @@ export class ChannelManager {
         // Schedule reconnect for transient failures
         if (result.error?.code && result.error.code !== 'AUTH_FAILED' && result.error.code !== 'CONFIG_INVALID' && result.error.code !== 'SDK_MISSING') {
           this.scheduleReconnect(channelId, result.error.code);
+        } else {
+          // Permanent failure — reset reconnect attempts (REQ 20.4)
+          instance.reconnectAttempts = 0;
         }
       }
       return result;
@@ -310,6 +419,114 @@ export class ChannelManager {
       const msg = err?.message ?? String(err);
       return { success: false, message: msg };
     }
+  }
+
+  // ── Send Retry Logic (REQ 11.3, 11.4) ─────────────────────────
+
+  /**
+   * Sends a message with automatic retries on transient errors.
+   * Retries up to SEND_RETRY_MAX (3) times with exponential backoff.
+   * If all retries are exhausted, emits a 'delivery-failure' event.
+   *
+   * @satisfies REQ 11.3, REQ 11.4
+   */
+  async sendWithRetry(channelId: string, to: string, message: string): Promise<SendResult> {
+    for (let attempt = 0; attempt < SEND_RETRY_MAX; attempt++) {
+      const result = await this.sendMessage(channelId, to, message);
+      if (result.success) return result;
+
+      // Only retry on transient errors — permanent errors bail immediately
+      if (!this.isTransientError(result.message)) return result;
+
+      // Don't sleep after the last failed attempt
+      if (attempt < SEND_RETRY_MAX - 1) {
+        const delay = Math.min(SEND_RETRY_BASE_MS * Math.pow(2, attempt), SEND_RETRY_MAX_DELAY_MS);
+        await new Promise(r => setTimeout(r, delay));
+      }
+    }
+
+    // All retry attempts exhausted — emit delivery-failure event
+    const failurePayload: DeliveryFailurePayload = {
+      channelId,
+      to,
+      error: 'All retry attempts exhausted',
+      attempts: SEND_RETRY_MAX,
+    };
+    this.emitter.emit(DELIVERY_FAILURE_EVENT, failurePayload);
+
+    return { success: false, message: 'All retry attempts exhausted' };
+  }
+
+  /**
+   * Determines whether an error message indicates a transient failure
+   * that may succeed on retry (network issues, rate limiting) vs a
+   * permanent failure (auth, config, not connected).
+   *
+   * @satisfies REQ 11.3, 11.4
+   */
+  isTransientError(errorMessage: string): boolean {
+    const msg = errorMessage.toLowerCase();
+    const transientPatterns = [
+      'timeout',
+      'network',
+      'rate limit',
+      'rate_limit',
+      'ratelimit',
+      'too many requests',
+      '429',
+      '503',
+      'service unavailable',
+      'temporarily unavailable',
+      'econnreset',
+      'econnrefused',
+      'enotfound',
+      'socket hang up',
+      'epipe',
+      'etimedout',
+    ];
+    return transientPatterns.some(pattern => msg.includes(pattern));
+  }
+
+  /**
+   * Handles connection loss for an adapter. Initiates auto-reconnect
+   * with exponential backoff, max 5 attempts, max 60s delay.
+   * Sets adapter status to 'error' if all reconnection attempts fail.
+   *
+   * @satisfies REQ 11.1, 11.2, 11.5
+   */
+  handleConnectionLoss(channelId: string): void {
+    const instance = this.instances.get(channelId);
+    if (!instance) return;
+
+    instance.status = 'error';
+    instance.lastError = 'Connection lost';
+    this.emitter.emit(CHANNEL_STATUS_EVENT, {
+      channelId,
+      status: 'error',
+      error: 'Connection lost',
+      errorCode: 'NETWORK_ERROR' as ErrorCode,
+    });
+
+    // Start reconnection if under the attempt limit
+    if (instance.reconnectAttempts < RECONNECT_MAX_ATTEMPTS) {
+      this.scheduleReconnect(channelId, 'NETWORK_ERROR' as ErrorCode);
+    }
+  }
+
+  /**
+   * Register a handler for delivery-failure events (REQ 11.3).
+   */
+  onDeliveryFailure(handler: (payload: DeliveryFailurePayload) => void): void {
+    this.emitter.on(DELIVERY_FAILURE_EVENT, handler);
+  }
+
+  /**
+   * Register a handler for channel-relay events (REQ 3.1, 3.2, 3.3, 12.1, 12.2, 12.3).
+   * The handler receives relay display metadata payloads that should be forwarded
+   * to the chat-response IPC event for the renderer to display.
+   */
+  onChannelRelay(handler: (payload: ChannelRelayPayload) => void): void {
+    this.emitter.on(CHANNEL_RELAY_EVENT, handler);
   }
 
   getStatus(channelId: string): ChannelConnection {
@@ -407,6 +624,19 @@ export class ChannelManager {
     return diag;
   }
 
+  /**
+   * REQ 3.1, 3.2 — Returns display metadata (emoji, displayName) for a channel.
+   * Used by the IPC layer to populate channelSource/relayTarget on chat-response events.
+   */
+  getChannelDisplayInfo(channelId: string): { displayName: string; emoji: string } | null {
+    const instance = this.instances.get(channelId);
+    if (!instance) return null;
+    return {
+      displayName: instance.adapter.tileMetadata.displayName,
+      emoji: instance.adapter.tileMetadata.emoji,
+    };
+  }
+
   /** REQ 8.3, REQ 8.4 — retained WhatsApp webhook helper */
   getWhatsAppWebhookListenerConfig(): ListenerConfig | null {
     const instance = this.instances.get('whatsapp');
@@ -417,6 +647,285 @@ export class ChannelManager {
   registerAdapter(channelId: string, factory: AdapterFactory): void {
     this.registry.registerAdapter(channelId, factory);
     this.emitter.emit(CHANNEL_REGISTRY_EVENT, { channelId, action: 'added' });
+  }
+
+  // ── Inbound processing & session management (REQ 2.1–2.6, 5.1–5.4) ──
+
+  /**
+   * Set the AI pipeline implementation for processing inbound messages.
+   * Must be called before inbound messages can be routed to the AI.
+   */
+  setAIPipeline(pipeline: AIPipelineInterface): void {
+    this.aiPipeline = pipeline;
+  }
+
+  /**
+   * Process an inbound message through the AI pipeline with session context.
+   *
+   * Flow:
+   * 1. Retrieve session history for the channel-sender pair
+   * 2. Append user message to session
+   * 3. Process through AI pipeline with history context
+   * 4. Append AI response to session
+   * 5. Send response back to originating channel (with retry)
+   * 6. Emit relay display metadata via CHANNEL_RELAY_EVENT
+   *
+   * On AI pipeline failure, sends an error response to the originating channel
+   * without appending to session context.
+   *
+   * @satisfies REQ 2.1, REQ 2.2, REQ 2.3, REQ 2.4, REQ 2.5, REQ 2.6, REQ 3.1, REQ 3.2, REQ 3.3, REQ 5.1, REQ 5.2, REQ 11.3, REQ 12.1, REQ 12.2, REQ 12.3
+   */
+  async processInbound(msg: IncomingMessage, aiPipeline?: AIPipelineInterface): Promise<void> {
+    // REQ 4.6: Send-only adapters never receive routing — skip response delivery
+    const sendOnlyInstance = this.instances.get(msg.channelId);
+    if (sendOnlyInstance && sendOnlyInstance.adapter.capabilities.direction === 'send-only') {
+      return;
+    }
+
+    const pipeline = aiPipeline ?? this.aiPipeline;
+    if (!pipeline) {
+      // AI pipeline not configured — send error response
+      console.error(`[ChannelManager] processInbound: no AI pipeline configured`);
+      const errorMsg = 'NeuroNest is temporarily unavailable. Please try again later.';
+      await this.sendWithRetry(msg.channelId, msg.from, errorMsg);
+      return;
+    }
+
+    // Get display info for relay metadata (REQ 3.1, 3.2, 3.3)
+    const displayInfo = this.getChannelDisplayInfo(msg.channelId);
+    const displayName = displayInfo?.displayName ?? msg.channelId;
+    const emoji = displayInfo?.emoji ?? '💬';
+
+    // Emit inbound display metadata (REQ 3.1 — chat panel shows source indicator)
+    this.emitter.emit(CHANNEL_RELAY_EVENT, {
+      role: 'user',
+      content: msg.content,
+      channelSource: {
+        channelId: msg.channelId,
+        displayName,
+        emoji,
+        from: msg.from,
+      },
+      isChannelMessage: true,
+    } as ChannelRelayPayload);
+
+    // 1. Retrieve session history
+    const history = this.sessionStore.getHistory(msg.channelId, msg.from);
+
+    // 2. Append user message to session
+    this.sessionStore.appendMessage(msg.channelId, msg.from, 'user', msg.content);
+
+    // 3. Process through AI pipeline with context (with error handling for REQ 2.6)
+    // Check if streaming delivery is available (REQ 12.4):
+    //   - The pipeline supports processStream (async iteration)
+    //   - The adapter for this channel supports streaming send
+    const instance = this.instances.get(msg.channelId);
+    const adapterCapabilities = instance?.adapter.capabilities as AdapterCapabilities | undefined;
+    const useStreaming = !!(
+      pipeline.processStream &&
+      instance &&
+      adapterCapabilities?.supportsStreamingSend
+    );
+
+    let response: string;
+    try {
+      if (useStreaming) {
+        // Emit streaming indicator (REQ 12.1 — chat panel shows streaming progress)
+        this.emitter.emit(CHANNEL_RELAY_EVENT, {
+          role: 'assistant',
+          content: '',
+          channelSource: {
+            channelId: msg.channelId,
+            displayName,
+            emoji,
+            from: msg.from,
+          },
+          isChannelMessage: true,
+          isChannelStreaming: true,
+        } as ChannelRelayPayload);
+
+        // Streaming path: pipe tokens through streamToChannel
+        const stream = pipeline.processStream!(msg.content, history, {
+          channelId: msg.channelId,
+          senderId: msg.from,
+        });
+
+        // Buffer the full response while streaming to channel
+        let fullResponse = '';
+        const bufferingStream: AsyncIterable<string> = {
+          [Symbol.asyncIterator]() {
+            const iterator = stream[Symbol.asyncIterator]();
+            return {
+              async next() {
+                const result = await iterator.next();
+                if (!result.done) {
+                  fullResponse += result.value;
+                }
+                return result;
+              },
+              async return(value?: any) {
+                if (iterator.return) return iterator.return(value);
+                return { done: true as const, value: undefined };
+              },
+              async throw(err?: any) {
+                if (iterator.throw) return iterator.throw(err);
+                throw err;
+              },
+            };
+          },
+        };
+
+        const sendResult = await this.streamToChannel(
+          msg.channelId,
+          msg.from,
+          bufferingStream,
+          instance!.adapter,
+        );
+
+        response = fullResponse;
+
+        // Append AI response to session
+        this.sessionStore.appendMessage(msg.channelId, msg.from, 'assistant', response);
+
+        // Emit relay display metadata (REQ 3.2, 3.3, 12.3 — relay indicator after delivery)
+        this.emitter.emit(CHANNEL_RELAY_EVENT, {
+          role: 'assistant',
+          content: response,
+          relayTarget: {
+            channelId: msg.channelId,
+            displayName,
+            emoji,
+            success: sendResult.success,
+          },
+          isChannelMessage: true,
+        } as ChannelRelayPayload);
+
+        // Emit delivery-failure event if streaming send failed (REQ 2.4)
+        if (!sendResult.success) {
+          const failurePayload: DeliveryFailurePayload = {
+            channelId: msg.channelId,
+            to: msg.from,
+            error: sendResult.message,
+            attempts: 1,
+          };
+          this.emitter.emit(DELIVERY_FAILURE_EVENT, failurePayload);
+        }
+        return;
+      }
+
+      // Non-streaming path: standard process call
+      response = await pipeline.process(msg.content, history, {
+        channelId: msg.channelId,
+        senderId: msg.from,
+      });
+    } catch (error) {
+      // AI pipeline unavailable — send error response to originating channel
+      console.error(`[ChannelManager] AI pipeline failed for ${msg.channelId}::${msg.from}`, error);
+      const errorMsg = 'NeuroNest is temporarily unavailable. Please try again later.';
+      await this.sendWithRetry(msg.channelId, msg.from, errorMsg);
+      // Do NOT append the error to session context
+      return;
+    }
+
+    // 4. Append AI response to session
+    this.sessionStore.appendMessage(msg.channelId, msg.from, 'assistant', response);
+
+    // 5. Send response back to originating channel with retry (REQ 11.3)
+    const sendResult = await this.sendWithRetry(msg.channelId, msg.from, response);
+
+    // 6. Emit relay display metadata (REQ 3.2, 3.3, 12.3 — relay indicator after delivery confirmation)
+    this.emitter.emit(CHANNEL_RELAY_EVENT, {
+      role: 'assistant',
+      content: response,
+      relayTarget: {
+        channelId: msg.channelId,
+        displayName,
+        emoji,
+        success: sendResult.success,
+      },
+      isChannelMessage: true,
+    } as ChannelRelayPayload);
+
+    // Note: delivery-failure event is already emitted by sendWithRetry on exhaustion (REQ 2.4, 11.3)
+  }
+
+  /**
+   * Clear the session context for a given channel-sender pair.
+   *
+   * @satisfies REQ 5.4
+   */
+  clearSessionContext(channelId: string, senderId: string): void {
+    this.sessionStore.clear(channelId, senderId);
+  }
+
+  /**
+   * Get session info for a given channel-sender pair.
+   * Returns the full session entry or null if no session exists.
+   *
+   * @satisfies REQ 5.5
+   */
+  getSessionInfo(channelId: string, senderId: string): SessionEntry | null {
+    const session = this.sessionStore.getOrCreate(channelId, senderId);
+    // If the session has no messages, it was just created — treat as no session
+    if (session.messages.length === 0) {
+      return null;
+    }
+    return session;
+  }
+
+  /**
+   * List all active sessions across all channels.
+   */
+  listActiveSessions(): SessionEntry[] {
+    return this.sessionStore.listActiveSessions();
+  }
+
+  // ── Streaming Delivery (REQ 12.4) ─────────────────────────────
+
+  /**
+   * Stream or buffer AI response delivery to a channel.
+   *
+   * When the adapter declares `supportsStreamingSend === true`, pipes partial
+   * AI response tokens to the channel as they generate. On first send failure,
+   * aborts the stream and returns the failure result.
+   *
+   * When `supportsStreamingSend` is falsy, buffers the full response from the
+   * async iterable and sends it as a single message (current behavior).
+   *
+   * @param channelId - The channel to send to
+   * @param to - The recipient address within the channel
+   * @param responseStream - An async iterable yielding response token chunks
+   * @param adapter - The adapter instance (used to check capabilities and send)
+   * @returns SendResult indicating success or failure of the delivery
+   *
+   * @satisfies REQ 12.4
+   */
+  async streamToChannel(
+    channelId: string,
+    to: string,
+    responseStream: AsyncIterable<string>,
+    adapter: ChannelAdapter,
+  ): Promise<SendResult> {
+    const capabilities = adapter.capabilities as AdapterCapabilities;
+
+    if (capabilities.supportsStreamingSend) {
+      // Adapter supports chunked delivery — pipe partial tokens as they generate
+      for await (const chunk of responseStream) {
+        const result = await adapter.send({ to, content: chunk, contentType: 'text' });
+        if (!result.success) {
+          return result; // Abort streaming on first failure
+        }
+      }
+      // Signal end-of-stream to the adapter with empty content marker
+      return await adapter.send({ to, content: '', contentType: 'other' });
+    } else {
+      // Adapter does not support streaming — buffer full response, send once
+      let fullResponse = '';
+      for await (const chunk of responseStream) {
+        fullResponse += chunk;
+      }
+      return await this.sendMessage(channelId, to, fullResponse);
+    }
   }
 
   // ── Private — AdapterContext builder ───────────────────────────
@@ -442,6 +951,15 @@ export class ChannelManager {
         // Node.js EventEmitter.emit() is synchronous — if a listener throws,
         // the exception propagates up through this call.
         self.emitter.emit('message', msg);
+
+        // REQ 2.1: Route inbound messages through AI pipeline (async, fire-and-forget).
+        // This allows existing `onMessage` listeners (like IMGateway) to continue
+        // working while also enabling direct AI processing for bidirectional channels.
+        if (self.aiPipeline) {
+          self.processInbound(msg).catch((err) => {
+            console.error(`[ChannelManager] processInbound error for ${msg.channelId}::${msg.from}`, err);
+          });
+        }
       },
       setStatus(status: ChannelStatus, err?: { code: ErrorCode; message: string }) {
         // REQ 15.1: only emit on actual state change
@@ -486,7 +1004,7 @@ export class ChannelManager {
     };
   }
 
-  // ── Private — Reconnect scheduling (REQ 20) ───────────────────
+  // ── Private — Reconnect scheduling (REQ 20, REQ 11.1, 11.2) ────
 
   private scheduleReconnect(channelId: string, failureCode?: ErrorCode): void {
     const instance = this.instances.get(channelId);
@@ -501,10 +1019,30 @@ export class ChannelManager {
       return;
     }
 
+    // REQ 11.1 — enforce maximum reconnection attempts (max 5)
+    if (instance.reconnectAttempts >= RECONNECT_MAX_ATTEMPTS) {
+      // REQ 11.2 — set adapter status to 'error' and emit status event
+      instance.status = 'error';
+      instance.lastError = 'Reconnection failed: maximum attempts exceeded';
+      this.emitter.emit(CHANNEL_STATUS_EVENT, {
+        channelId,
+        status: 'error',
+        error: 'Reconnection failed: maximum attempts exceeded',
+        errorCode: 'NETWORK_ERROR' as ErrorCode,
+      });
+      // Clear any pending timer
+      if (instance.reconnectTimer) {
+        clearTimeout(instance.reconnectTimer);
+        delete instance.reconnectTimer;
+      }
+      return;
+    }
+
     // REQ 20.1 — increment BEFORE scheduling
     instance.reconnectAttempts++;
     const n = instance.reconnectAttempts;
-    const delay = Math.min(1000 * Math.pow(2, n - 1), 60000);
+    // REQ 11.1 — exponential backoff with max 60s delay
+    const delay = Math.min(RECONNECT_BASE_DELAY_MS * Math.pow(2, n - 1), RECONNECT_MAX_DELAY_MS);
 
     instance.reconnectTimer = setTimeout(async () => {
       delete instance.reconnectTimer;

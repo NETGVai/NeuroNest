@@ -50,4 +50,12 @@ export interface AdapterCapabilities {
    * @satisfies REQ 4.9
    */
   implementationStatus: 'available' | 'coming-soon';
+
+  /**
+   * Whether the adapter accepts chunked/streaming token delivery.
+   * When true, the ChannelManager will pipe partial AI response tokens
+   * to the channel as they generate rather than buffering the full response.
+   * @satisfies REQ 12.4
+   */
+  supportsStreamingSend?: boolean;
 }

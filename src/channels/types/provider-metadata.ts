@@ -13,7 +13,6 @@ export type StubChannelId =
   | 'signal'
   | 'imessage'
   | 'imessage-bluebubbles'
-  | 'nextcloud-talk'
   | 'matrix'
   | 'nostr'
   | 'tlon-messenger'
@@ -95,5 +94,11 @@ export type ProviderMetadata =
       conversationRef?: string;
       activityType?: 'message' | 'typing' | 'other';
       aadObjectId?: string;
+    }
+  | {
+      channelId: 'nextcloud-talk';
+      messageId?: number;
+      conversationToken?: string;
+      actorDisplayName?: string;
     }
   | { channelId: StubChannelId };

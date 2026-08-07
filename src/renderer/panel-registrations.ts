@@ -535,6 +535,21 @@ function registerAllPanels() {
     commandPaletteAction: 'Open Metrics Dashboard',
     load: createWindowRenderFnLoader('./metrics-panel.js', 'renderMetricsPanel'),
   });
+
+  // ────────────────────────────────────────────────────────────────
+  // Session Context Viewer (Channel Sessions)
+  // ────────────────────────────────────────────────────────────────
+  registry.register({
+    id: 'session-context-viewer',
+    label: 'Channel Sessions',
+    icon: '\uD83D\uDCAC',  // 💬
+    featureGate: null,
+    group: 'channels',
+    commandPaletteAction: 'Open Channel Sessions',
+    load: createWindowPanelLoader('./session-context-viewer.js', 'SessionContextViewer', function (container) {
+      return [container, {}];
+    }),
+  });
 }
 
 // ─── Auto-register on script load ──────────────────────────────────

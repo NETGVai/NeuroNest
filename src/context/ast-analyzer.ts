@@ -8,8 +8,35 @@
  * Requirements: 11.1, 11.2, 11.3, 11.4, 11.5, 11.6, 11.7
  */
 
-import * as ts from 'typescript';
 import type { SupportedLanguage, SymbolInfo, CodeGraph } from './types.js';
+
+// ---------------------------------------------------------------------------
+// Lazy-loaded TypeScript module
+// ---------------------------------------------------------------------------
+
+/** Cached reference to the TypeScript module (loaded on demand). */
+let _tsModule: typeof import('typescript') | null | undefined;
+
+/**
+ * Lazily load the TypeScript compiler API. Returns the module if available,
+ * or null if it cannot be resolved (e.g. in production packaged builds where
+ * typescript is not bundled).
+ */
+function getTypeScriptModule(): typeof import('typescript') | null {
+  if (_tsModule !== undefined) return _tsModule;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    _tsModule = require('typescript') as typeof import('typescript');
+  } catch {
+    console.warn(
+      '[ast-analyzer] TypeScript compiler API not available — ' +
+      'TS/JS parsing will fall back to raw-text mode. ' +
+      'This is expected in packaged production builds.',
+    );
+    _tsModule = null;
+  }
+  return _tsModule;
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -181,6 +208,12 @@ export class ASTAnalyzer {
   // -------------------------------------------------------------------------
 
   private parseTsJs(filePath: string, content: string, language: SupportedLanguage): ParseResult {
+    const ts = getTypeScriptModule();
+    if (!ts) {
+      // TypeScript not available — graceful fallback to raw text extraction
+      return this.fallbackRawText(filePath, content);
+    }
+
     const scriptKind = language === 'typescript'
       ? (filePath.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS)
       : (filePath.endsWith('.jsx') ? ts.ScriptKind.JSX : ts.ScriptKind.JS);
@@ -201,7 +234,7 @@ export class ASTAnalyzer {
     // Note: createSourceFile only produces syntactic diagnostics for severe errors
     // We track errors from try/catch above
 
-    this.visitTsNode(sourceFile, sourceFile, filePath, symbols, edges);
+    this.visitTsNode(ts, sourceFile, sourceFile, filePath, symbols, edges);
 
     // Store edges
     for (const [name, edgeSet] of edges) {
@@ -212,8 +245,9 @@ export class ASTAnalyzer {
   }
 
   private visitTsNode(
-    node: ts.Node,
-    sourceFile: ts.SourceFile,
+    ts: typeof import('typescript'),
+    node: import('typescript').Node,
+    sourceFile: import('typescript').SourceFile,
     filePath: string,
     symbols: SymbolInfo[],
     edges: Map<string, EdgeSet>,
@@ -221,20 +255,21 @@ export class ASTAnalyzer {
     // Only process top-level statements
     if (node === sourceFile) {
       for (const stmt of sourceFile.statements) {
-        this.extractTsSymbol(stmt, sourceFile, filePath, symbols, edges);
+        this.extractTsSymbol(ts, stmt, sourceFile, filePath, symbols, edges);
       }
       return;
     }
   }
 
   private extractTsSymbol(
-    node: ts.Node,
-    sourceFile: ts.SourceFile,
+    ts: typeof import('typescript'),
+    node: import('typescript').Node,
+    sourceFile: import('typescript').SourceFile,
     filePath: string,
     symbols: SymbolInfo[],
     edges: Map<string, EdgeSet>,
   ): void {
-    const isExported = this.hasExportModifier(node);
+    const isExported = this.hasExportModifier(ts, node);
 
     // Function declarations
     if (ts.isFunctionDeclaration(node) && node.name) {
@@ -425,7 +460,7 @@ export class ASTAnalyzer {
   // TS/JS Helpers
   // -------------------------------------------------------------------------
 
-  private hasExportModifier(node: ts.Node): boolean {
+  private hasExportModifier(ts: typeof import('typescript'), node: import('typescript').Node): boolean {
     if (!ts.canHaveModifiers(node)) return false;
     const modifiers = ts.getModifiers(node);
     if (!modifiers) return false;
@@ -465,14 +500,15 @@ export class ASTAnalyzer {
    * Walk a node tree to find function calls and type references.
    */
   private extractCallsAndRefs(
-    node: ts.Node,
-    sourceFile: ts.SourceFile,
+    node: import('typescript').Node,
+    sourceFile: import('typescript').SourceFile,
     edgeSet: EdgeSet,
   ): void {
-    const visit = (n: ts.Node): void => {
+    const ts = getTypeScriptModule()!;
+    const visit = (n: import('typescript').Node): void => {
       // Function calls
       if (ts.isCallExpression(n)) {
-        const callName = this.getCallExpressionName(n, sourceFile);
+        const callName = this.getCallExpressionName(ts, n, sourceFile);
         if (callName && !edgeSet.calls.includes(callName)) {
           edgeSet.calls.push(callName);
         }
@@ -490,7 +526,7 @@ export class ASTAnalyzer {
     ts.forEachChild(node, visit);
   }
 
-  private getCallExpressionName(node: ts.CallExpression, sourceFile: ts.SourceFile): string | null {
+  private getCallExpressionName(ts: typeof import('typescript'), node: import('typescript').CallExpression, sourceFile: import('typescript').SourceFile): string | null {
     const expr = node.expression;
     if (ts.isIdentifier(expr)) {
       return expr.text;
@@ -502,11 +538,12 @@ export class ASTAnalyzer {
   }
 
   private extractTypeReferences(
-    typeNode: ts.TypeNode,
-    sourceFile: ts.SourceFile,
+    typeNode: import('typescript').TypeNode,
+    sourceFile: import('typescript').SourceFile,
     edgeSet: EdgeSet,
   ): void {
-    const visit = (n: ts.Node): void => {
+    const ts = getTypeScriptModule()!;
+    const visit = (n: import('typescript').Node): void => {
       if (ts.isTypeReferenceNode(n)) {
         const typeName = n.typeName.getText(sourceFile);
         if (!edgeSet.typeRefs.includes(typeName)) {

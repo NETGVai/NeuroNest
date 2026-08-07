@@ -31,6 +31,24 @@ export interface ChatMessage {
     agent?: string;
     /** Agent emoji from the registry (for dispatch-originated assistant messages). */
     agentEmoji?: string;
+    /** Channel source metadata for inbound channel messages. @satisfies REQ 3.1 */
+    channelSource?: {
+      channelId: string;
+      displayName: string;
+      emoji: string;
+      from: string;
+    };
+    /** Relay target metadata for outbound responses to channels. @satisfies REQ 3.2, REQ 3.3 */
+    relayTarget?: {
+      channelId: string;
+      displayName: string;
+      emoji: string;
+      success: boolean;
+    };
+    /** Whether this is a channel-sourced message (for visual distinction). @satisfies REQ 3.5 */
+    isChannelMessage?: boolean;
+    /** Whether AI is streaming a response for a channel message. @satisfies REQ 3.4 */
+    isChannelStreaming?: boolean;
     [key: string]: unknown;
   };
 }

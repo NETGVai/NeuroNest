@@ -35,6 +35,7 @@ export const ALLOWED_IMPORT_DIRS = new Set([
   'node_modules/@slack/bolt',
   'node_modules/nodemailer',
   'node_modules/botbuilder',
+  'node_modules/matrix-js-sdk',
 ]);
 
 // ── Implementation ──────────────────────────────────────────────────

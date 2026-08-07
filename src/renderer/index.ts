@@ -1707,9 +1707,36 @@ function appendMsgEl(role, text, meta) {
   } else if (meta && meta.model) {
     providerModelBadge = ' <span style="font-size:10px;font-style:italic;color:var(--text-dim);font-weight:400;">(' + escHtml(meta.model) + ')</span>';
   }
-  div.innerHTML = '<div class="message-inner">' +
+  // Channel source badge (REQ 3.1, 3.5) — shown for inbound channel messages
+  var channelSourceBadge = '';
+  if (meta && meta.channelSource) {
+    var cs = meta.channelSource;
+    channelSourceBadge = '<div style="display:inline-block;font-size:10px;font-weight:600;letter-spacing:0.3px;background:#1a3a5c;color:#90caf9;padding:2px 6px;border-radius:4px;margin-bottom:4px;line-height:1;" title="From: ' + escHtml(cs.from) + ' via ' + escHtml(cs.displayName) + '">' + escHtml(cs.emoji + ' ' + cs.displayName) + '</div> ';
+  }
+  // Channel streaming indicator (REQ 3.4)
+  var channelStreamingBadge = '';
+  if (meta && meta.isChannelStreaming) {
+    channelStreamingBadge = '<span style="display:inline-block;font-size:10px;font-weight:500;background:#4a3800;color:#ffe082;padding:2px 6px;border-radius:4px;margin-bottom:4px;margin-left:4px;line-height:1;animation:nn-pulse 1.5s infinite;">⏳ Processing...</span>';
+  }
+  // Relay target badge (REQ 3.2, 3.3) — shown after delivery confirmation
+  var relayTargetBadge = '';
+  if (meta && meta.relayTarget) {
+    var rt = meta.relayTarget;
+    if (rt.success) {
+      relayTargetBadge = '<div style="display:inline-block;font-size:10px;font-weight:600;letter-spacing:0.3px;background:#1b5e20;color:#a5d6a7;padding:2px 6px;border-radius:4px;margin-bottom:4px;line-height:1;">→ ' + escHtml(rt.emoji + ' ' + rt.displayName) + '</div>';
+    } else {
+      relayTargetBadge = '<div style="display:inline-block;font-size:10px;font-weight:600;letter-spacing:0.3px;background:#5d2020;color:#ef9a9a;padding:2px 6px;border-radius:4px;margin-bottom:4px;line-height:1;">⚠ → ' + escHtml(rt.emoji + ' ' + rt.displayName) + '</div>';
+    }
+  }
+  // Channel message border indicator (REQ 3.5)
+  var channelBorderStyle = '';
+  if (meta && meta.isChannelMessage) {
+    channelBorderStyle = 'border-left:3px solid #42a5f5;padding-left:8px;';
+  }
+  div.innerHTML = '<div class="message-inner"' + (channelBorderStyle ? ' style="' + channelBorderStyle + '"' : '') + '>' +
     '<div class="message-avatar">' + avatarChar + '</div>' +
     '<div class="message-content">' +
+    channelSourceBadge + channelStreamingBadge + relayTargetBadge +
     '<div class="role-label">' + escHtml(label) + providerModelBadge + '</div>' +
     '<div class="message-body">' + formatMsg(text) + '</div>' +
     reasoningHtml +
@@ -2809,6 +2836,21 @@ function setupIPC() {
       meta = meta || {};
       if (data.provider) meta.provider = data.provider;
       if (data.model) meta.model = data.model;
+    }
+    // Pass channel relay display metadata (REQ 3.1, 3.2, 3.3, 3.4, 3.5)
+    if (data.channelSource) {
+      meta = meta || {};
+      meta.channelSource = data.channelSource;
+      meta.isChannelMessage = true;
+    }
+    if (data.relayTarget) {
+      meta = meta || {};
+      meta.relayTarget = data.relayTarget;
+      meta.isChannelMessage = true;
+    }
+    if (data.isChannelStreaming) {
+      meta = meta || {};
+      meta.isChannelStreaming = true;
     }
     // Detect completion — turn off brain animation
     if (data.agent === 'NeuroNest' || data.agent === 'NeuroNest Architect' || data.agent === 'Agent Loop' || (text && text.indexOf('Swarm Complete') !== -1) || (data.noProvider)) {
@@ -9401,6 +9443,220 @@ function wireChannelButtons(panel) {
       e.stopPropagation();
     });
   }
+}
+
+function showChannelConfig(chId, chName) {
+  var mc = $$('#main-content');
+  if (!mc) return;
+
+  mc.innerHTML = '<div class="view-panel view-panel-wide" id="ch-cfg-panel">' +
+    '<div class="ch-config-header"><h2>' + escHtml(chName) + '</h2></div>' +
+    '<p style="color:var(--text-dim);font-size:12px;">Loading...</p></div>';
+
+  Promise.all([
+    eapi().invoke('get-channel-configs'),
+    eapi().invoke('channel:metadata', { channelId: chId }),
+    eapi().invoke('get-channel-status', { channelId: chId })
+  ]).then(function(results) {
+    var allConfigs = results[0] || {};
+    var meta = results[1] || {};
+    var statusInfo = results[2] || {};
+
+    var savedCfg = allConfigs[chId] || {};
+    var tileMeta = meta.tileMetadata || {};
+    var caps = meta.capabilities || {};
+    var isConnected = statusInfo.status === 'connected';
+    var hasError = statusInfo.status === 'error';
+    var errMsg = statusInfo.error || '';
+
+    var fields = _getChannelFields(chId);
+    var panel = $$('#ch-cfg-panel');
+    if (!panel) return;
+
+    var html = '<div class="ch-config-header">' +
+      '<span style="font-size:28px;">' + (tileMeta.emoji || '') + '</span>' +
+      '<div><h2 style="margin:0;">' + escHtml(tileMeta.displayName || chName) + '</h2>' +
+      '<p style="margin:2px 0 0;font-size:11px;color:var(--text-dim);">' + escHtml(tileMeta.description || '') + '</p></div></div>';
+
+    // Status
+    if (isConnected) {
+      html += '<div style="margin:12px 0;padding:8px 12px;background:rgba(166,227,161,0.1);border:1px solid var(--green);border-radius:6px;font-size:12px;color:var(--green);">\u2713 Connected</div>';
+    } else if (hasError && errMsg) {
+      html += '<div style="margin:12px 0;padding:8px 12px;background:rgba(243,139,168,0.1);border:1px solid var(--red);border-radius:6px;font-size:12px;color:var(--red);">\u2717 ' + escHtml(errMsg) + '</div>';
+    }
+
+    // Config fields
+    if (fields.length > 0) {
+      html += '<div style="margin-top:16px;">';
+      for (var i = 0; i < fields.length; i++) {
+        var f = fields[i];
+        var v = savedCfg[f.key] || '';
+        html += '<div style="margin-bottom:10px;">' +
+          '<label style="display:block;font-size:11px;color:var(--text-dim);margin-bottom:3px;">' + escHtml(f.label) + (f.required ? ' *' : '') + '</label>' +
+          '<input type="' + (f.secret ? 'password' : 'text') + '" id="chf-' + f.key + '" value="' + escAttr(v) + '" placeholder="' + escAttr(f.placeholder || '') + '" ' +
+          'style="width:100%;padding:6px 10px;font-size:12px;background:var(--bg-input);border:1px solid var(--border-color);border-radius:4px;color:var(--text-primary);box-sizing:border-box;" />';
+        if (f.hint) html += '<span style="font-size:10px;color:var(--text-dim);">' + escHtml(f.hint) + '</span>';
+        html += '</div>';
+      }
+      html += '</div>';
+    } else if (caps.implementationStatus === 'coming-soon') {
+      html += '<p style="margin-top:16px;font-size:12px;color:var(--text-dim);">This channel is not yet available.</p>';
+    } else {
+      html += '<p style="margin-top:16px;font-size:12px;color:var(--text-dim);">This channel connects directly without additional configuration.</p>';
+    }
+
+    // Buttons
+    html += '<div style="margin-top:20px;display:flex;gap:8px;flex-wrap:wrap;">';
+    if (!isConnected && caps.implementationStatus !== 'coming-soon') {
+      html += '<button id="ch-do-connect" class="setting-btn" style="padding:6px 16px;font-size:12px;">Connect</button>';
+    }
+    if (isConnected) {
+      html += '<button id="ch-do-disconnect" class="setting-btn" style="padding:6px 16px;font-size:12px;border-color:var(--red);color:var(--red);">Disconnect</button>';
+    }
+    html += '<button id="ch-go-back" class="setting-btn" style="padding:6px 16px;font-size:12px;">\u2190 Back</button>';
+    html += '</div>';
+    html += '<div id="ch-result" style="margin-top:12px;font-size:12px;"></div>';
+
+    panel.innerHTML = html;
+
+    // Connect handler
+    var connectBtn = $$('#ch-do-connect');
+    if (connectBtn) {
+      connectBtn.addEventListener('click', function() {
+        var cfg = {};
+        for (var k = 0; k < fields.length; k++) {
+          var inp = $$('#chf-' + fields[k].key);
+          if (inp && inp.value.trim()) cfg[fields[k].key] = inp.value.trim();
+        }
+        connectBtn.disabled = true;
+        connectBtn.textContent = 'Connecting...';
+        eapi().invoke('connect-channel', { channelId: chId, config: cfg }).then(function(res) {
+          var rd = $$('#ch-result');
+          if (res && res.success) {
+            if (rd) rd.innerHTML = '<div style="padding:8px;background:rgba(166,227,161,0.1);border:1px solid var(--green);border-radius:6px;color:var(--green);">\u2713 ' + escHtml(res.message || 'Connected') + '</div>';
+            // Save config for auto-reconnect
+            eapi().send('save-channel-config', { channelId: chId, config: cfg });
+            setTimeout(function() { showChannelConfig(chId, chName); }, 1500);
+          } else {
+            if (rd) rd.innerHTML = '<div style="padding:8px;background:rgba(243,139,168,0.1);border:1px solid var(--red);border-radius:6px;color:var(--red);">\u2717 ' + escHtml(res && res.message || 'Connection failed') + '</div>';
+            connectBtn.disabled = false;
+            connectBtn.textContent = 'Connect';
+          }
+        }).catch(function(err) {
+          var rd = $$('#ch-result');
+          if (rd) rd.innerHTML = '<div style="padding:8px;background:rgba(243,139,168,0.1);border:1px solid var(--red);border-radius:6px;color:var(--red);">\u2717 ' + escHtml(err && err.message || String(err)) + '</div>';
+          connectBtn.disabled = false;
+          connectBtn.textContent = 'Connect';
+        });
+      });
+    }
+
+    // Disconnect handler
+    var discBtn = $$('#ch-do-disconnect');
+    if (discBtn) {
+      discBtn.addEventListener('click', function() {
+        discBtn.disabled = true;
+        discBtn.textContent = 'Disconnecting...';
+        eapi().invoke('disconnect-channel', { channelId: chId }).then(function() {
+          setTimeout(function() { showChannelConfig(chId, chName); }, 500);
+        }).catch(function() {
+          setTimeout(function() { showChannelConfig(chId, chName); }, 500);
+        });
+      });
+    }
+
+    // Back handler
+    var backBtn = $$('#ch-go-back');
+    if (backBtn) {
+      backBtn.addEventListener('click', function() { showChannelsView(); });
+    }
+  }).catch(function(err) {
+    var panel = $$('#ch-cfg-panel');
+    if (panel) panel.innerHTML = '<p style="color:var(--red);">Failed to load: ' + escHtml(err && err.message || String(err)) + '</p>' +
+      '<button id="ch-go-back" class="setting-btn" style="margin-top:12px;padding:6px 16px;font-size:12px;">\u2190 Back</button>';
+    var b = $$('#ch-go-back');
+    if (b) b.addEventListener('click', function() { showChannelsView(); });
+  });
+}
+
+function _getChannelFields(channelId) {
+  var map = {
+    'whatsapp': [
+      { key: 'accessToken', label: 'Access Token', required: true, secret: true, placeholder: 'WhatsApp Cloud API access token', hint: 'From developers.facebook.com \u2192 WhatsApp \u2192 API Setup' },
+      { key: 'phoneNumberId', label: 'Phone Number ID', required: true, secret: false, placeholder: 'Phone number ID', hint: 'From the WhatsApp API Setup page' },
+      { key: 'verifyToken', label: 'Verify Token', required: false, secret: false, placeholder: 'neuronest-whatsapp-verify', hint: 'Webhook verification token' },
+      { key: 'appSecret', label: 'App Secret', required: false, secret: true, placeholder: 'For HMAC verification (optional)' }
+    ],
+    'telegram': [
+      { key: 'botToken', label: 'Bot Token', required: true, secret: true, placeholder: 'Bot token from @BotFather' }
+    ],
+    'discord': [
+      { key: 'botToken', label: 'Bot Token', required: true, secret: true, placeholder: 'Discord bot token' },
+      { key: 'guildId', label: 'Server ID', required: false, secret: false, placeholder: 'Optional server ID' }
+    ],
+    'slack': [
+      { key: 'botToken', label: 'Bot Token (xoxb-...)', required: true, secret: true, placeholder: 'xoxb-...' },
+      { key: 'appToken', label: 'App Token (xapp-...)', required: true, secret: true, placeholder: 'xapp-...' }
+    ],
+    'gmail': [
+      { key: 'clientId', label: 'OAuth Client ID', required: true, secret: false, placeholder: 'Google OAuth client ID' },
+      { key: 'clientSecret', label: 'OAuth Client Secret', required: true, secret: true, placeholder: 'Google OAuth client secret' },
+      { key: 'refreshToken', label: 'Refresh Token', required: true, secret: true, placeholder: 'OAuth refresh token' }
+    ],
+    'matrix': [
+      { key: 'homeserverUrl', label: 'Homeserver URL', required: true, secret: false, placeholder: 'https://matrix.org' },
+      { key: 'accessToken', label: 'Access Token', required: true, secret: true, placeholder: 'Matrix access token' }
+    ],
+    'signal': [
+      { key: 'phoneNumber', label: 'Phone Number', required: true, secret: false, placeholder: '+1234567890' },
+      { key: 'signalCliPath', label: 'signal-cli Path', required: false, secret: false, placeholder: '/usr/local/bin/signal-cli' }
+    ],
+    'nostr': [
+      { key: 'privateKey', label: 'Private Key (nsec)', required: true, secret: true, placeholder: 'nsec1...' },
+      { key: 'relayUrls', label: 'Relay URLs (comma-separated)', required: false, secret: false, placeholder: 'wss://relay.damus.io' }
+    ],
+    'notion': [
+      { key: 'apiToken', label: 'Integration Token', required: true, secret: true, placeholder: 'secret_...' }
+    ],
+    'trello': [
+      { key: 'apiKey', label: 'API Key', required: true, secret: true, placeholder: 'Trello API key' },
+      { key: 'apiToken', label: 'API Token', required: true, secret: true, placeholder: 'Trello token' }
+    ],
+    'spotify': [
+      { key: 'clientId', label: 'Client ID', required: true, secret: false, placeholder: 'Spotify app client ID' },
+      { key: 'clientSecret', label: 'Client Secret', required: true, secret: true, placeholder: 'Client secret' },
+      { key: 'refreshToken', label: 'Refresh Token', required: true, secret: true, placeholder: 'OAuth refresh token' }
+    ],
+    'home-assistant': [
+      { key: 'baseUrl', label: 'Home Assistant URL', required: true, secret: false, placeholder: 'http://homeassistant.local:8123' },
+      { key: 'accessToken', label: 'Long-Lived Access Token', required: true, secret: true, placeholder: 'HA access token' }
+    ],
+    'philips-hue': [
+      { key: 'bridgeIp', label: 'Bridge IP', required: true, secret: false, placeholder: '192.168.1.x' },
+      { key: 'username', label: 'API Username', required: true, secret: true, placeholder: 'Hue Bridge username' }
+    ],
+    'shazam': [
+      { key: 'rapidApiKey', label: 'RapidAPI Key', required: true, secret: true, placeholder: 'RapidAPI key' }
+    ],
+    'weather': [
+      { key: 'apiKey', label: 'API Key', required: true, secret: true, placeholder: 'OpenWeatherMap API key' },
+      { key: 'defaultLocation', label: 'Default Location', required: false, secret: false, placeholder: 'City or lat,lon' }
+    ],
+    '1password': [
+      { key: 'serviceAccountToken', label: 'Service Account Token', required: true, secret: true, placeholder: 'ops_...' },
+      { key: 'vaultId', label: 'Vault ID', required: false, secret: false, placeholder: 'Optional vault' }
+    ],
+    'webhooks': [
+      { key: 'secret', label: 'Webhook Secret', required: false, secret: true, placeholder: 'HMAC secret (optional)' }
+    ],
+    'twitter-x': [
+      { key: 'apiKey', label: 'API Key', required: true, secret: true, placeholder: 'Twitter/X API key' },
+      { key: 'apiSecret', label: 'API Secret', required: true, secret: true, placeholder: 'API secret' },
+      { key: 'accessToken', label: 'Access Token', required: true, secret: true, placeholder: 'OAuth access token' },
+      { key: 'accessTokenSecret', label: 'Access Token Secret', required: true, secret: true, placeholder: 'OAuth token secret' }
+    ]
+  };
+  return map[channelId] || [];
 }
 
 /**

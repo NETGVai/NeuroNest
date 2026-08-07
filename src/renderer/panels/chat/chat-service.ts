@@ -58,6 +58,7 @@ export class ChatService {
   private listeners: Set<ChatServiceListener> = new Set();
   private ipcMessageHandler: ((...args: unknown[]) => void) | null = null;
   private ipcStreamHandler: ((...args: unknown[]) => void) | null = null;
+  private ipcChatResponseHandler: ((...args: unknown[]) => void) | null = null;
   private started = false;
   /** Tracks msgIds that have received a `start` event. */
   private startedStreams: Set<string> = new Set();
@@ -136,6 +137,32 @@ export class ChatService {
 
     bridge.on(IPC_CHANNELS.MESSAGE_RECEIVED, this.ipcMessageHandler);
     bridge.on(IPC_CHANNELS.STREAM_CHUNK, this.ipcStreamHandler);
+
+    // Listen to legacy chat-response events for channel messages (REQ 3.1, 3.2, 3.3, 3.4, 3.5)
+    this.ipcChatResponseHandler = (...args: unknown[]) => {
+      const data = args[0] as Record<string, unknown> | undefined;
+      if (!data) return;
+      // Only handle channel messages — non-channel messages are handled by legacy renderer
+      if (!data.isChannelMessage && !data.channelSource && !data.relayTarget) return;
+
+      const message: ChatMessage = {
+        id: `channel-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+        roomId: this.currentProjectId,
+        sender: (data.role as 'user' | 'assistant') === 'user' ? 'user' : 'assistant',
+        content: (data.content as string) || '',
+        timestamp: Date.now(),
+        status: 'sent',
+        metadata: {
+          agent: (data.agent as string) || undefined,
+          channelSource: data.channelSource as ChatMessage['metadata'] extends infer M ? M extends { channelSource?: infer C } ? C : never : never,
+          relayTarget: data.relayTarget as ChatMessage['metadata'] extends infer M ? M extends { relayTarget?: infer R } ? R : never : never,
+          isChannelMessage: true,
+          isChannelStreaming: (data.isChannelStreaming as boolean) || undefined,
+        },
+      };
+      this.emit({ type: 'message-received', message });
+    };
+    bridge.on('chat-response', this.ipcChatResponseHandler);
   }
 
   /** Stop listening for IPC events and clean up subscriptions. */
@@ -152,6 +179,10 @@ export class ChatService {
     if (this.ipcStreamHandler) {
       bridge.off(IPC_CHANNELS.STREAM_CHUNK, this.ipcStreamHandler);
       this.ipcStreamHandler = null;
+    }
+    if (this.ipcChatResponseHandler) {
+      bridge.off('chat-response', this.ipcChatResponseHandler);
+      this.ipcChatResponseHandler = null;
     }
 
     this.startedStreams.clear();

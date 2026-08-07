@@ -112,7 +112,8 @@ import { PROVIDER_URLS } from '../pipeline/llm-client';
 import { createLLMClientWithProMode } from '../pipeline/pro-mode-state';
 import { CostStore } from '../storage/cost-store';
 import { loadPricingTable, calculateCost, type PricingTable } from '../pipeline/cost-calculator';
-import { ChannelManager, CHANNEL_REGISTRY_EVENT } from '../channels/channel-manager';
+import { ChannelManager, CHANNEL_REGISTRY_EVENT, CHANNEL_RELAY_EVENT } from '../channels/channel-manager';
+import type { ChannelRelayPayload } from '../channels/channel-manager';
 import { FirewallEngine } from '../firewall/firewall-engine';
 import { EnhancedFirewallEngine } from '../firewall/enhanced-firewall-engine';
 import { FirewallConfigManager } from '../firewall/firewall-config';
@@ -269,6 +270,7 @@ import {
 import { AsyncCommandRunner } from './performance/async-command-runner';
 import { validatePath } from '../security/path-guard';
 import { getGCFSystem } from '../context/gcf-bootstrap.js';
+import { parseConnectChannelArg, isParseError } from './connect-channel-parser';
 
 // Singleton AsyncCommandRunner instance for non-blocking command execution
 const asyncCommandRunner = new AsyncCommandRunner();
@@ -2211,11 +2213,19 @@ export async function initDeferredSubsystems(): Promise<void> {
       channelManager.onMessage(async (msg: any) => {
         if (!_ipcMainWindow || _ipcMainWindow.isDestroyed()) return;
         console.log('[Channel]', msg.channelId, 'from', msg.from, ':', (msg.content || '').slice(0, 50));
+        const _deferredDisplayInfo = channelManager.getChannelDisplayInfo(msg.channelId);
         _ipcMainWindow.webContents.send('chat-response', {
-          role: 'assistant',
-          content: '💬 [' + msg.channelId + '] ' + msg.from + ': ' + (msg.content || ''),
+          role: 'user',
+          content: msg.content || '',
           agent: msg.channelId,
-          isCommand: true
+          isCommand: true,
+          isChannelMessage: true,
+          channelSource: {
+            channelId: msg.channelId,
+            displayName: _deferredDisplayInfo?.displayName || msg.channelId,
+            emoji: _deferredDisplayInfo?.emoji || '💬',
+            from: msg.from,
+          },
         });
       });
 
@@ -2228,6 +2238,23 @@ export async function initDeferredSubsystems(): Promise<void> {
       (channelManager as any).emitter.on(CHANNEL_REGISTRY_EVENT, (payload: any) => {
         if (!_ipcMainWindow || _ipcMainWindow.isDestroyed()) return;
         _ipcMainWindow.webContents.send('channel-registry-update', payload);
+      });
+
+      // Wire channel-relay events to renderer (REQ 3.1, 3.2, 3.3, 12.1, 12.2, 12.3)
+      // processInbound emits relay display metadata that the chat panel uses to render
+      // channel source badges and relay indicator badges on messages.
+      channelManager.onChannelRelay((payload: ChannelRelayPayload) => {
+        if (!_ipcMainWindow || _ipcMainWindow.isDestroyed()) return;
+        _ipcMainWindow.webContents.send('chat-response', {
+          role: payload.role,
+          content: payload.content,
+          agent: payload.channelSource?.channelId || payload.relayTarget?.channelId || 'NeuroNest',
+          isCommand: true,
+          isChannelMessage: payload.isChannelMessage,
+          channelSource: payload.channelSource,
+          relayTarget: payload.relayTarget,
+          isChannelStreaming: payload.isChannelStreaming,
+        });
       });
 
       console.log('[IPC] Channel manager wired (deferred)');
@@ -2832,12 +2859,20 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
       channelContent = fwResult.sanitized;
     }
     
-    // Show incoming message in the UI
+    // Show incoming message in the UI with channel source metadata (REQ 3.1, 3.5)
+    const _channelDisplayInfo = channelManager.getChannelDisplayInfo(msg.channelId);
     mainWindow.webContents.send('chat-response', { 
-      role: 'assistant', 
-      content: '💬 [' + msg.channelId + '] ' + msg.from + ': ' + channelContent, 
+      role: 'user', 
+      content: channelContent, 
       agent: msg.channelId, 
-      isCommand: true 
+      isCommand: true,
+      isChannelMessage: true,
+      channelSource: {
+        channelId: msg.channelId,
+        displayName: _channelDisplayInfo?.displayName || msg.channelId,
+        emoji: _channelDisplayInfo?.emoji || '💬',
+        from: msg.from,
+      },
     });
 
     // ── Process through NeuroNest pipeline and reply back ──
@@ -2863,7 +2898,15 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
           role: 'assistant', 
           content: '🧠 Processing message from ' + msg.from + ' on ' + msg.channelId + ' [' + channelMode + ' mode]...', 
           agent: 'NeuroNest', 
-          isCommand: true 
+          isCommand: true,
+          isChannelMessage: true,
+          isChannelStreaming: true,
+          channelSource: {
+            channelId: msg.channelId,
+            displayName: _channelDisplayInfo?.displayName || msg.channelId,
+            emoji: _channelDisplayInfo?.emoji || '💬',
+            from: msg.from,
+          },
         });
 
         let responseText = '';
@@ -2960,28 +3003,42 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
           .replace(/^[-*]\s+/gm, '• ')        // - bullets → •
           .replace(/^\d+\.\s+/gm, '')         // numbered lists → plain
           .trim();
-        const sendResult = await channelManager.sendMessage(msg.channelId, msg.from, plainResponseText);
+        const sendResult = await channelManager.sendWithRetry(msg.channelId, msg.from, plainResponseText);
         
         if (sendResult.success) {
           mainWindow.webContents.send('chat-response', { 
             role: 'assistant', 
-            content: '✅ [' + msg.channelId + '] → ' + msg.from + ':\n\n' + responseText.slice(0, 500) + (responseText.length > 500 ? '...' : ''), 
+            content: responseText.slice(0, 500) + (responseText.length > 500 ? '...' : ''), 
             agent: 'NeuroNest', 
-            isCommand: true 
+            isCommand: true,
+            isChannelMessage: true,
+            relayTarget: {
+              channelId: msg.channelId,
+              displayName: _channelDisplayInfo?.displayName || msg.channelId,
+              emoji: _channelDisplayInfo?.emoji || '💬',
+              success: true,
+            },
           });
         } else {
           mainWindow.webContents.send('chat-response', { 
             role: 'assistant', 
             content: '⚠️ Generated response but failed to send back to ' + msg.channelId + ': ' + sendResult.message, 
             agent: 'NeuroNest', 
-            isCommand: true 
+            isCommand: true,
+            isChannelMessage: true,
+            relayTarget: {
+              channelId: msg.channelId,
+              displayName: _channelDisplayInfo?.displayName || msg.channelId,
+              emoji: _channelDisplayInfo?.emoji || '💬',
+              success: false,
+            },
           });
         }
       } catch (pipelineErr: any) {
         console.error('[Channel] Pipeline processing error:', pipelineErr?.message);
-        // Try to send error message back to the platform
+        // Try to send error message back to the platform with retry
         try {
-          await channelManager.sendMessage(msg.channelId, msg.from, '⚠️ Sorry, I encountered an error processing your message. Please try again.');
+          await channelManager.sendWithRetry(msg.channelId, msg.from, '⚠️ Sorry, I encountered an error processing your message. Please try again.');
         } catch {}
       }
     }
@@ -3025,6 +3082,27 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
       console.log('[IPC] Sent channel-registry-update to renderer:', payload?.channelId, payload?.action);
     } catch (e: any) {
       console.warn('[IPC] Failed to send channel-registry-update:', e?.message);
+    }
+  });
+
+  // Wire channel-relay events to renderer (REQ 3.1, 3.2, 3.3, 12.1, 12.2, 12.3)
+  // processInbound emits relay display metadata that the chat panel uses to render
+  // channel source badges and relay indicator badges on messages.
+  channelManager.onChannelRelay((payload: ChannelRelayPayload) => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    try {
+      mainWindow.webContents.send('chat-response', {
+        role: payload.role,
+        content: payload.content,
+        agent: payload.channelSource?.channelId || payload.relayTarget?.channelId || 'NeuroNest',
+        isCommand: true,
+        isChannelMessage: payload.isChannelMessage,
+        channelSource: payload.channelSource,
+        relayTarget: payload.relayTarget,
+        isChannelStreaming: payload.isChannelStreaming,
+      });
+    } catch (e: any) {
+      console.warn('[IPC] Failed to send channel-relay chat-response:', e?.message);
     }
   });
   } // end if (channelManager)
@@ -7492,15 +7570,13 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
 
   ipcMain.handle('connect-channel', async (_ev, arg: any) => {
     try {
-      let channelId, config;
-      if (typeof arg === 'object' && arg !== null) {
-        channelId = arg.channelId;
-        config = arg.config;
-      } else {
-        const parsed = JSON.parse(arg);
-        channelId = parsed.channelId;
-        config = parsed.config;
+      // ── Backward-compatible config parsing shim (Req 13.1–13.5) ──
+      const parsed = parseConnectChannelArg(arg);
+      if (isParseError(parsed)) {
+        return parsed;
       }
+      const { channelId, config } = parsed;
+
       console.log('[IPC] Connecting channel:', channelId);
       const result = await channelManager.connect(channelId, config);
       
@@ -7509,7 +7585,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
         try {
           const row = db.prepare("SELECT value FROM config WHERE key = 'channel-configs'").get() as any;
           const configs = row ? JSON.parse(row.value) : {};
-          configs[channelId] = { ...config, autoConnect: true };
+          configs[channelId] = { ...(config as any), autoConnect: true };
           db.prepare("INSERT OR REPLACE INTO config (key, value, updated_at) VALUES ('channel-configs', ?, ?)").run(JSON.stringify(configs), new Date().toISOString());
           console.log('[IPC] Channel config saved for auto-reconnect:', channelId);
         } catch (saveErr: any) {
@@ -7628,6 +7704,38 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
     } catch (e: any) {
       return { error: e?.message || 'Failed to retrieve channel metadata' };
     }
+  });
+
+  // ── Session Context Viewer IPC (REQ 5.4, 5.5) ──
+
+  ipcMain.handle('list-active-sessions', async () => {
+    if (!channelManager) return [];
+    const sessions = channelManager.listActiveSessions();
+    return sessions.map((s: any) => ({
+      channelId: s.channelId,
+      senderId: s.senderId,
+      lastActivity: s.lastActivityAt,
+      messageCount: s.messages.length,
+    }));
+  });
+
+  ipcMain.handle('get-session-info', async (_ev, arg: any) => {
+    if (!channelManager) return null;
+    const channelId = arg?.channelId;
+    const senderId = arg?.senderId;
+    if (!channelId || !senderId) return null;
+    return channelManager.getSessionInfo(channelId, senderId);
+  });
+
+  ipcMain.handle('clear-session-context', async (_ev, arg: any) => {
+    if (!channelManager) return { success: false, message: 'ChannelManager not initialized' };
+    const channelId = arg?.channelId;
+    const senderId = arg?.senderId;
+    if (!channelId || !senderId) {
+      return { success: false, message: 'channelId and senderId are required' };
+    }
+    channelManager.clearSessionContext(channelId, senderId);
+    return { success: true };
   });
 
   // Avatar generation — local SVG robot avatars

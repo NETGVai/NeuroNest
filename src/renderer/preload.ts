@@ -385,6 +385,8 @@ const INVOKE_CHANNELS = [
   'git-import:run',
   // Channel Adapter System (Requirement 25.2)
   'channel:list', 'channel:metadata',
+  // Session Context Viewer (Requirement 5.4, 5.5)
+  'list-active-sessions', 'get-session-info', 'clear-session-context',
 ];
 
 const RECEIVE_CHANNELS = [

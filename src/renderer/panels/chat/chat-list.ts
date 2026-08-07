@@ -165,6 +165,56 @@ function injectStyles(): void {
       margin-bottom: 4px;
       line-height: 1;
     }
+    .nn-chat-badge-channel-source {
+      display: inline-block;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.3px;
+      background: var(--chat-badge-channel-bg, #1a3a5c);
+      color: var(--chat-badge-channel-text, #90caf9);
+      padding: 2px 6px;
+      border-radius: 4px;
+      margin-bottom: 4px;
+      line-height: 1;
+    }
+    .nn-chat-badge-channel-streaming {
+      display: inline-block;
+      font-size: 10px;
+      font-weight: 500;
+      background: var(--chat-badge-streaming-bg, #4a3800);
+      color: var(--chat-badge-streaming-text, #ffe082);
+      padding: 2px 6px;
+      border-radius: 4px;
+      margin-bottom: 4px;
+      margin-left: 4px;
+      line-height: 1;
+      animation: nn-chat-pulse 1.5s infinite;
+    }
+    @keyframes nn-chat-pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.6; }
+    }
+    .nn-chat-badge-relay-target {
+      display: inline-block;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.3px;
+      padding: 2px 6px;
+      border-radius: 4px;
+      margin-bottom: 4px;
+      line-height: 1;
+    }
+    .nn-chat-badge-relay-target--success {
+      background: var(--chat-badge-relay-success-bg, #1b5e20);
+      color: var(--chat-badge-relay-success-text, #a5d6a7);
+    }
+    .nn-chat-badge-relay-target--failed {
+      background: var(--chat-badge-relay-failed-bg, #5d2020);
+      color: var(--chat-badge-relay-failed-text, #ef9a9a);
+    }
+    .nn-chat-list__message--channel .nn-chat-list__bubble {
+      border-left: 3px solid var(--chat-channel-border, #42a5f5);
+    }
     .nn-chat-agent-label {
       display: block;
       font-size: 11px;
@@ -418,6 +468,11 @@ export class ChatList {
     if (message.status === 'sending') wrapper.classList.add(CSS.messageSending);
     if (message.status === 'error') wrapper.classList.add(CSS.messageError);
 
+    // Apply channel message class for visual distinction (REQ 3.5)
+    if (message.metadata?.isChannelMessage) {
+      wrapper.classList.add('nn-chat-list__message--channel');
+    }
+
     // Bubble
     const bubble = document.createElement('div');
     bubble.className = CSS.messageBubble;
@@ -429,6 +484,43 @@ export class ChatList {
       badge.textContent = 'Dashboard';
       badge.setAttribute('aria-label', 'Dispatched from Agent Dashboard');
       bubble.appendChild(badge);
+    }
+
+    // Channel source badge for inbound channel messages (REQ 3.1, 3.5)
+    if (message.metadata?.channelSource) {
+      const channelBadge = document.createElement('span');
+      channelBadge.className = 'nn-chat-badge-channel-source';
+      const src = message.metadata.channelSource;
+      channelBadge.textContent = `${src.emoji} ${src.displayName}`;
+      channelBadge.setAttribute('aria-label', `Message from ${src.displayName} channel (${src.from})`);
+      channelBadge.title = `From: ${src.from} via ${src.displayName}`;
+      bubble.appendChild(channelBadge);
+    }
+
+    // Channel streaming indicator (REQ 3.4)
+    if (message.metadata?.isChannelStreaming) {
+      const streamingBadge = document.createElement('span');
+      streamingBadge.className = 'nn-chat-badge-channel-streaming';
+      streamingBadge.textContent = '⏳ Processing...';
+      streamingBadge.setAttribute('aria-label', 'Generating AI response for channel message');
+      bubble.appendChild(streamingBadge);
+    }
+
+    // Relay target badge for outbound responses to channels (REQ 3.2, 3.3)
+    if (message.metadata?.relayTarget) {
+      const relayBadge = document.createElement('span');
+      relayBadge.className = 'nn-chat-badge-relay-target';
+      const relay = message.metadata.relayTarget;
+      if (relay.success) {
+        relayBadge.classList.add('nn-chat-badge-relay-target--success');
+        relayBadge.textContent = `→ ${relay.emoji} ${relay.displayName}`;
+        relayBadge.setAttribute('aria-label', `Response delivered to ${relay.displayName}`);
+      } else {
+        relayBadge.classList.add('nn-chat-badge-relay-target--failed');
+        relayBadge.textContent = `⚠ → ${relay.emoji} ${relay.displayName}`;
+        relayBadge.setAttribute('aria-label', `Failed to deliver to ${relay.displayName}`);
+      }
+      bubble.appendChild(relayBadge);
     }
 
     // Agent label for assistant messages with agent metadata or orchestrator fallback
