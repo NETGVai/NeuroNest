@@ -112,6 +112,8 @@ export interface StreamResult {
   tokensUsed?: number;
   promptTokens?: number;
   completionTokens?: number;
+  /** Reasoning/thinking content accumulated during streaming (if the model provides it). */
+  reasoning?: string;
 }
 
 export interface StreamCallbacks {
@@ -726,6 +728,7 @@ export class LLMClient {
     });
 
     let partialContent = '';
+    let reasoningContent = '';
     let stream: ReturnType<typeof client.chat.completions.create> extends Promise<infer T> ? T : any;
 
     try {
@@ -764,6 +767,12 @@ export class LLMClient {
           }
         }
 
+        // Accumulate reasoning/thinking content from the delta (e.g., DeepSeek reasoning_content)
+        const reasoningToken = chunk.choices?.[0]?.delta?.reasoning_content;
+        if (reasoningToken) {
+          reasoningContent += reasoningToken;
+        }
+
         // Capture usage from the final chunk (OpenAI sends it on the last chunk when stream_options.include_usage is true)
         if (chunk.usage) {
           lastUsage = chunk.usage;
@@ -782,6 +791,7 @@ export class LLMClient {
         tokensUsed: lastUsage?.total_tokens,
         promptTokens: lastUsage?.prompt_tokens,
         completionTokens: lastUsage?.completion_tokens,
+        reasoning: reasoningContent || undefined,
       });
 
       // ─── Cache metrics logging for streaming (Requirement 18.4) ─────
@@ -819,6 +829,7 @@ export class LLMClient {
     this._activeRequest = { controller };
 
     let partialContent = '';
+    let reasoningContent = '';
     let lastUsage: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | undefined;
 
     try {
@@ -927,6 +938,12 @@ export class LLMClient {
             }
           }
 
+          // Accumulate reasoning/thinking content from the delta
+          const reasoningToken = chunk.choices?.[0]?.delta?.reasoning_content;
+          if (reasoningToken) {
+            reasoningContent += reasoningToken;
+          }
+
           if (chunk.usage) {
             lastUsage = chunk.usage;
           }
@@ -958,6 +975,7 @@ export class LLMClient {
         tokensUsed: lastUsage?.total_tokens,
         promptTokens: lastUsage?.prompt_tokens,
         completionTokens: lastUsage?.completion_tokens,
+        reasoning: reasoningContent || undefined,
       });
 
       // ─── Cache metrics logging for proxy streaming (Requirement 18.4) ─

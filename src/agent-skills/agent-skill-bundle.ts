@@ -1,11 +1,29 @@
 /**
- * Agent Skill Bundle Service
+ * Agent Skill Bundle Service (NON-AUTHORITATIVE COMPATIBILITY)
  *
- * Assigns skill bundles to agents based on department, specialty, and systemPrompt
- * capability analysis. Maintains an in-memory mapping table (agent ID → skill IDs)
- * and supports per-agent design template paths.
+ * WARNING: This module's in-memory mappings are NON-AUTHORITATIVE during
+ * the transition to persisted reconciled bundles. The authoritative read
+ * path is `authoritative-skill-reader.ts` which reads from the
+ * `AgentSkillsService` persisted Assignment_Store.
+ *
+ * This module is retained ONLY for:
+ *  - Backward-compatible import side-effects during `importAgents()`
+ *  - Template path lookups (getTemplatePath)
+ *  - Legacy UI compatibility during the transition period
+ *
+ * This module is PROHIBITED from:
+ *  - Completion gate decisions (Requirements 10.20–10.22)
+ *  - Authoritative skill resolution (Requirement 10.3)
+ *  - Bundle persistence planning (Requirements 10.13–10.15)
+ *  - Skill coverage equality verification (Requirement 10.11)
+ *
+ * Use `readAuthoritativeSkillBundle()` from `authoritative-skill-reader.ts`
+ * for any runtime decision that depends on correct skill assignments.
  *
  * Requirements: 22.1, 22.2, 22.3, 22.4, 22.5, 22.6, 22.7, 22.8, 22.9, 22.10, 22.11
+ *
+ * @deprecated In-memory authority retired per spec task 9.4.
+ * Retained as non-authoritative compatibility only.
  */
 
 import { AgentDefinition } from '../agents/agent-registry';
@@ -155,7 +173,14 @@ const DELIVERABLE_PATTERNS: Record<string, RegExp> = {
 // ─────────────────────────────────────────────
 
 /**
- * In-memory mapping: agent ID → skill IDs.
+ * NON-AUTHORITATIVE in-memory mapping: agent ID → skill IDs.
+ *
+ * This map is populated during `importAgents()` as a backward-compatible
+ * side-effect. It is NOT the authoritative source of truth for skill
+ * assignments. The authoritative persisted Assignment_Store is accessed
+ * through `AgentSkillsService.getAgentSkills()`.
+ *
+ * @deprecated Non-authoritative. Use the persisted service path.
  * Requirement 22.2: Maintain skill-to-agent mapping table.
  */
 const skillToAgentMap: Map<string, string[]> = new Map();
@@ -175,9 +200,23 @@ const agentDefinitionCache: Map<string, AgentDefinition> = new Map();
 // ─────────────────────────────────────────────
 
 /**
- * Returns the skill IDs mapped to a given agent.
+ * Returns the skill IDs mapped to a given agent from the IN-MEMORY cache.
+ *
+ * WARNING: NON-AUTHORITATIVE. This function reads from the in-memory
+ * `skillToAgentMap` which is NOT the authoritative source of truth.
+ * It is retained for backward compatibility only.
+ *
+ * For authoritative skill reads, use:
+ *   `readAuthoritativeSkillBundle(agentId)` from `authoritative-skill-reader.ts`
+ *
+ * This function MUST NOT be used for:
+ *  - Completion gate decisions
+ *  - Skill coverage equality verification
+ *  - Bundle persistence planning or reconciliation
+ *
  * Requirement 22.10: Expose getAgentSkills(agentId) API for orchestrator.
  *
+ * @deprecated Non-authoritative. Use readAuthoritativeSkillBundle() instead.
  * @param agentId - The agent's unique identifier
  * @returns Object with skillIds and designTemplates for the agent
  */
@@ -185,6 +224,8 @@ export function getAgentSkills(agentId: string): {
   skillIds: string[];
   designTemplates: string[];
   templatePath: string;
+  /** Always false — this path is non-authoritative compatibility only. */
+  authoritative: false;
 } {
   const skillIds = skillToAgentMap.get(agentId) || [];
   const designTemplates = templateToAgentMap.get(agentId) || [];
@@ -194,16 +235,31 @@ export function getAgentSkills(agentId: string): {
     skillIds,
     designTemplates,
     templatePath,
+    authoritative: false,
   };
 }
 
 /**
  * Analyzes an agent's department, specialty, and systemPrompt to determine
- * which skill IDs should be assigned.
+ * which skill IDs should be assigned to the IN-MEMORY mapping.
+ *
+ * WARNING: NON-AUTHORITATIVE. This function populates the in-memory
+ * `skillToAgentMap` which is NOT the authoritative assignment store.
+ * It is retained as a compatibility side-effect during `importAgents()`.
+ *
+ * The authoritative assignment path is the complete-bundle reconciliation
+ * through `AgentSkillsService.reconcileAgentSkillBundle()`.
+ *
+ * This function's output MUST NOT be used for:
+ *  - Completion gate decisions (Requirements 10.20–10.22)
+ *  - Skill coverage equality verification
+ *  - Authoritative bundle validation
+ *
  * Requirement 22.1: Assign skill bundle derived from department, specialty, and systemPrompt.
  *
+ * @deprecated Non-authoritative. Retained for import compatibility only.
  * @param agent - The AgentDefinition to analyze
- * @returns Array of skill IDs assigned to this agent
+ * @returns Array of skill IDs assigned to this agent (non-authoritative)
  */
 export function assignSkillBundle(agent: AgentDefinition): string[] {
   const skillIds = new Set<string>();
@@ -269,12 +325,18 @@ export function getTemplatePath(agentId: string): string {
 }
 
 /**
- * Re-evaluates all skill-to-agent mappings.
+ * Re-evaluates all skill-to-agent mappings in the IN-MEMORY map.
  * Called when skills are updated or new skills are added.
+ *
+ * WARNING: NON-AUTHORITATIVE. This updates only the in-memory compatibility
+ * map. Authoritative re-evaluation requires reconciliation through
+ * `AgentSkillsService.reconcileAgentSkillBundle()`.
+ *
+ * @deprecated Non-authoritative. Retained for backward compatibility.
  * Requirement 22.11: Re-evaluate mappings when skills updated or added.
  */
 export function reEvaluateMappings(): void {
-  for (const [agentId, agent] of agentDefinitionCache.entries()) {
+  for (const [, agent] of agentDefinitionCache.entries()) {
     assignSkillBundle(agent);
   }
 }
@@ -282,6 +344,9 @@ export function reEvaluateMappings(): void {
 /**
  * Returns the full in-memory mapping table.
  * Useful for debugging and for the orchestrator to batch-load skill information.
+ *
+ * WARNING: NON-AUTHORITATIVE. Use the persisted service path for decisions.
+ * @deprecated Non-authoritative compatibility.
  */
 export function getSkillMappingTable(): ReadonlyMap<string, string[]> {
   return skillToAgentMap;
@@ -312,8 +377,13 @@ export function hasSkillsAssigned(agentId: string): boolean {
 }
 
 /**
- * Gets all agent IDs that have a specific skill assigned.
+ * Gets all agent IDs that have a specific skill assigned (IN-MEMORY ONLY).
  * Useful for reverse lookups when determining which agents can handle a task.
+ *
+ * WARNING: NON-AUTHORITATIVE. Reads from the in-memory map, not the
+ * persisted Assignment_Store. Results may not reflect reconciled bundles.
+ *
+ * @deprecated Non-authoritative. Query the persisted service for authoritative data.
  */
 export function getAgentsBySkill(skillId: string): string[] {
   const agents: string[] = [];

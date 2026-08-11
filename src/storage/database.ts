@@ -65,6 +65,16 @@ import * as trainingPipeline from './migrations/060-training-pipeline.js';
 import * as modelExportGrpo from './migrations/061-model-export-grpo-tables.js';
 import * as enterpriseTraining from './migrations/062-enterprise-training-tables.js';
 import * as multiRepoAgentIntegration from './migrations/063-multi-repo-agent-integration.js';
+import * as gadgets from './migrations/064-gadgets.js';
+import * as blueprints from './migrations/065-blueprints.js';
+import * as gatekeeper from './migrations/066-gatekeeper.js';
+import * as simulatedApproval from './migrations/067-simulated-approval.js';
+import * as observations from './migrations/068-observations.js';
+import * as contextLibrary from './migrations/069-context-library.js';
+import * as workflows from './migrations/070-workflows.js';
+import * as costBudgets from './migrations/071-cost-budgets.js';
+import * as codeMode from './migrations/072-code-mode.js';
+import * as agentSkillBundleEvidence from './migrations/073-agent-skill-bundle-evidence.js';
 
 export interface Migration {
   version: number;
@@ -72,7 +82,7 @@ export interface Migration {
   up: (db: Database.Database) => void;
 }
 
-const migrations: Migration[] = [initialSchema, skillsSchema, multicaIntegration, agentSkillsIntegration, costRecords, securityScans, longTermMemory, sandboxSessions, mcpServers, memoryFts, diffReview, multiSession, extensions, newFeatures, plandexFeatures, advancedFeatures, remainingFeatures, gooseFeatures, sentruxFeatures, sreFeatures, helmorFeatures, factoryFeatures, coderFeatures, groundingAudit, incrementalIndexing, chatMessagesOverflow, runtimeSandboxGuardrails, errorSizeSamples, pipelineEvents, metricSamples, errorSizeSamplesBackfill, specMessageMode, secretsV2, multiChatSessions, agentLoopMetrics, featureIntegration, traceProvenanceColumns, neuronestEnhanced, productionUxAudit, unifiedIntentGate, loopStorage, accessibilityFriction, semanticIndex, worktreeSessions, codeReviews, backgroundProcesses, networkPolicyLog, sessionExports, pluginSystem, adoptionMetrics, mcpMarketplace, diffTurns, featureGateStore, rememberedGrants, hookDefinitionsV2, crossSessionMemory, dispatchSource, gcfContext, kbTables, trainingPipeline, modelExportGrpo, enterpriseTraining, multiRepoAgentIntegration];
+const migrations: Migration[] = [initialSchema, skillsSchema, multicaIntegration, agentSkillsIntegration, costRecords, securityScans, longTermMemory, sandboxSessions, mcpServers, memoryFts, diffReview, multiSession, extensions, newFeatures, plandexFeatures, advancedFeatures, remainingFeatures, gooseFeatures, sentruxFeatures, sreFeatures, helmorFeatures, factoryFeatures, coderFeatures, groundingAudit, incrementalIndexing, chatMessagesOverflow, runtimeSandboxGuardrails, errorSizeSamples, pipelineEvents, metricSamples, errorSizeSamplesBackfill, specMessageMode, secretsV2, multiChatSessions, agentLoopMetrics, featureIntegration, traceProvenanceColumns, neuronestEnhanced, productionUxAudit, unifiedIntentGate, loopStorage, accessibilityFriction, semanticIndex, worktreeSessions, codeReviews, backgroundProcesses, networkPolicyLog, sessionExports, pluginSystem, adoptionMetrics, mcpMarketplace, diffTurns, featureGateStore, rememberedGrants, hookDefinitionsV2, crossSessionMemory, dispatchSource, gcfContext, kbTables, trainingPipeline, modelExportGrpo, enterpriseTraining, multiRepoAgentIntegration, gadgets, blueprints, gatekeeper, simulatedApproval, observations, contextLibrary, workflows, costBudgets, codeMode, agentSkillBundleEvidence];
 
 /**
  * Validates the migration registry is contiguous (versions 1..N) and the

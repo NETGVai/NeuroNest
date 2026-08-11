@@ -6,6 +6,7 @@
  */
 
 import type { AgentDefinition, ToolPermission } from '../agents/agent-registry';
+import type { AgentFileParseResult } from './agent-file-parser';
 
 // ─────────────────────────────────────────────
 // Agent Import
@@ -17,6 +18,8 @@ export interface ImportedAgent {
   sourceFile: string;
   division: string;
   rawFrontmatter: Record<string, string>;
+  /** Lossless source, structure, extraction, and recovery evidence when parsed from markdown. */
+  parseEvidence?: AgentFileParseResult;
 }
 
 /** Result of an import operation across one or more agent files. */

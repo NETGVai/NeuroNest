@@ -85,7 +85,7 @@ export class ChatService {
 
       if (data.done) {
         this.startedStreams.delete(data.messageId);
-        this.emit({ type: 'message-status-changed', messageId: data.messageId, status: 'sent' });
+        this.emit({ type: 'message-status-changed', messageId: data.messageId, status: 'sent', reasoning: data.reasoning || undefined });
         return;
       }
 

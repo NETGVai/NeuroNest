@@ -15,10 +15,19 @@
  * Requirements: 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 4.1, 4.2, 4.3, 4.4, 4.5, 4.6
  */
 
-import { readdir, readFile, stat } from 'node:fs/promises';
-import { join, relative, dirname } from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { dirname } from 'node:path';
 
 import type { AgentDefinition, ToolPermission } from '../agents/agent-registry';
+import {
+  parseAgentFileDocument,
+  REQUIRED_AGENT_SECTION_NAMES,
+} from './agent-file-parser';
+import {
+  discoverCatalog,
+  type CatalogManifest,
+  type CatalogManifestEntry,
+} from './catalog-discovery';
 import type { ImportedAgent, ImportResult } from './types';
 import {
   mapDirectoryToDepartment,
@@ -35,14 +44,7 @@ import {
  * Sections to extract from the markdown body and concatenate into the systemPrompt.
  * Order matters — they're joined in this sequence.
  */
-const SYSTEM_PROMPT_SECTIONS = [
-  'Identity',
-  'Core Mission',
-  'Critical Rules',
-  'Technical Deliverables',
-  'Workflow Process',
-  'Success Metrics',
-];
+const SYSTEM_PROMPT_SECTIONS = REQUIRED_AGENT_SECTION_NAMES;
 
 /**
  * Keywords that indicate an agent needs command execution permission,
@@ -70,98 +72,6 @@ const COMMAND_UPGRADE_KEYWORDS = [
   'use tools',
   'tool access',
 ];
-
-// ─────────────────────────────────────────────
-// YAML Frontmatter Parsing
-// ─────────────────────────────────────────────
-
-/**
- * Parses YAML frontmatter from a markdown file content string.
- * Frontmatter is delimited by --- markers at the start of the file.
- *
- * @param content - Raw markdown content
- * @returns An object with frontmatter fields and the remaining body
- */
-function parseFrontmatter(content: string): {
-  frontmatter: Record<string, string>;
-  body: string;
-} {
-  const trimmed = content.trimStart();
-
-  if (!trimmed.startsWith('---')) {
-    return { frontmatter: {}, body: content };
-  }
-
-  const endMarkerIndex = trimmed.indexOf('---', 3);
-  if (endMarkerIndex === -1) {
-    return { frontmatter: {}, body: content };
-  }
-
-  const frontmatterBlock = trimmed.slice(3, endMarkerIndex).trim();
-  const body = trimmed.slice(endMarkerIndex + 3).trim();
-
-  const frontmatter: Record<string, string> = {};
-  for (const line of frontmatterBlock.split('\n')) {
-    const colonIndex = line.indexOf(':');
-    if (colonIndex === -1) continue;
-
-    const key = line.slice(0, colonIndex).trim();
-    let value = line.slice(colonIndex + 1).trim();
-
-    // Remove surrounding quotes
-    if ((value.startsWith('"') && value.endsWith('"')) ||
-        (value.startsWith("'") && value.endsWith("'"))) {
-      value = value.slice(1, -1);
-    }
-
-    if (key) {
-      frontmatter[key] = value;
-    }
-  }
-
-  return { frontmatter, body };
-}
-
-// ─────────────────────────────────────────────
-// Section Extraction
-// ─────────────────────────────────────────────
-
-/**
- * Extracts named sections from the markdown body.
- * Sections are identified by ## or # headers matching the section names.
- *
- * @param body - The markdown body (without frontmatter)
- * @returns Map of section name → section content
- */
-function extractSections(body: string): Map<string, string> {
-  const sections = new Map<string, string>();
-  const lines = body.split('\n');
-
-  let currentSection: string | null = null;
-  let currentContent: string[] = [];
-
-  for (const line of lines) {
-    // Match ## Section Name or # Section Name
-    const headerMatch = line.match(/^#{1,3}\s+(.+)$/);
-    if (headerMatch) {
-      // Save previous section
-      if (currentSection) {
-        sections.set(currentSection, currentContent.join('\n').trim());
-      }
-      currentSection = (headerMatch[1] ?? '').trim();
-      currentContent = [];
-    } else {
-      currentContent.push(line);
-    }
-  }
-
-  // Save final section
-  if (currentSection) {
-    sections.set(currentSection, currentContent.join('\n').trim());
-  }
-
-  return sections;
-}
 
 /**
  * Concatenates the relevant sections into a single systemPrompt string.
@@ -278,8 +188,20 @@ export function assignPermissions(agent: ImportedAgent): ToolPermission {
  * @param markdownContent - Raw file content
  * @returns The parsed ImportedAgent
  */
-export function parseAgentFile(filePath: string, markdownContent: string): ImportedAgent {
-  const { frontmatter, body } = parseFrontmatter(markdownContent);
+export function parseAgentFile(
+  filePath: string,
+  markdownContent: string | Uint8Array,
+): ImportedAgent {
+  const parseEvidence = parseAgentFileDocument(markdownContent);
+  const frontmatter = { ...parseEvidence.frontmatter.values };
+  const body = parseEvidence.body;
+  const sections = new Map<string, string>();
+  for (const sectionName of REQUIRED_AGENT_SECTION_NAMES) {
+    const content = parseEvidence.sectionContents[sectionName];
+    if (content !== null) {
+      sections.set(sectionName, content);
+    }
+  }
 
   // Extract name from frontmatter, or derive from filename
   const name = frontmatter['name'] || deriveNameFromPath(filePath);
@@ -292,9 +214,10 @@ export function parseAgentFile(filePath: string, markdownContent: string): Impor
   // Generate ID from name
   const id = generateId(name);
 
-  // Extract sections and build system prompt
-  const sections = extractSections(body);
-  const systemPrompt = buildSystemPrompt(sections, body);
+  // A complete recovered prompt always wins. The partial/body fallback remains
+  // solely for backward-compatible callers and is explicitly marked failed by
+  // parseEvidence when all six required sections were not recoverable.
+  const systemPrompt = parseEvidence.systemPrompt ?? buildSystemPrompt(sections, body);
 
   // Determine department from directory path, or use frontmatter department
   const department = frontmatter['department'] || resolveDepartment(filePath);
@@ -314,6 +237,7 @@ export function parseAgentFile(filePath: string, markdownContent: string): Impor
     sourceFile: filePath,
     division: department,
     rawFrontmatter: frontmatter,
+    parseEvidence,
   };
 }
 
@@ -322,28 +246,29 @@ export function parseAgentFile(filePath: string, markdownContent: string): Impor
 // ─────────────────────────────────────────────
 
 /**
- * Imports all markdown agent files from a directory tree.
+ * Imports every entry from an immutable catalog manifest.
  *
- * @param rootPath - Absolute path to the root of the agent repository
- * @returns ImportResult with all successfully imported agents and any errors
+ * This explicit API lets validators and importers share one captured source
+ * population rather than independently traversing the filesystem.
  */
-export async function importDirectory(rootPath: string): Promise<ImportResult> {
+async function importManifestEntries(
+  entries: readonly Pick<CatalogManifestEntry, 'sourcePath' | 'absolutePath'>[],
+): Promise<ImportResult> {
   const imported: ImportedAgent[] = [];
   const errors: { file: string; reason: string }[] = [];
   const divisionsSet = new Set<string>();
 
-  const mdFiles = await findMarkdownFiles(rootPath);
-
-  for (const absolutePath of mdFiles) {
-    const relativePath = relative(rootPath, absolutePath);
+  for (const entry of entries) {
     try {
-      const content = await readFile(absolutePath, 'utf-8');
-      const agent = parseAgentFile(relativePath, content);
+      // Read bytes so exact frontmatter identity is retained rather than
+      // reconstructed after a text-only filesystem read.
+      const content = await readFile(entry.absolutePath);
+      const agent = parseAgentFile(entry.sourcePath, content);
       imported.push(agent);
       divisionsSet.add(agent.division);
     } catch (err) {
       errors.push({
-        file: relativePath,
+        file: entry.sourcePath,
         reason: err instanceof Error ? err.message : String(err),
       });
     }
@@ -356,43 +281,37 @@ export async function importDirectory(rootPath: string): Promise<ImportResult> {
   };
 }
 
+/**
+ * Imports explicit manifest paths without performing another discovery pass.
+ * The caller owns path capture/validation, normally via discoverCatalog().
+ */
+export async function importCatalogPaths(
+  entries: readonly Pick<CatalogManifestEntry, 'sourcePath' | 'absolutePath'>[],
+): Promise<ImportResult> {
+  return importManifestEntries(entries);
+}
+
+export async function importCatalogManifest(manifest: CatalogManifest): Promise<ImportResult> {
+  return importManifestEntries(manifest.entries);
+}
+
+/**
+ * Imports all markdown agent files from a directory tree.
+ *
+ * Kept as the backward-compatible importer entry point. Source membership is
+ * delegated to the shared catalog manifest discoverer.
+ *
+ * @param rootPath - Path to the root of the agent repository
+ * @returns ImportResult with all successfully imported agents and any errors
+ */
+export async function importDirectory(rootPath: string): Promise<ImportResult> {
+  const manifest = await discoverCatalog(rootPath);
+  return importCatalogManifest(manifest);
+}
+
 // ─────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────
-
-/**
- * Recursively finds all .md files in a directory tree.
- */
-async function findMarkdownFiles(dirPath: string): Promise<string[]> {
-  const results: string[] = [];
-
-  let entries;
-  try {
-    entries = await readdir(dirPath);
-  } catch {
-    return results;
-  }
-
-  for (const entry of entries) {
-    const fullPath = join(dirPath, entry);
-    try {
-      const stats = await stat(fullPath);
-      if (stats.isDirectory()) {
-        // Skip hidden directories and common non-agent directories
-        if (!entry.startsWith('.') && entry !== 'node_modules') {
-          const nested = await findMarkdownFiles(fullPath);
-          results.push(...nested);
-        }
-      } else if (stats.isFile() && entry.endsWith('.md') && entry !== 'README.md') {
-        results.push(fullPath);
-      }
-    } catch {
-      // Skip files we can't stat
-    }
-  }
-
-  return results;
-}
 
 /**
  * Derives a human-readable name from a file path when no frontmatter name exists.

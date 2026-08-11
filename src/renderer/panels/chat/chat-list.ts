@@ -374,6 +374,11 @@ export class ChatList {
     const el = this.messageElements.get(messageId);
     if (!el) return;
 
+    // Store reasoning content on the DOM element when finalizing (Requirement 2.1, 2.2)
+    if (message.metadata?.reasoning) {
+      el.dataset.reasoning = message.metadata.reasoning as string;
+    }
+
     const contentEl = el.querySelector(`.${CSS.messageContent}`) as HTMLElement | null;
     if (contentEl && message.sender === 'assistant') {
       // Clear the plain text streaming content and re-render with enhanced components
@@ -387,6 +392,7 @@ export class ChatList {
         messageId: message.id,
         content: message.content,
         sender: message.sender,
+        reasoning: message.metadata?.reasoning as string | undefined,
       });
       this.actionBars.set(messageId, actionBarInstance);
     }
@@ -404,6 +410,15 @@ export class ChatList {
     el.classList.remove(CSS.messageSending, CSS.messageError);
     if (status === 'sending') el.classList.add(CSS.messageSending);
     if (status === 'error') el.classList.add(CSS.messageError);
+  }
+
+  /** Store reasoning content on a message element (used when stream completes). */
+  setMessageReasoning(messageId: MessageId, reasoning: string): void {
+    const el = this.messageElements.get(messageId);
+    if (!el) return;
+    if (reasoning && reasoning.trim()) {
+      el.dataset.reasoning = reasoning;
+    }
   }
 
   /** Show the "load more" button at the top. */
@@ -458,6 +473,11 @@ export class ChatList {
     const wrapper = document.createElement('div');
     wrapper.className = CSS.message;
     wrapper.dataset.messageId = message.id;
+
+    // Store reasoning content on the DOM element for the expand overlay (Requirement 2.1, 2.2)
+    if (message.metadata?.reasoning) {
+      wrapper.dataset.reasoning = message.metadata.reasoning as string;
+    }
 
     // Apply sender class
     if (message.sender === 'user') wrapper.classList.add(CSS.messageUser);
@@ -576,6 +596,7 @@ export class ChatList {
         messageId: message.id,
         content: message.content,
         sender: message.sender,
+        reasoning: message.metadata?.reasoning as string | undefined,
       });
       this.actionBars.set(message.id, actionBarInstance);
     }

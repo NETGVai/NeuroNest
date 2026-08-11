@@ -195,7 +195,7 @@ function csStartStream(chatArea, options) {
 
   return {
     appendToken: function(token) { csAppendToken(token, chatArea); },
-    complete: function() { csCompleteStream(chatArea); },
+    complete: function(options) { csCompleteStream(chatArea, options); },
     abort: function() { csAbortStream(chatArea); }
   };
 }
@@ -251,16 +251,25 @@ function csAppendToken(token, chatArea) {
 /**
  * Complete the stream — do full Markdown re-render with syntax highlighting.
  * @param {HTMLElement} chatArea - The chat area container
+ * @param {object} [options] - Optional completion data
+ * @param {string} [options.reasoning] - Reasoning/thinking content from the LLM
  */
-function csCompleteStream(chatArea) {
+function csCompleteStream(chatArea, options) {
   if (!_csStreaming) return;
   _csStreaming = false;
+
+  var opts = options || {};
 
   // Remove cursor
   if (_csCursorEl && _csCursorEl.parentNode) {
     _csCursorEl.remove();
   }
   _csCursorEl = null;
+
+  // Store reasoning content on the message element if present and non-empty
+  if (_csMessageEl && opts.reasoning && opts.reasoning.trim()) {
+    _csMessageEl.setAttribute('data-reasoning', opts.reasoning);
+  }
 
   // Full re-render with markdown
   var bodyEl = _csMessageEl ? _csMessageEl.querySelector('.message-body') : null;
@@ -559,9 +568,13 @@ function csSetupIPCStreaming() {
   });
 
   // Listen for stream complete
-  window.electronAPI.receive('agent:stream-complete', function() {
+  window.electronAPI.receive('agent:stream-complete', function(payload) {
     if (currentHandle) {
-      currentHandle.complete();
+      var opts = {};
+      if (payload && payload.reasoning) {
+        opts.reasoning = payload.reasoning;
+      }
+      currentHandle.complete(opts);
       currentHandle = null;
     }
   });

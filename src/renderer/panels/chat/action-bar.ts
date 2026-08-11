@@ -54,6 +54,8 @@ export interface ActionContext {
   codeBlock?: string;
   /** Optional diff content if the message contains a diff. */
   diffContent?: string;
+  /** Reasoning/thinking content from the LLM, if available. */
+  reasoning?: string;
 }
 
 /**
@@ -185,7 +187,7 @@ function getDefaultActions(): ActionBarButton[] {
       icon: '📋',
       label: 'Copy',
       tooltip: 'Copy message content to clipboard',
-      condition: 'always',
+      condition: 'user-message',
       handler: (ctx: ActionContext) => {
         const textToCopy = ctx.codeBlock || ctx.content;
         copyToClipboard(textToCopy);
@@ -236,7 +238,73 @@ function getDefaultActions(): ActionBarButton[] {
         bridge.invoke(IPC_CHANNELS.APPLY_DIFF, { messageId: ctx.messageId, diff: ctx.diffContent });
       },
     },
+    {
+      id: 'expand',
+      icon: '⤢',
+      label: 'Expand',
+      tooltip: 'Expand message in full-screen overlay',
+      condition: 'always',
+      handler: (ctx: ActionContext) => {
+        openExpandOverlay(ctx.content, ctx.reasoning);
+      },
+    },
   ];
+}
+
+/**
+ * Opens the expand overlay using the shared `renderExpandOverlay` function
+ * exposed on window by the legacy action bar module.
+ * Wires up close functionality: close button, Escape key, and click-outside.
+ */
+function openExpandOverlay(content: string, reasoning?: string): void {
+  const win = window as unknown as Record<string, unknown>;
+  const renderFn = win.renderExpandOverlay as
+    | ((content: string, reasoning?: string) => HTMLElement)
+    | undefined;
+
+  if (!renderFn) return;
+
+  const overlay = renderFn(content, reasoning);
+
+  // Close button handler
+  const closeBtn = overlay.querySelector('.cma-expand-close');
+  const contentArea = overlay.querySelector('.cma-expand-content');
+
+  const closeOverlay = (): void => {
+    overlay.remove();
+    document.removeEventListener('keydown', escHandler);
+  };
+
+  if (closeBtn) {
+    closeBtn.addEventListener('click', (e: Event) => {
+      e.stopPropagation();
+      e.preventDefault();
+      closeOverlay();
+    });
+  }
+
+  // Close on Escape key
+  const escHandler = (e: KeyboardEvent): void => {
+    if (e.key === 'Escape') {
+      closeOverlay();
+    }
+  };
+  document.addEventListener('keydown', escHandler);
+
+  // Close on click outside the content area
+  overlay.addEventListener('click', (e: Event) => {
+    const target = e.target as Node;
+    if (
+      contentArea &&
+      !contentArea.contains(target) &&
+      target !== closeBtn &&
+      !(closeBtn && closeBtn.contains(target))
+    ) {
+      closeOverlay();
+    }
+  });
+
+  document.body.appendChild(overlay);
 }
 
 /**

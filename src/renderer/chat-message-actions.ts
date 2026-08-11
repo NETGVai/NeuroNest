@@ -245,6 +245,69 @@ function _cmaInjectStyles() {
     '.message {',
     '  position: relative;',
     '}',
+    '',
+    /* Expand overlay animated entrance */
+    '@keyframes cma-expand-fade-in {',
+    '  from { opacity: 0; transform: scale(0.95); }',
+    '  to { opacity: 1; transform: scale(1); }',
+    '}',
+    '.cma-expand-overlay--animated {',
+    '  animation: cma-expand-fade-in 0.2s ease-out forwards;',
+    '}',
+    '',
+    /* Reasoning section */
+    '.cma-expand-reasoning {',
+    '  background: var(--surface-container);',
+    '  font-style: italic;',
+    '  border-left: 3px solid var(--accent);',
+    '  border-radius: var(--radius-sm);',
+    '  padding: 16px;',
+    '  margin-bottom: 16px;',
+    '}',
+    '.cma-expand-reasoning__header {',
+    '  display: flex;',
+    '  align-items: center;',
+    '  justify-content: space-between;',
+    '  font-style: normal;',
+    '  font-weight: 600;',
+    '  font-size: 13px;',
+    '  color: var(--text-primary);',
+    '  margin-bottom: 8px;',
+    '}',
+    '.cma-expand-reasoning__toggle {',
+    '  background: transparent;',
+    '  border: none;',
+    '  color: var(--text-secondary);',
+    '  cursor: pointer;',
+    '  font-size: 12px;',
+    '  padding: 4px 8px;',
+    '  border-radius: var(--radius-xs);',
+    '  transition: all var(--motion-quick);',
+    '}',
+    '.cma-expand-reasoning__toggle:hover {',
+    '  background: var(--surface-hover);',
+    '  color: var(--text-primary);',
+    '}',
+    '.cma-expand-reasoning__body {',
+    '  max-height: 400px;',
+    '  overflow-y: auto;',
+    '  font-size: 13px;',
+    '  line-height: 1.6;',
+    '  color: var(--text-secondary);',
+    '}',
+    '.cma-expand-reasoning[data-collapsed="true"] .cma-expand-reasoning__body {',
+    '  display: none;',
+    '}',
+    '',
+    /* Final response header */
+    '.cma-expand-response__header {',
+    '  font-weight: 600;',
+    '  font-size: 13px;',
+    '  color: var(--text-primary);',
+    '  margin-bottom: 12px;',
+    '  padding-bottom: 8px;',
+    '  border-bottom: 1px solid var(--border-color);',
+    '}',
   ].join('\n');
   document.head.appendChild(style);
 }
@@ -277,16 +340,18 @@ function _cmaCreateActionBar(msgEl) {
   bar.setAttribute('role', 'toolbar');
   bar.setAttribute('aria-label', 'Message actions');
 
-  // Copy button
-  var copyBtn = document.createElement('button');
-  copyBtn.className = 'cma-action-btn';
-  copyBtn.setAttribute('aria-label', 'Copy message');
-  copyBtn.innerHTML = '\uD83D\uDCCB Copy';
-  copyBtn.addEventListener('click', function(e) {
-    e.stopPropagation();
-    _cmaCopyMessage(msgEl);
-  });
-  bar.appendChild(copyBtn);
+  // Copy button (only for user messages)
+  if (isUser) {
+    var copyBtn = document.createElement('button');
+    copyBtn.className = 'cma-action-btn';
+    copyBtn.setAttribute('aria-label', 'Copy message');
+    copyBtn.innerHTML = '\uD83D\uDCCB Copy';
+    copyBtn.addEventListener('click', function(e) {
+      e.stopPropagation();
+      _cmaCopyMessage(msgEl);
+    });
+    bar.appendChild(copyBtn);
+  }
 
   // Expand button
   var expandBtn = document.createElement('button');
@@ -394,47 +459,165 @@ function _cmaFallbackCopy(text) {
   document.body.removeChild(ta);
 }
 
+/* ─── Render Expand Overlay (Req 3.1-3.8, 5.2, 5.4) ─────────── */
+
+/**
+ * Create the enhanced Expand overlay DOM element with optional reasoning section
+ * and a final response section rendered with full markdown.
+ *
+ * @param {string} content - The final response message content (raw text/markdown)
+ * @param {string} [reasoning] - Optional reasoning/thinking content from the LLM
+ * @returns {HTMLElement} The overlay root element (not yet appended to DOM)
+ */
+function renderExpandOverlay(content, reasoning) {
+  var overlay = document.createElement('div');
+  overlay.className = 'cma-expand-overlay cma-expand-overlay--animated';
+
+  // Close button
+  var closeBtn = document.createElement('button');
+  closeBtn.className = 'cma-expand-close';
+  closeBtn.textContent = '\u2715 Close';
+
+  // Content wrapper
+  var contentArea = document.createElement('div');
+  contentArea.className = 'cma-expand-content';
+
+  // Determine if reasoning is present (non-empty, non-whitespace)
+  var hasReasoning = typeof reasoning === 'string' && reasoning.trim().length > 0;
+
+  // Reasoning section (conditional)
+  if (hasReasoning) {
+    var reasoningSection = document.createElement('div');
+    reasoningSection.className = 'cma-expand-reasoning';
+    reasoningSection.setAttribute('data-collapsed', 'false');
+
+    // Reasoning header
+    var reasoningHeader = document.createElement('div');
+    reasoningHeader.className = 'cma-expand-reasoning__header';
+
+    var reasoningLabel = document.createElement('span');
+    reasoningLabel.textContent = '\uD83D\uDCAD Reasoning & Thinking';
+
+    var toggleBtn = document.createElement('button');
+    toggleBtn.className = 'cma-expand-reasoning__toggle';
+    toggleBtn.setAttribute('aria-label', 'Collapse reasoning');
+    toggleBtn.textContent = '\u25BC';
+    toggleBtn.addEventListener('click', function(e) {
+      e.stopPropagation();
+      var section = reasoningSection;
+      var isCollapsed = section.getAttribute('data-collapsed') === 'true';
+      if (isCollapsed) {
+        section.setAttribute('data-collapsed', 'false');
+        toggleBtn.textContent = '\u25BC';
+        toggleBtn.setAttribute('aria-label', 'Collapse reasoning');
+      } else {
+        section.setAttribute('data-collapsed', 'true');
+        toggleBtn.textContent = '\u25B6';
+        toggleBtn.setAttribute('aria-label', 'Expand reasoning');
+      }
+    });
+
+    reasoningHeader.appendChild(reasoningLabel);
+    reasoningHeader.appendChild(toggleBtn);
+
+    // Reasoning body — preserve newlines with whitespace pre-wrap
+    var reasoningBody = document.createElement('div');
+    reasoningBody.className = 'cma-expand-reasoning__body';
+    reasoningBody.style.whiteSpace = 'pre-wrap';
+    reasoningBody.style.wordBreak = 'break-word';
+    // Render reasoning as escaped text with preserved newlines
+    reasoningBody.textContent = reasoning;
+
+    reasoningSection.appendChild(reasoningHeader);
+    reasoningSection.appendChild(reasoningBody);
+    contentArea.appendChild(reasoningSection);
+  }
+
+  // Final Response section (always rendered)
+  var responseSection = document.createElement('div');
+  responseSection.className = 'cma-expand-response';
+
+  var responseHeader = document.createElement('div');
+  responseHeader.className = 'cma-expand-response__header';
+  responseHeader.textContent = '\u2728 Final Response';
+
+  var responseBody = document.createElement('div');
+  responseBody.className = 'cma-expand-response__body';
+
+  // Render final response with full markdown
+  var renderedContent = '';
+  if (typeof window.ceFormatMessage === 'function') {
+    renderedContent = window.ceFormatMessage(content || '');
+  } else if (window._nnMarkdownIt) {
+    renderedContent = window._nnMarkdownIt.render(content || '');
+  } else {
+    // Fallback: escape HTML and convert newlines to <br>
+    renderedContent = _cmaEscapeHtml(content || '').replace(/\n/g, '<br>');
+  }
+  responseBody.innerHTML = renderedContent;
+
+  responseSection.appendChild(responseHeader);
+  responseSection.appendChild(responseBody);
+  contentArea.appendChild(responseSection);
+
+  overlay.appendChild(closeBtn);
+  overlay.appendChild(contentArea);
+
+  return overlay;
+}
+
+/**
+ * Escape HTML special characters to prevent XSS.
+ */
+function _cmaEscapeHtml(str) {
+  var div = document.createElement('div');
+  div.appendChild(document.createTextNode(str));
+  return div.innerHTML;
+}
+
 /* ─── Expand Message (Req 23.3) ──────────────────────────────── */
 
 function _cmaExpandMessage(msgEl) {
   var body = msgEl.querySelector('.message-body');
   if (!body) return;
 
-  var overlay = document.createElement('div');
-  overlay.className = 'cma-expand-overlay';
+  // Read reasoning from data attribute
+  var reasoning = msgEl.getAttribute('data-reasoning') || undefined;
 
-  var closeBtn = document.createElement('button');
-  closeBtn.className = 'cma-expand-close';
-  closeBtn.textContent = '\u2715 Close';
-  closeBtn.style.zIndex = '10001';
+  // Get raw message content for markdown rendering
+  var rawContent = msgEl.getAttribute('data-raw') || '';
+  if (!rawContent) {
+    rawContent = body.textContent || '';
+  }
+
+  var overlay = renderExpandOverlay(rawContent, reasoning);
+  var closeBtn = overlay.querySelector('.cma-expand-close');
+  var contentArea = overlay.querySelector('.cma-expand-content');
+
+  // Close handlers
+  var closeOverlay = function() {
+    overlay.remove();
+    document.removeEventListener('keydown', escHandler);
+  };
+
   closeBtn.addEventListener('click', function(e) {
     e.stopPropagation();
     e.preventDefault();
-    overlay.remove();
-    document.removeEventListener('keydown', escHandler);
+    closeOverlay();
   });
-
-  var content = document.createElement('div');
-  content.className = 'cma-expand-content';
-  content.innerHTML = body.innerHTML;
-
-  overlay.appendChild(closeBtn);
-  overlay.appendChild(content);
 
   // Close on Escape
   var escHandler = function(e) {
     if (e.key === 'Escape') {
-      overlay.remove();
-      document.removeEventListener('keydown', escHandler);
+      closeOverlay();
     }
   };
   document.addEventListener('keydown', escHandler);
 
   // Close on click outside the content area
   overlay.addEventListener('click', function(e) {
-    if (!content.contains(e.target) && e.target !== closeBtn && !closeBtn.contains(e.target)) {
-      overlay.remove();
-      document.removeEventListener('keydown', escHandler);
+    if (!contentArea.contains(e.target) && e.target !== closeBtn && !closeBtn.contains(e.target)) {
+      closeOverlay();
     }
   });
 
@@ -703,6 +886,7 @@ if (typeof window !== 'undefined') {
   window.cmaAttachActionBars = cmaAttachActionBars;
   window.cmaAttachCodeBlockCopyButtons = cmaAttachCodeBlockCopyButtons;
   window.cmaAttachRetryButtons = cmaAttachRetryButtons;
+  window.renderExpandOverlay = renderExpandOverlay;
 }
 
 // Auto-initialize when DOM is ready

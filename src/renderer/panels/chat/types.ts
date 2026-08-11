@@ -49,6 +49,8 @@ export interface ChatMessage {
     isChannelMessage?: boolean;
     /** Whether AI is streaming a response for a channel message. @satisfies REQ 3.4 */
     isChannelStreaming?: boolean;
+    /** LLM reasoning/thinking content (chain of thought). */
+    reasoning?: string;
     [key: string]: unknown;
   };
 }
@@ -81,6 +83,8 @@ export interface StreamChunkPayload {
   done?: boolean;
   /** Signals a stream error with the error message. */
   error?: string;
+  /** Reasoning content from LLM (delivered on stream complete or as metadata). */
+  reasoning?: string;
 }
 
 /** Payload sent to the main process when the user submits a message. */
@@ -114,7 +118,7 @@ export interface LoadMessagesResponse {
 /** Events emitted by the chat service layer. */
 export type ChatServiceEvent =
   | { type: 'message-received'; message: ChatMessage }
-  | { type: 'message-status-changed'; messageId: MessageId; status: MessageStatus }
+  | { type: 'message-status-changed'; messageId: MessageId; status: MessageStatus; reasoning?: string }
   | { type: 'room-created'; room: ChatRoom }
   | { type: 'room-updated'; room: ChatRoom }
   | { type: 'stream-chunk'; messageId: MessageId; chunk: string };

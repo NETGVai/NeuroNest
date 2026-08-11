@@ -190,6 +190,10 @@ class ChatPanel implements PanelModule {
         break;
       case 'message-status-changed':
         this.chatList.updateMessageStatus(event.messageId, event.status);
+        // Store reasoning on the message element when stream completes (Requirement 2.1)
+        if (event.reasoning) {
+          this.chatList.setMessageReasoning(event.messageId, event.reasoning);
+        }
         break;
       default:
         break;

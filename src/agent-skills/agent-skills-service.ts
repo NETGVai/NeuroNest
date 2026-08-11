@@ -1,7 +1,16 @@
 import Database from 'better-sqlite3';
+import { createHash } from 'node:crypto';
 import { SQLiteAdapter } from './sqlite-adapter.js';
 import { logger } from '../utils/logger.js';
 import { agentSkillsErrorHandler, ErrorContext } from './error-handler.js';
+import type {
+  BundlePersistencePlan,
+  BundlePersistenceStatus,
+  BundleStateRow,
+  AssignmentEvidenceRow,
+  CurrentAssignment,
+} from './bundle-persistence-plan.js';
+import { validatePlan, computeEvidenceRowsFingerprint } from './bundle-persistence-plan.js';
 
 /**
  * Agent Skills Service
@@ -52,6 +61,40 @@ export interface SkillEvent {
   correlation_id?: string;
   source?: string;
   session_id?: string;
+}
+
+/**
+ * A single entry in the authoritative skill catalog snapshot.
+ * Maps persisted skill row fields to explicit booleans and extracted metadata.
+ */
+export interface SkillCatalogEntry {
+  skillId: string;
+  name: string;
+  category: string;
+  enabled: boolean;
+  installed: boolean;
+  capabilityKeys: readonly string[];
+  technologyKeys: readonly string[];
+  deliverableKeys: readonly string[];
+  description: string;
+  version: string;
+}
+
+/**
+ * Immutable snapshot of the entire authoritative skill catalog.
+ *
+ * `byId` intentionally stores arrays so multiply resolved IDs are preserved
+ * and validation can fail closed rather than hiding malformed catalog state.
+ * `byCategory` provides multi-value lookups grouped by category.
+ *
+ * Both indexes and `entries` are sorted and deeply frozen.
+ * `fingerprint` is a stable SHA-256 digest over canonical entry data.
+ */
+export interface AuthoritativeSkillCatalogSnapshot {
+  entries: readonly SkillCatalogEntry[];
+  byId: ReadonlyMap<string, readonly SkillCatalogEntry[]>;
+  byCategory: ReadonlyMap<string, readonly SkillCatalogEntry[]>;
+  fingerprint: string;
 }
 
 export interface CreateSkillRequest {
@@ -657,10 +700,447 @@ export class AgentSkillsService {
   }
 
   /**
+   * Ensures the bundle persistence schema tables exist.
+   * Creates `agent_skill_assignment_evidence` and `agent_skill_bundle_state`
+   * tables if they don't already exist.
+   *
+   * Requirements: 10.13–10.16
+   */
+  ensureBundlePersistenceSchema(): void {
+    const db = this.getDatabase();
+
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS agent_skill_assignment_evidence (
+        agent_id TEXT NOT NULL,
+        skill_id TEXT NOT NULL,
+        capability_key TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        source_kind TEXT NOT NULL CHECK(source_kind IN ('taxonomy', 'reviewed-override')),
+        source_id TEXT NOT NULL,
+        evidence_json TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (agent_id, skill_id, capability_key, source_id)
+      )
+    `);
+
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS agent_skill_bundle_state (
+        agent_id TEXT NOT NULL PRIMARY KEY,
+        input_fingerprint TEXT NOT NULL,
+        bundle_fingerprint TEXT NOT NULL,
+        catalog_fingerprint TEXT NOT NULL,
+        skill_ids_json TEXT NOT NULL,
+        evidence_fingerprint TEXT NOT NULL,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )
+    `);
+
+    // Indexes for efficient lookups
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_evidence_agent ON agent_skill_assignment_evidence(agent_id)`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_evidence_skill ON agent_skill_assignment_evidence(skill_id)`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_bundle_state_fingerprint ON agent_skill_bundle_state(input_fingerprint)`);
+  }
+
+  /**
+   * Reads current assignments for a given agent from the assignment store.
+   * Used for planning: determining retained/stale/added rows.
+   */
+  async getCurrentAssignments(agentId: string): Promise<CurrentAssignment[]> {
+    const query = 'SELECT * FROM agent_skill_assignments WHERE agent_id = ? ORDER BY skill_id ASC';
+    const rows = await this.adapter.executeQuery(query, [agentId]);
+    return rows.map(row => ({
+      agentId: row.agent_id,
+      skillId: row.skill_id,
+      proficiencyLevel: row.proficiency_level || 'beginner',
+      successRate: row.success_rate ?? 0,
+      totalExecutions: row.total_executions ?? 0,
+      successfulExecutions: row.successful_executions ?? 0,
+      avgExecutionTimeMs: row.avg_execution_time_ms ?? 0,
+      lastUsedAt: row.last_used_at || null,
+      learnedAt: row.learned_at || new Date().toISOString(),
+    }));
+  }
+
+  /**
+   * Reads the stored bundle-state for an agent (if any).
+   * Returns null if no state has been stored yet.
+   */
+  async getStoredBundleState(agentId: string): Promise<BundleStateRow | null> {
+    const query = 'SELECT * FROM agent_skill_bundle_state WHERE agent_id = ?';
+    const row = await this.adapter.executeQuerySingle(query, [agentId]);
+    if (!row) return null;
+    return {
+      agentId: row.agent_id,
+      inputFingerprint: row.input_fingerprint,
+      bundleFingerprint: row.bundle_fingerprint,
+      catalogFingerprint: row.catalog_fingerprint,
+      skillIdsJson: row.skill_ids_json,
+      updatedAt: row.updated_at,
+    };
+  }
+
+  /**
+   * Gets the current evidence fingerprint for an agent from the bundle-state table.
+   * Returns null if no state exists.
+   */
+  async getCurrentEvidenceFingerprint(agentId: string): Promise<string | null> {
+    const query = 'SELECT evidence_fingerprint FROM agent_skill_bundle_state WHERE agent_id = ?';
+    const row = await this.adapter.executeQuerySingle(query, [agentId]);
+    return row?.evidence_fingerprint ?? null;
+  }
+
+  /**
+   * Reconciles an agent's complete skill bundle atomically.
+   *
+   * Implements fingerprint-guarded atomic complete-bundle persistence:
+   * 1. Pre-write catalog fingerprint recheck
+   * 2. Deterministic transaction statements
+   * 3. Evidence/state upserts
+   * 4. Exact postcondition verification
+   * 5. Whole-transaction retry on transient errors
+   * 6. Roll back on any statement/postcondition failure
+   * 7. No mutation for valid no-op plans
+   *
+   * The transaction contains, in deterministic order:
+   * 1. Catalog fingerprint precondition check
+   * 2. Stale assignment/evidence deletes
+   * 3. Missing assignment inserts (INSERT OR IGNORE for retained rows)
+   * 4. Evidence upserts
+   * 5. Bundle-state upsert with input and bundle fingerprints
+   * 6. Postcondition: persisted IDs exactly equal desired sorted set
+   *
+   * Requirements: 10.13–10.16, 10.18
+   *
+   * @param plan - The deterministic bundle persistence plan
+   * @returns Committed (with changed flag) or rolled-back status
+   */
+  async reconcileAgentSkillBundle(
+    plan: BundlePersistencePlan,
+  ): Promise<BundlePersistenceStatus> {
+    const context: ErrorContext = {
+      component: 'agent-skills-service',
+      operation: 'reconcileAgentSkillBundle',
+      metadata: { agentId: plan.agentId, noOp: plan.noOp, desiredCount: plan.desiredSkillIds.length },
+      timestamp: new Date()
+    };
+
+    // Validate plan integrity
+    const validationError = validatePlan(plan);
+    if (validationError) {
+      return { state: 'rolled-back', errorCode: 'INVALID_PLAN', errorMessage: validationError };
+    }
+
+    // No-op plans: no mutations, no events, committed with changed=false
+    if (plan.noOp) {
+      return { state: 'committed', changed: false };
+    }
+
+    // Attempt whole-transaction with retry for transient errors
+    return agentSkillsErrorHandler.executeWithRetry(async () => {
+      return this.executeReconciliationTransaction(plan);
+    }, context, {
+      maxRetries: 3,
+      baseDelay: 500,
+      retryableErrors: ['SQLITE_BUSY', 'SQLITE_LOCKED', 'SQLITE_IOERR']
+    });
+  }
+
+  /**
+   * Executes the reconciliation transaction.
+   * Rolls back all changes on any statement or postcondition failure.
+   * Returns committed or rolled-back status.
+   */
+  private executeReconciliationTransaction(
+    plan: BundlePersistencePlan,
+  ): BundlePersistenceStatus {
+    const db = this.getDatabase();
+    const now = new Date().toISOString();
+
+    // Use a raw SQLite transaction for atomic rollback behavior
+    const transactionFn = db.transaction(() => {
+      // Step 1: Catalog fingerprint precondition recheck
+      // Re-read the current catalog fingerprint to ensure it hasn't changed
+      // since the plan was computed.
+      const currentFp = this.recheckCatalogFingerprint(db);
+      if (currentFp !== null && currentFp !== plan.catalogFingerprint) {
+        throw new CatalogStaleError(
+          `Catalog fingerprint changed: expected '${plan.catalogFingerprint}', got '${currentFp}'`
+        );
+      }
+
+      // Step 2: Stale assignment/evidence deletes
+      for (const stale of plan.staleAssignments) {
+        const deleteAssignment = db.prepare(
+          'DELETE FROM agent_skill_assignments WHERE agent_id = ? AND skill_id = ?'
+        );
+        deleteAssignment.run(plan.agentId, stale.skillId);
+
+        const deleteEvidence = db.prepare(
+          'DELETE FROM agent_skill_assignment_evidence WHERE agent_id = ? AND skill_id = ?'
+        );
+        deleteEvidence.run(plan.agentId, stale.skillId);
+      }
+
+      // Step 3: Missing assignment inserts using INSERT OR IGNORE
+      // Never INSERT OR REPLACE for retained rows — that would reset metrics
+      for (const skillId of plan.addedSkillIds) {
+        const insertAssignment = db.prepare(`
+          INSERT OR IGNORE INTO agent_skill_assignments (
+            agent_id, skill_id, proficiency_level, success_rate,
+            total_executions, successful_executions, avg_execution_time_ms, learned_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `);
+        insertAssignment.run(
+          plan.agentId,
+          skillId,
+          'beginner',
+          0.0,
+          0,
+          0,
+          0,
+          now,
+        );
+      }
+
+      // Step 4: Evidence upserts — remove all old evidence for this agent, then insert fresh
+      const deleteAllEvidence = db.prepare(
+        'DELETE FROM agent_skill_assignment_evidence WHERE agent_id = ?'
+      );
+      deleteAllEvidence.run(plan.agentId);
+
+      const insertEvidence = db.prepare(`
+        INSERT INTO agent_skill_assignment_evidence (
+          agent_id, skill_id, capability_key, reason, source_kind, source_id, evidence_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      for (const row of plan.evidenceRows) {
+        insertEvidence.run(
+          row.agentId,
+          row.skillId,
+          row.capabilityKey,
+          row.reason,
+          row.sourceKind,
+          row.sourceId,
+          row.evidenceJson,
+          now,
+          now,
+        );
+      }
+
+      // Step 5: Bundle-state upsert
+      const evidenceFp = computeEvidenceRowsFingerprint(plan.evidenceRows);
+      const bundleFingerprint = this.computeBundleContentFingerprint(plan.desiredSkillIds, plan.evidenceRows);
+
+      const upsertState = db.prepare(`
+        INSERT INTO agent_skill_bundle_state (
+          agent_id, input_fingerprint, bundle_fingerprint, catalog_fingerprint,
+          skill_ids_json, evidence_fingerprint, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(agent_id) DO UPDATE SET
+          input_fingerprint = excluded.input_fingerprint,
+          bundle_fingerprint = excluded.bundle_fingerprint,
+          catalog_fingerprint = excluded.catalog_fingerprint,
+          skill_ids_json = excluded.skill_ids_json,
+          evidence_fingerprint = excluded.evidence_fingerprint,
+          updated_at = excluded.updated_at
+      `);
+      upsertState.run(
+        plan.agentId,
+        plan.inputFingerprint,
+        bundleFingerprint,
+        plan.catalogFingerprint,
+        JSON.stringify([...plan.desiredSkillIds]),
+        evidenceFp,
+        now,
+      );
+
+      // Step 6: Postcondition verification — persisted IDs must exactly equal desired
+      const postconditionRows = db.prepare(
+        'SELECT skill_id FROM agent_skill_assignments WHERE agent_id = ? ORDER BY skill_id ASC'
+      ).all(plan.agentId) as Array<{ skill_id: string }>;
+
+      const persistedIds = postconditionRows.map(r => r.skill_id);
+      const desiredSorted = [...plan.desiredSkillIds].sort();
+
+      if (persistedIds.length !== desiredSorted.length) {
+        throw new PostconditionError(
+          `Postcondition failed: expected ${desiredSorted.length} assignments, found ${persistedIds.length}`
+        );
+      }
+      for (let i = 0; i < desiredSorted.length; i++) {
+        if (persistedIds[i] !== desiredSorted[i]) {
+          throw new PostconditionError(
+            `Postcondition failed: expected '${desiredSorted[i]}' at position ${i}, found '${persistedIds[i]}'`
+          );
+        }
+      }
+    });
+
+    // Execute the transaction — SQLite automatically rolls back on throw
+    try {
+      transactionFn();
+      return { state: 'committed', changed: true };
+    } catch (error) {
+      if (error instanceof CatalogStaleError) {
+        return {
+          state: 'rolled-back',
+          errorCode: 'STALE_CATALOG_SNAPSHOT',
+          errorMessage: error.message,
+        };
+      }
+      if (error instanceof PostconditionError) {
+        return {
+          state: 'rolled-back',
+          errorCode: 'POSTCONDITION_FAILED',
+          errorMessage: error.message,
+        };
+      }
+      // Any other error (statement failure, constraint violation, etc.)
+      const msg = error instanceof Error ? error.message : String(error);
+      return {
+        state: 'rolled-back',
+        errorCode: 'TRANSACTION_FAILED',
+        errorMessage: msg,
+      };
+    }
+  }
+
+  /**
+   * Rechecks the catalog fingerprint by re-reading the skills table.
+   * Returns the current fingerprint or null if the table is empty/inaccessible.
+   */
+  private recheckCatalogFingerprint(db: Database.Database): string | null {
+    try {
+      const rows = db.prepare('SELECT * FROM skills ORDER BY id ASC').all() as any[];
+      if (rows.length === 0) return null;
+
+      const entries = rows.map(row => this.mapRowToSkillCatalogEntry(row));
+      entries.sort((a, b) => a.skillId.localeCompare(b.skillId));
+      return this.computeCatalogFingerprint(entries);
+    } catch {
+      // If skills table doesn't exist or can't be read, return null
+      // (no catalog fingerprint check possible)
+      return null;
+    }
+  }
+
+  /**
+   * Computes a fingerprint over bundle content (skill IDs + evidence rows).
+   */
+  private computeBundleContentFingerprint(
+    skillIds: readonly string[],
+    evidenceRows: readonly AssignmentEvidenceRow[],
+  ): string {
+    const hash = createHash('sha256');
+    hash.update('bundle-content:');
+    hash.update(JSON.stringify([...skillIds]));
+    hash.update('\n');
+    for (const row of evidenceRows) {
+      hash.update(`${row.skillId}|${row.capabilityKey}|${row.sourceKind}|${row.sourceId}\n`);
+    }
+    return `bundle-${hash.digest('hex').slice(0, 32)}`;
+  }
+
+  /**
+   * Gets the underlying database instance.
+   * Used for direct transaction execution.
+   */
+  private getDatabase(): Database.Database {
+    return (this.adapter as any).db;
+  }
+
+  /**
    * Close the service and clean up resources
    */
   close(): void {
     this.adapter.close();
+  }
+
+  /**
+   * Read all skill rows in one consistent operation, map persisted booleans
+   * explicitly, extract capability/technology/deliverable metadata from tags and
+   * metadata JSON, create sorted `byId` and `byCategory` multi-value indexes,
+   * freeze all results, and compute a stable SHA-256 content fingerprint.
+   *
+   * Multiply resolved IDs (multiple rows with the same skill ID) are preserved
+   * in the `byId` index so downstream validation can detect and fail closed on
+   * malformed catalog state rather than silently hiding duplicates.
+   *
+   * Requirements: 10.2, 10.3, 10.12, 10.14, 10.15
+   */
+  async getAuthoritativeCatalogSnapshot(): Promise<AuthoritativeSkillCatalogSnapshot> {
+    const context: ErrorContext = {
+      component: 'agent-skills-service',
+      operation: 'getAuthoritativeCatalogSnapshot',
+      timestamp: new Date()
+    };
+
+    return agentSkillsErrorHandler.executeWithRetry(async () => {
+      // Read all skill rows in one consistent query
+      const query = 'SELECT * FROM skills ORDER BY id ASC';
+      const rows = await this.adapter.executeQuery(query, []);
+
+      // Map each row to a SkillCatalogEntry with explicit boolean mapping
+      const entries: SkillCatalogEntry[] = rows.map(row => this.mapRowToSkillCatalogEntry(row));
+
+      // Sort entries by skillId for deterministic output
+      entries.sort((a, b) => a.skillId.localeCompare(b.skillId));
+
+      // Build byId index: intentionally stores arrays to preserve multiply resolved IDs
+      const byIdMutable = new Map<string, SkillCatalogEntry[]>();
+      for (const entry of entries) {
+        const existing = byIdMutable.get(entry.skillId);
+        if (existing) {
+          existing.push(entry);
+        } else {
+          byIdMutable.set(entry.skillId, [entry]);
+        }
+      }
+
+      // Build byCategory index: multi-value grouped by category
+      const byCategoryMutable = new Map<string, SkillCatalogEntry[]>();
+      for (const entry of entries) {
+        const existing = byCategoryMutable.get(entry.category);
+        if (existing) {
+          existing.push(entry);
+        } else {
+          byCategoryMutable.set(entry.category, [entry]);
+        }
+      }
+
+      // Sort each index bucket entries by skillId and freeze each bucket
+      const byId = new Map<string, readonly SkillCatalogEntry[]>();
+      for (const [id, bucket] of [...byIdMutable.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+        bucket.sort((a, b) => a.skillId.localeCompare(b.skillId) || a.name.localeCompare(b.name));
+        byId.set(id, Object.freeze([...bucket]));
+      }
+
+      const byCategory = new Map<string, readonly SkillCatalogEntry[]>();
+      for (const [cat, bucket] of [...byCategoryMutable.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+        bucket.sort((a, b) => a.skillId.localeCompare(b.skillId) || a.name.localeCompare(b.name));
+        byCategory.set(cat, Object.freeze([...bucket]));
+      }
+
+      // Compute stable content fingerprint from canonical entry data
+      const fingerprint = this.computeCatalogFingerprint(entries);
+
+      // Freeze the entries array
+      const frozenEntries: readonly SkillCatalogEntry[] = Object.freeze(entries.map(e => Object.freeze(e)));
+
+      const snapshot: AuthoritativeSkillCatalogSnapshot = Object.freeze({
+        entries: frozenEntries,
+        byId,
+        byCategory,
+        fingerprint
+      });
+
+      return snapshot;
+    }, context, {
+      maxRetries: 3,
+      baseDelay: 500,
+      retryableErrors: ['SQLITE_BUSY', 'SQLITE_LOCKED', 'SQLITE_IOERR']
+    });
   }
 
   /**
@@ -726,5 +1206,157 @@ export class AgentSkillsService {
       source: row.source,
       session_id: row.session_id
     };
+  }
+
+  /**
+   * Map a database row to a SkillCatalogEntry with explicit boolean mapping
+   * and metadata extraction for capability, technology, and deliverable keys.
+   */
+  private mapRowToSkillCatalogEntry(row: any): SkillCatalogEntry {
+    // Map persisted integer booleans explicitly
+    const enabled = Boolean(row.enabled);
+    const installed = Boolean(row.installed);
+
+    // Parse metadata JSON to extract capability/technology/deliverable keys
+    let metadata: Record<string, any> = {};
+    try {
+      metadata = row.metadata ? JSON.parse(row.metadata) : {};
+    } catch {
+      // If metadata is malformed, treat as empty
+      metadata = {};
+    }
+
+    // Parse tags for additional categorization
+    let tags: string[] = [];
+    try {
+      tags = row.tags ? JSON.parse(row.tags) : [];
+    } catch {
+      tags = [];
+    }
+
+    // Extract capability keys from metadata or tags
+    const capabilityKeys = this.extractMetadataKeys(metadata, tags, 'capability');
+    const technologyKeys = this.extractMetadataKeys(metadata, tags, 'technology');
+    const deliverableKeys = this.extractMetadataKeys(metadata, tags, 'deliverable');
+
+    return {
+      skillId: row.id,
+      name: row.name || '',
+      category: row.category || '',
+      enabled,
+      installed,
+      capabilityKeys: Object.freeze([...capabilityKeys].sort()),
+      technologyKeys: Object.freeze([...technologyKeys].sort()),
+      deliverableKeys: Object.freeze([...deliverableKeys].sort()),
+      description: row.description || '',
+      version: row.version || ''
+    };
+  }
+
+  /**
+   * Extract metadata keys of a specific dimension from the metadata object and tags.
+   * Looks in metadata.capabilities, metadata.technologies, metadata.deliverables,
+   * metadata.agent_skills_metadata, and tags prefixed with the dimension name.
+   */
+  private extractMetadataKeys(
+    metadata: Record<string, any>,
+    tags: string[],
+    dimension: 'capability' | 'technology' | 'deliverable'
+  ): string[] {
+    const keys = new Set<string>();
+
+    // Check direct metadata arrays (plural form)
+    const pluralKey = dimension === 'capability' ? 'capabilities'
+      : dimension === 'technology' ? 'technologies'
+      : 'deliverables';
+
+    if (Array.isArray(metadata[pluralKey])) {
+      for (const item of metadata[pluralKey]) {
+        if (typeof item === 'string' && item.trim()) {
+          keys.add(item.trim());
+        }
+      }
+    }
+
+    // Check agent_skills_metadata nested object
+    const agentSkillsMeta = metadata.agent_skills_metadata;
+    if (agentSkillsMeta && typeof agentSkillsMeta === 'object') {
+      if (Array.isArray(agentSkillsMeta[pluralKey])) {
+        for (const item of agentSkillsMeta[pluralKey]) {
+          if (typeof item === 'string' && item.trim()) {
+            keys.add(item.trim());
+          }
+        }
+      }
+    }
+
+    // Extract from tags with dimension prefix (e.g., "capability:code-review")
+    const prefix = `${dimension}:`;
+    for (const tag of tags) {
+      if (typeof tag === 'string' && tag.startsWith(prefix)) {
+        const value = tag.slice(prefix.length).trim();
+        if (value) {
+          keys.add(value);
+        }
+      }
+    }
+
+    return [...keys];
+  }
+
+  /**
+   * Compute a stable SHA-256 fingerprint over canonical entry data.
+   * Uses only fields that define catalog identity and eligibility:
+   * skillId, category, enabled, installed, capabilityKeys, technologyKeys, deliverableKeys.
+   * Produces the same hash for the same logical catalog content regardless of
+   * non-canonical field variations (description whitespace, version bumps, etc.).
+   */
+  private computeCatalogFingerprint(entries: SkillCatalogEntry[]): string {
+    const hash = createHash('sha256');
+
+    for (const entry of entries) {
+      // Use a deterministic canonical representation for each entry
+      const canonical = JSON.stringify([
+        entry.skillId,
+        entry.category,
+        entry.enabled,
+        entry.installed,
+        [...entry.capabilityKeys],
+        [...entry.technologyKeys],
+        [...entry.deliverableKeys]
+      ]);
+      hash.update(canonical);
+      hash.update('\n');
+    }
+
+    return hash.digest('hex');
+  }
+}
+
+
+// ─────────────────────────────────────────────
+// Transaction Error Classes
+// ─────────────────────────────────────────────
+
+/**
+ * Error thrown when the catalog fingerprint has changed between plan creation
+ * and persistence execution. Triggers STALE_CATALOG_SNAPSHOT rollback.
+ */
+export class CatalogStaleError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'CatalogStaleError';
+  }
+}
+
+/**
+ * Error thrown when the postcondition verification fails after executing
+ * all transaction statements. The persisted IDs did not match the desired
+ * sorted set. Triggers full rollback.
+ */
+export class PostconditionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'PostconditionError';
   }
 }

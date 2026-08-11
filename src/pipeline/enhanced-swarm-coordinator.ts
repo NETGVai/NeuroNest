@@ -545,13 +545,14 @@ export class EnhancedSwarmCoordinator extends SwarmCoordinator {
           token: tokenText,
         });
       },
-      onDone: () => {
+      onDone: (result) => {
         onEvent?.({
           type: 'agent_token',
           agentId: agentTask.id,
           agentName,
           msgId: streamMsgId,
           done: true,
+          reasoning: result.reasoning,
         });
       },
       onError: ({ message: errMsg, partialContent }) => {

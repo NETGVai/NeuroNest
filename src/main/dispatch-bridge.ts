@@ -203,13 +203,22 @@ export class DispatchBridge {
    * emits `chat:stream-chunk` with `done: true`, and removes the dispatch
    * from activeDispatches.
    *
-   * Requirements: 2.4, 5.3, 5.4
+   * Requirements: 2.1, 2.4, 5.3, 5.4
    */
-  onStreamDone(msgId: string): void {
+  onStreamDone(msgId: string, reasoning?: string): void {
     const ctx = this.activeDispatches.get(msgId);
     if (!ctx) return;
 
     ctx.status = 'complete';
+
+    // Build tool_calls metadata JSON including optional reasoning content
+    const toolCallsMeta: Record<string, unknown> = { source: 'dashboard' };
+    if (ctx.agent) {
+      toolCallsMeta.agent = ctx.agent;
+    }
+    if (reasoning) {
+      toolCallsMeta.reasoning = reasoning;
+    }
 
     // Persist the full assistant message to SQLite
     const createdAt = new Date().toISOString();
@@ -223,7 +232,7 @@ export class DispatchBridge {
           ctx.projectId,
           'assistant',
           ctx.buffer,
-          ctx.agent ? JSON.stringify({ agent: ctx.agent, source: 'dashboard' }) : JSON.stringify({ source: 'dashboard' }),
+          JSON.stringify(toolCallsMeta),
           'dashboard',
           createdAt,
         );
@@ -231,13 +240,14 @@ export class DispatchBridge {
       console.error('[DispatchBridge] Failed to persist assistant message:', (err as Error)?.message);
     }
 
-    // Emit stream done to ChatService
+    // Emit stream done to ChatService, including reasoning in the payload
     try {
       if (!this.config.mainWindow.isDestroyed()) {
         this.config.mainWindow.webContents.send('chat:stream-chunk', {
           messageId: msgId,
           chunk: '',
           done: true,
+          reasoning: reasoning || undefined,
         });
       }
     } catch (err) {

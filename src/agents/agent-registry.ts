@@ -3,6 +3,8 @@
 // Agent count is derived at runtime — see AGENT_COUNT export below.
 
 import type { ImportedAgent } from '../agent-catalog/types';
+import type { AgentPopulationManifest } from '../agent-catalog/agent-population';
+import { createRegistryImportSnapshot } from '../agent-catalog/agent-population';
 import { registerDepartment } from '../agent-catalog/division-mapper';
 import { assignPermissions } from '../agent-catalog/agent-importer';
 import { assignSkillBundle } from '../agent-skills/agent-skill-bundle';
@@ -1184,17 +1186,41 @@ export function getDepartmentCounts(): Record<string, number> {
  * @param imported - Array of ImportedAgent objects from the Agent Importer
  * @returns Object with counts of added and skipped agents
  */
-export function importAgents(imported: ImportedAgent[]): { added: number; skipped: number } {
+export interface AgentImportResult {
+  readonly added: number;
+  readonly skipped: number;
+  /** Complete frozen static/source/duplicate/effective population captured before mutation. */
+  readonly population: AgentPopulationManifest;
+}
+
+export function importAgents(
+  imported: readonly ImportedAgent[],
+  capturedPopulation?: AgentPopulationManifest,
+): AgentImportResult {
+  // Capture every static and imported definition before duplicate checks mutate
+  // registry membership. Callers that perform additional duplicate resolution
+  // before this mutation pass the population they captured from the unfiltered
+  // candidates, preventing that resolver from erasing source-level validation.
+  const population = capturedPopulation ?? createRegistryImportSnapshot(AGENT_REGISTRY, imported);
   let added = 0;
   let skipped = 0;
 
   // Build a set of existing IDs for O(1) duplicate checking
   const existingIds = new Set(AGENT_REGISTRY.map((a) => a.id));
 
-  for (const importedAgent of imported) {
+  // Canonical order matches the immutable import-candidate snapshot and makes
+  // the retained effective definition deterministic for repeated IDs.
+  const orderedImported = [...imported].sort((left, right) => (
+    left.sourceFile.replace(/\\/g, '/').localeCompare(right.sourceFile.replace(/\\/g, '/'))
+    || left.definition.id.localeCompare(right.definition.id)
+    || left.definition.name.localeCompare(right.definition.name)
+  ));
+
+  for (const importedAgent of orderedImported) {
     const { definition } = importedAgent;
 
-    // Skip duplicates by ID
+    // Skip duplicates by ID. Their complete source candidates and links remain
+    // present in population for later quality and skill validation.
     if (existingIds.has(definition.id)) {
       skipped++;
       continue;
@@ -1224,7 +1250,7 @@ export function importAgents(imported: ImportedAgent[]): { added: number; skippe
     added++;
   }
 
-  return { added, skipped };
+  return { added, skipped, population };
 }
 
 /**

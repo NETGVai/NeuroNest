@@ -728,6 +728,7 @@ export class SwarmCoordinator {
                   agentName,
                   msgId: streamMsgId,
                   done: true,
+                  reasoning: result.reasoning,
                 });
               },
               onError: ({ message: errMsg, partialContent }) => {

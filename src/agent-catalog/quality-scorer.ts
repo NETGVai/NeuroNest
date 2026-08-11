@@ -25,7 +25,87 @@ import type { QualityBreakdown } from './types';
 // QualityScorer interface
 // ─────────────────────────────────────────────
 
+export type QualityDimensionId =
+  | 'promptSpecificity'
+  | 'deliverableStructure'
+  | 'workflowCompleteness'
+  | 'domainDepth';
+
+export const QUALITY_RULE_IDS = Object.freeze({
+  structuredOutput: 'prompt-specificity.structured-output',
+  domainTerms: 'prompt-specificity.domain-terms',
+  vagueQualifiers: 'prompt-specificity.vague-qualifiers',
+  roleConstraints: 'prompt-specificity.role-constraints',
+  numberedDeliverables: 'deliverable-structure.numbered-deliverables',
+  codeExamples: 'deliverable-structure.code-examples',
+  successMetrics: 'deliverable-structure.success-metrics',
+  outputFormats: 'deliverable-structure.output-formats',
+  sequentialProcess: 'workflow-completeness.sequential-process',
+  decisions: 'workflow-completeness.decisions',
+  errorHandling: 'workflow-completeness.error-handling',
+  iteration: 'workflow-completeness.iteration',
+  technologies: 'domain-depth.technologies',
+  frameworks: 'domain-depth.frameworks',
+  methodologies: 'domain-depth.methodologies',
+  vocabularyDensity: 'domain-depth.vocabulary-density',
+} as const);
+
+export type QualityRuleId = (typeof QUALITY_RULE_IDS)[keyof typeof QUALITY_RULE_IDS];
+
+export type QualityMatchingSemantics =
+  | 'distinct-pattern-presence'
+  | 'unique-domain-terms'
+  | 'absence-of-distinct-patterns'
+  | 'unique-domain-term-density';
+
+export interface QualityRuleDefinition {
+  readonly ruleId: QualityRuleId;
+  readonly dimension: QualityDimensionId;
+  readonly allocation: number;
+  readonly matchingSemantics: QualityMatchingSemantics;
+  readonly fullScoreThreshold: number;
+}
+
+export interface QualityDimensionDefinition {
+  readonly dimension: QualityDimensionId;
+  readonly maximumScore: 25;
+  readonly rules: readonly QualityRuleDefinition[];
+}
+
+export interface QualityRuleMatch {
+  /** Stable within a rule. Pattern-backed matches use a fixed ordinal identifier. */
+  readonly matchId: string;
+  /** The first matched text for a pattern, or the normalized unique domain term. */
+  readonly value: string;
+}
+
+export interface QualityRuleEvidence {
+  readonly ruleId: QualityRuleId;
+  readonly dimension: QualityDimensionId;
+  readonly allocation: number;
+  readonly matchingSemantics: QualityMatchingSemantics;
+  readonly count: number;
+  readonly distinctMatches: readonly QualityRuleMatch[];
+  readonly density: number | null;
+  readonly score: number;
+}
+
+export interface QualityVocabularyEvidence {
+  readonly terms: readonly string[];
+  readonly wordCount: number;
+  readonly density: number;
+}
+
+export interface QualityAnalysis {
+  readonly rules: Readonly<Record<QualityRuleId, QualityRuleEvidence>>;
+  readonly counts: Readonly<Record<QualityRuleId, number>>;
+  readonly distinctMatches: Readonly<Record<QualityRuleId, readonly QualityRuleMatch[]>>;
+  readonly vocabulary: QualityVocabularyEvidence;
+  readonly breakdown: QualityBreakdown;
+}
+
 export interface QualityScorer {
+  analyze(agent: AgentDefinition): QualityAnalysis;
   score(agent: AgentDefinition): QualityBreakdown;
   compare(a: AgentDefinition, b: AgentDefinition): {
     winner: 'a' | 'b' | 'tie';
@@ -281,32 +361,186 @@ const METHODOLOGY_PATTERNS = [
 ];
 
 // ─────────────────────────────────────────────
-// Scoring Helpers
+// Stable Rule Definitions
 // ─────────────────────────────────────────────
 
-/**
- * Gets the combined text from an agent's systemPrompt and specialty fields.
- */
+function defineRule(
+  ruleId: QualityRuleId,
+  dimension: QualityDimensionId,
+  allocation: number,
+  matchingSemantics: QualityMatchingSemantics,
+  fullScoreThreshold: number,
+): QualityRuleDefinition {
+  return Object.freeze({ ruleId, dimension, allocation, matchingSemantics, fullScoreThreshold });
+}
+
+const RULE_DEFINITIONS = Object.freeze({
+  [QUALITY_RULE_IDS.structuredOutput]: defineRule(
+    QUALITY_RULE_IDS.structuredOutput,
+    'promptSpecificity',
+    7,
+    'distinct-pattern-presence',
+    3,
+  ),
+  [QUALITY_RULE_IDS.domainTerms]: defineRule(
+    QUALITY_RULE_IDS.domainTerms,
+    'promptSpecificity',
+    6,
+    'unique-domain-terms',
+    8,
+  ),
+  [QUALITY_RULE_IDS.vagueQualifiers]: defineRule(
+    QUALITY_RULE_IDS.vagueQualifiers,
+    'promptSpecificity',
+    6,
+    'absence-of-distinct-patterns',
+    0,
+  ),
+  [QUALITY_RULE_IDS.roleConstraints]: defineRule(
+    QUALITY_RULE_IDS.roleConstraints,
+    'promptSpecificity',
+    6,
+    'distinct-pattern-presence',
+    3,
+  ),
+  [QUALITY_RULE_IDS.numberedDeliverables]: defineRule(
+    QUALITY_RULE_IDS.numberedDeliverables,
+    'deliverableStructure',
+    7,
+    'distinct-pattern-presence',
+    2,
+  ),
+  [QUALITY_RULE_IDS.codeExamples]: defineRule(
+    QUALITY_RULE_IDS.codeExamples,
+    'deliverableStructure',
+    6,
+    'distinct-pattern-presence',
+    2,
+  ),
+  [QUALITY_RULE_IDS.successMetrics]: defineRule(
+    QUALITY_RULE_IDS.successMetrics,
+    'deliverableStructure',
+    6,
+    'distinct-pattern-presence',
+    2,
+  ),
+  [QUALITY_RULE_IDS.outputFormats]: defineRule(
+    QUALITY_RULE_IDS.outputFormats,
+    'deliverableStructure',
+    6,
+    'distinct-pattern-presence',
+    3,
+  ),
+  [QUALITY_RULE_IDS.sequentialProcess]: defineRule(
+    QUALITY_RULE_IDS.sequentialProcess,
+    'workflowCompleteness',
+    7,
+    'distinct-pattern-presence',
+    3,
+  ),
+  [QUALITY_RULE_IDS.decisions]: defineRule(
+    QUALITY_RULE_IDS.decisions,
+    'workflowCompleteness',
+    6,
+    'distinct-pattern-presence',
+    2,
+  ),
+  [QUALITY_RULE_IDS.errorHandling]: defineRule(
+    QUALITY_RULE_IDS.errorHandling,
+    'workflowCompleteness',
+    6,
+    'distinct-pattern-presence',
+    2,
+  ),
+  [QUALITY_RULE_IDS.iteration]: defineRule(
+    QUALITY_RULE_IDS.iteration,
+    'workflowCompleteness',
+    6,
+    'distinct-pattern-presence',
+    2,
+  ),
+  [QUALITY_RULE_IDS.technologies]: defineRule(
+    QUALITY_RULE_IDS.technologies,
+    'domainDepth',
+    7,
+    'distinct-pattern-presence',
+    3,
+  ),
+  [QUALITY_RULE_IDS.frameworks]: defineRule(
+    QUALITY_RULE_IDS.frameworks,
+    'domainDepth',
+    6,
+    'distinct-pattern-presence',
+    2,
+  ),
+  [QUALITY_RULE_IDS.methodologies]: defineRule(
+    QUALITY_RULE_IDS.methodologies,
+    'domainDepth',
+    6,
+    'distinct-pattern-presence',
+    2,
+  ),
+  [QUALITY_RULE_IDS.vocabularyDensity]: defineRule(
+    QUALITY_RULE_IDS.vocabularyDensity,
+    'domainDepth',
+    6,
+    'unique-domain-term-density',
+    0.3,
+  ),
+}) as Readonly<Record<QualityRuleId, QualityRuleDefinition>>;
+
+const promptRules = Object.freeze([
+  RULE_DEFINITIONS[QUALITY_RULE_IDS.structuredOutput],
+  RULE_DEFINITIONS[QUALITY_RULE_IDS.domainTerms],
+  RULE_DEFINITIONS[QUALITY_RULE_IDS.vagueQualifiers],
+  RULE_DEFINITIONS[QUALITY_RULE_IDS.roleConstraints],
+]);
+const deliverableRules = Object.freeze([
+  RULE_DEFINITIONS[QUALITY_RULE_IDS.numberedDeliverables],
+  RULE_DEFINITIONS[QUALITY_RULE_IDS.codeExamples],
+  RULE_DEFINITIONS[QUALITY_RULE_IDS.successMetrics],
+  RULE_DEFINITIONS[QUALITY_RULE_IDS.outputFormats],
+]);
+const workflowRules = Object.freeze([
+  RULE_DEFINITIONS[QUALITY_RULE_IDS.sequentialProcess],
+  RULE_DEFINITIONS[QUALITY_RULE_IDS.decisions],
+  RULE_DEFINITIONS[QUALITY_RULE_IDS.errorHandling],
+  RULE_DEFINITIONS[QUALITY_RULE_IDS.iteration],
+]);
+const domainRules = Object.freeze([
+  RULE_DEFINITIONS[QUALITY_RULE_IDS.technologies],
+  RULE_DEFINITIONS[QUALITY_RULE_IDS.frameworks],
+  RULE_DEFINITIONS[QUALITY_RULE_IDS.methodologies],
+  RULE_DEFINITIONS[QUALITY_RULE_IDS.vocabularyDensity],
+]);
+
+/** Immutable public contract for dimensions, allocations, maxima, and matching semantics. */
+export const QUALITY_SCORER_DEFINITION = Object.freeze({
+  maximumTotalScore: 100 as const,
+  dimensions: Object.freeze([
+    Object.freeze({ dimension: 'promptSpecificity' as const, maximumScore: 25 as const, rules: promptRules }),
+    Object.freeze({
+      dimension: 'deliverableStructure' as const,
+      maximumScore: 25 as const,
+      rules: deliverableRules,
+    }),
+    Object.freeze({
+      dimension: 'workflowCompleteness' as const,
+      maximumScore: 25 as const,
+      rules: workflowRules,
+    }),
+    Object.freeze({ dimension: 'domainDepth' as const, maximumScore: 25 as const, rules: domainRules }),
+  ]) as readonly QualityDimensionDefinition[],
+});
+
+// ─────────────────────────────────────────────
+// Analysis Helpers
+// ─────────────────────────────────────────────
+
 function getAnalysisText(agent: AgentDefinition): string {
   return `${agent.systemPrompt || ''}\n${agent.specialty || ''}`;
 }
 
-/**
- * Counts how many patterns from a list match in the given text.
- */
-function countPatternMatches(text: string, patterns: RegExp[]): number {
-  let count = 0;
-  for (const pattern of patterns) {
-    if (pattern.test(text)) {
-      count++;
-    }
-  }
-  return count;
-}
-
-/**
- * Extracts unique domain-specific words (>= 4 chars, not common English).
- */
 function extractDomainTerms(text: string): Set<string> {
   const commonWords = new Set([
     'that', 'this', 'with', 'from', 'your', 'have', 'will', 'been', 'they',
@@ -328,174 +562,215 @@ function extractDomainTerms(text: string): Set<string> {
   return terms;
 }
 
-// ─────────────────────────────────────────────
-// Dimension Scorers
-// ─────────────────────────────────────────────
-
-/**
- * Evaluates prompt specificity (0-25).
- *
- * Criteria:
- * - Structured output format instructions (+7): presence of patterns indicating
- *   the prompt defines how output should be formatted
- * - Explicit domain terminology count (+6): the number of domain-specific terms
- *   (non-common-word tokens >= 4 chars) normalized to a 0-6 scale
- * - Absence of vague qualifiers (+6): fewer vague words like "very", "really",
- *   "kind of" earn more points
- * - Role-specific constraints (+6): presence of patterns defining the agent's
- *   role boundaries and behavioral constraints
- */
-function scorePromptSpecificity(text: string): number {
-  let score = 0;
-
-  // Structured output format instructions (0-7)
-  const structuredMatches = countPatternMatches(text, STRUCTURED_OUTPUT_PATTERNS);
-  score += Math.min(7, Math.round((structuredMatches / 3) * 7));
-
-  // Explicit domain terminology count (0-6)
-  const domainTerms = extractDomainTerms(text);
-  // Scale: 0 terms = 0, 5+ unique domain terms = 6
-  score += Math.min(6, Math.round((domainTerms.size / 8) * 6));
-
-  // Absence of vague qualifiers (0-6)
-  const vagueCount = countPatternMatches(text, VAGUE_QUALIFIERS);
-  // Fewer vague qualifiers = higher score. 0 vague = 6, 5+ vague = 0
-  score += Math.max(0, Math.min(6, 6 - vagueCount));
-
-  // Role-specific constraints (0-6)
-  const roleMatches = countPatternMatches(text, ROLE_CONSTRAINT_PATTERNS);
-  score += Math.min(6, Math.round((roleMatches / 3) * 6));
-
-  return Math.min(25, score);
+function findDistinctPatternMatches(
+  text: string,
+  ruleId: QualityRuleId,
+  patterns: readonly RegExp[],
+): readonly QualityRuleMatch[] {
+  return Object.freeze(
+    patterns.flatMap((pattern, index) => {
+      const match = pattern.exec(text);
+      return match
+        ? [
+            Object.freeze({
+              matchId: `${ruleId}.pattern-${String(index + 1).padStart(2, '0')}`,
+              value: match[0],
+            }),
+          ]
+        : [];
+    }),
+  );
 }
 
-/**
- * Evaluates deliverable structure (0-25).
- *
- * Criteria:
- * - Numbered deliverable sections (+7): presence of numbered/ordered lists
- *   indicating structured deliverables
- * - Code examples (+6): presence of code blocks, inline code, or implementation patterns
- * - Success metrics (+6): presence of measurable outcomes, KPIs, or performance targets
- * - Output format specification (+6): presence of format definitions for agent output
- */
-function scoreDeliverableStructure(text: string): number {
-  let score = 0;
-
-  // Numbered deliverable sections (0-7)
-  const numberedMatches = countPatternMatches(text, NUMBERED_SECTION_PATTERNS);
-  score += Math.min(7, Math.round((numberedMatches / 2) * 7));
-
-  // Code examples (0-6)
-  const codeMatches = countPatternMatches(text, CODE_EXAMPLE_PATTERNS);
-  score += Math.min(6, Math.round((codeMatches / 2) * 6));
-
-  // Success metrics (0-6)
-  const metricMatches = countPatternMatches(text, SUCCESS_METRIC_PATTERNS);
-  score += Math.min(6, Math.round((metricMatches / 2) * 6));
-
-  // Output format specification (0-6)
-  const outputMatches = countPatternMatches(text, OUTPUT_FORMAT_PATTERNS);
-  score += Math.min(6, Math.round((outputMatches / 3) * 6));
-
-  return Math.min(25, score);
+function findDomainTermMatches(
+  ruleId: QualityRuleId,
+  domainTerms: readonly string[],
+): readonly QualityRuleMatch[] {
+  return Object.freeze(
+    domainTerms.map((term) => Object.freeze({ matchId: `${ruleId}.term:${term}`, value: term })),
+  );
 }
 
-/**
- * Evaluates workflow completeness (0-25).
- *
- * Criteria:
- * - Multi-step process definition (+7): presence of sequential steps, phases, or stages
- * - Decision points (+6): presence of conditional logic, choices, or evaluation criteria
- * - Error handling instructions (+6): presence of failure modes, fallbacks, or recovery guidance
- * - Iteration guidance (+6): presence of refinement cycles, feedback loops, or improvement processes
- */
-function scoreWorkflowCompleteness(text: string): number {
-  let score = 0;
-
-  // Multi-step process definition (0-7)
-  const multiStepMatches = countPatternMatches(text, MULTI_STEP_PATTERNS);
-  score += Math.min(7, Math.round((multiStepMatches / 3) * 7));
-
-  // Decision points (0-6)
-  const decisionMatches = countPatternMatches(text, DECISION_POINT_PATTERNS);
-  score += Math.min(6, Math.round((decisionMatches / 2) * 6));
-
-  // Error handling instructions (0-6)
-  const errorMatches = countPatternMatches(text, ERROR_HANDLING_PATTERNS);
-  score += Math.min(6, Math.round((errorMatches / 2) * 6));
-
-  // Iteration guidance (0-6)
-  const iterMatches = countPatternMatches(text, ITERATION_GUIDANCE_PATTERNS);
-  score += Math.min(6, Math.round((iterMatches / 2) * 6));
-
-  return Math.min(25, score);
+function scaledPatternScore(count: number, threshold: number, allocation: number): number {
+  return Math.min(allocation, Math.round((count / threshold) * allocation));
 }
 
-/**
- * Evaluates domain depth (0-25).
- *
- * Criteria:
- * - Technology/tool name references (+7): named technologies, libraries, services
- * - Industry framework citations (+6): named frameworks (OWASP, SOLID, DDD, etc.)
- * - Named methodology references (+6): specific methodologies (threat modeling, canary deploys, etc.)
- * - Domain vocabulary specificity (+6): ratio of domain-specific terms to total terms
- */
-function scoreDomainDepth(text: string): number {
-  let score = 0;
+function createRuleEvidence(
+  ruleId: QualityRuleId,
+  distinctMatches: readonly QualityRuleMatch[],
+  score: number,
+  density: number | null = null,
+): QualityRuleEvidence {
+  const definition = RULE_DEFINITIONS[ruleId];
+  return Object.freeze({
+    ruleId,
+    dimension: definition.dimension,
+    allocation: definition.allocation,
+    matchingSemantics: definition.matchingSemantics,
+    count: distinctMatches.length,
+    distinctMatches,
+    density,
+    score,
+  });
+}
 
-  // Technology/tool name references (0-7)
-  const techMatches = countPatternMatches(text, TECHNOLOGY_PATTERNS);
-  score += Math.min(7, Math.round((techMatches / 3) * 7));
-
-  // Industry framework citations (0-6)
-  const frameworkMatches = countPatternMatches(text, FRAMEWORK_PATTERNS);
-  score += Math.min(6, Math.round((frameworkMatches / 2) * 6));
-
-  // Named methodology references (0-6)
-  const methodMatches = countPatternMatches(text, METHODOLOGY_PATTERNS);
-  score += Math.min(6, Math.round((methodMatches / 2) * 6));
-
-  // Domain vocabulary specificity (0-6)
-  // Measured by the density of domain-specific terms relative to text length
-  const domainTerms = extractDomainTerms(text);
+function analyzeText(text: string): QualityAnalysis {
+  const domainTerms = Object.freeze([...extractDomainTerms(text)].sort());
   const wordCount = (text.match(/\b\w+\b/g) || []).length;
-  const domainDensity = wordCount > 0 ? domainTerms.size / wordCount : 0;
-  // A density of 0.3+ earns full marks
-  score += Math.min(6, Math.round((domainDensity / 0.3) * 6));
+  const domainDensity = wordCount > 0 ? domainTerms.length / wordCount : 0;
 
-  return Math.min(25, score);
-}
+  const patternInputs: readonly [QualityRuleId, readonly RegExp[]][] = [
+    [QUALITY_RULE_IDS.structuredOutput, STRUCTURED_OUTPUT_PATTERNS],
+    [QUALITY_RULE_IDS.vagueQualifiers, VAGUE_QUALIFIERS],
+    [QUALITY_RULE_IDS.roleConstraints, ROLE_CONSTRAINT_PATTERNS],
+    [QUALITY_RULE_IDS.numberedDeliverables, NUMBERED_SECTION_PATTERNS],
+    [QUALITY_RULE_IDS.codeExamples, CODE_EXAMPLE_PATTERNS],
+    [QUALITY_RULE_IDS.successMetrics, SUCCESS_METRIC_PATTERNS],
+    [QUALITY_RULE_IDS.outputFormats, OUTPUT_FORMAT_PATTERNS],
+    [QUALITY_RULE_IDS.sequentialProcess, MULTI_STEP_PATTERNS],
+    [QUALITY_RULE_IDS.decisions, DECISION_POINT_PATTERNS],
+    [QUALITY_RULE_IDS.errorHandling, ERROR_HANDLING_PATTERNS],
+    [QUALITY_RULE_IDS.iteration, ITERATION_GUIDANCE_PATTERNS],
+    [QUALITY_RULE_IDS.technologies, TECHNOLOGY_PATTERNS],
+    [QUALITY_RULE_IDS.frameworks, FRAMEWORK_PATTERNS],
+    [QUALITY_RULE_IDS.methodologies, METHODOLOGY_PATTERNS],
+  ];
+  const matches = new Map<QualityRuleId, readonly QualityRuleMatch[]>(
+    patternInputs.map(([ruleId, patterns]) => [ruleId, findDistinctPatternMatches(text, ruleId, patterns)]),
+  );
+  const domainTermMatches = findDomainTermMatches(QUALITY_RULE_IDS.domainTerms, domainTerms);
+  const densityTermMatches = findDomainTermMatches(QUALITY_RULE_IDS.vocabularyDensity, domainTerms);
+  matches.set(QUALITY_RULE_IDS.domainTerms, domainTermMatches);
+  matches.set(QUALITY_RULE_IDS.vocabularyDensity, densityTermMatches);
 
-// ─────────────────────────────────────────────
-// Quality Scorer Implementation
-// ─────────────────────────────────────────────
+  const getMatches = (ruleId: QualityRuleId): readonly QualityRuleMatch[] => matches.get(ruleId) ?? [];
+  const scaledEvidence = (ruleId: QualityRuleId): QualityRuleEvidence => {
+    const definition = RULE_DEFINITIONS[ruleId];
+    const ruleMatches = getMatches(ruleId);
+    return createRuleEvidence(
+      ruleId,
+      ruleMatches,
+      scaledPatternScore(ruleMatches.length, definition.fullScoreThreshold, definition.allocation),
+    );
+  };
 
-/**
- * Scores an agent definition across four quality dimensions.
- * The scoring is deterministic: same input always produces same output.
- */
-function scoreAgent(agent: AgentDefinition): QualityBreakdown {
-  const text = getAnalysisText(agent);
+  const structuredOutput = scaledEvidence(QUALITY_RULE_IDS.structuredOutput);
+  const promptDomainTerms = scaledEvidence(QUALITY_RULE_IDS.domainTerms);
+  const vagueMatches = getMatches(QUALITY_RULE_IDS.vagueQualifiers);
+  const vagueQualifiers = createRuleEvidence(
+    QUALITY_RULE_IDS.vagueQualifiers,
+    vagueMatches,
+    Math.max(0, Math.min(6, 6 - vagueMatches.length)),
+  );
+  const roleConstraints = scaledEvidence(QUALITY_RULE_IDS.roleConstraints);
+  const numberedDeliverables = scaledEvidence(QUALITY_RULE_IDS.numberedDeliverables);
+  const codeExamples = scaledEvidence(QUALITY_RULE_IDS.codeExamples);
+  const successMetrics = scaledEvidence(QUALITY_RULE_IDS.successMetrics);
+  const outputFormats = scaledEvidence(QUALITY_RULE_IDS.outputFormats);
+  const sequentialProcess = scaledEvidence(QUALITY_RULE_IDS.sequentialProcess);
+  const decisions = scaledEvidence(QUALITY_RULE_IDS.decisions);
+  const errorHandling = scaledEvidence(QUALITY_RULE_IDS.errorHandling);
+  const iteration = scaledEvidence(QUALITY_RULE_IDS.iteration);
+  const technologies = scaledEvidence(QUALITY_RULE_IDS.technologies);
+  const frameworks = scaledEvidence(QUALITY_RULE_IDS.frameworks);
+  const methodologies = scaledEvidence(QUALITY_RULE_IDS.methodologies);
+  const vocabularyDensity = createRuleEvidence(
+    QUALITY_RULE_IDS.vocabularyDensity,
+    densityTermMatches,
+    Math.min(6, Math.round((domainDensity / 0.3) * 6)),
+    domainDensity,
+  );
 
-  const promptSpecificity = scorePromptSpecificity(text);
-  const deliverableStructure = scoreDeliverableStructure(text);
-  const workflowCompleteness = scoreWorkflowCompleteness(text);
-  const domainDepth = scoreDomainDepth(text);
+  const rules = Object.freeze({
+    [QUALITY_RULE_IDS.structuredOutput]: structuredOutput,
+    [QUALITY_RULE_IDS.domainTerms]: promptDomainTerms,
+    [QUALITY_RULE_IDS.vagueQualifiers]: vagueQualifiers,
+    [QUALITY_RULE_IDS.roleConstraints]: roleConstraints,
+    [QUALITY_RULE_IDS.numberedDeliverables]: numberedDeliverables,
+    [QUALITY_RULE_IDS.codeExamples]: codeExamples,
+    [QUALITY_RULE_IDS.successMetrics]: successMetrics,
+    [QUALITY_RULE_IDS.outputFormats]: outputFormats,
+    [QUALITY_RULE_IDS.sequentialProcess]: sequentialProcess,
+    [QUALITY_RULE_IDS.decisions]: decisions,
+    [QUALITY_RULE_IDS.errorHandling]: errorHandling,
+    [QUALITY_RULE_IDS.iteration]: iteration,
+    [QUALITY_RULE_IDS.technologies]: technologies,
+    [QUALITY_RULE_IDS.frameworks]: frameworks,
+    [QUALITY_RULE_IDS.methodologies]: methodologies,
+    [QUALITY_RULE_IDS.vocabularyDensity]: vocabularyDensity,
+  }) as Readonly<Record<QualityRuleId, QualityRuleEvidence>>;
 
-  return {
+  const promptSpecificity = Math.min(
+    25,
+    structuredOutput.score + promptDomainTerms.score + vagueQualifiers.score + roleConstraints.score,
+  );
+  const deliverableStructure = Math.min(
+    25,
+    numberedDeliverables.score + codeExamples.score + successMetrics.score + outputFormats.score,
+  );
+  const workflowCompleteness = Math.min(
+    25,
+    sequentialProcess.score + decisions.score + errorHandling.score + iteration.score,
+  );
+  const domainDepth = Math.min(
+    25,
+    technologies.score + frameworks.score + methodologies.score + vocabularyDensity.score,
+  );
+  const breakdown: QualityBreakdown = {
     promptSpecificity,
     deliverableStructure,
     workflowCompleteness,
     domainDepth,
     total: promptSpecificity + deliverableStructure + workflowCompleteness + domainDepth,
   };
+
+  const entries = Object.entries(rules) as [QualityRuleId, QualityRuleEvidence][];
+  const counts = Object.freeze(
+    Object.fromEntries(entries.map(([ruleId, evidence]) => [ruleId, evidence.count])),
+  ) as Readonly<Record<QualityRuleId, number>>;
+  const distinctMatches = Object.freeze(
+    Object.fromEntries(entries.map(([ruleId, evidence]) => [ruleId, evidence.distinctMatches])),
+  ) as Readonly<Record<QualityRuleId, readonly QualityRuleMatch[]>>;
+
+  return Object.freeze({
+    rules,
+    counts,
+    distinctMatches,
+    vocabulary: Object.freeze({ terms: domainTerms, wordCount, density: domainDensity }),
+    breakdown,
+  });
 }
 
-/**
- * Compares two agent definitions and returns which is superior.
- * Winner is determined by total score; tie when scores are equal.
- */
+// ─────────────────────────────────────────────
+// Dimension Scorers and Public API
+// ─────────────────────────────────────────────
+
+function scorePromptSpecificity(text: string): number {
+  return analyzeText(text).breakdown.promptSpecificity;
+}
+
+function scoreDeliverableStructure(text: string): number {
+  return analyzeText(text).breakdown.deliverableStructure;
+}
+
+function scoreWorkflowCompleteness(text: string): number {
+  return analyzeText(text).breakdown.workflowCompleteness;
+}
+
+function scoreDomainDepth(text: string): number {
+  return analyzeText(text).breakdown.domainDepth;
+}
+
+/** Returns stable rule evidence and the authoritative score breakdown for an agent. */
+function analyzeAgent(agent: AgentDefinition): QualityAnalysis {
+  return analyzeText(getAnalysisText(agent));
+}
+
+/** Scores through the same analysis result used to expose evidence. */
+function scoreAgent(agent: AgentDefinition): QualityBreakdown {
+  return analyzeAgent(agent).breakdown;
+}
+
 function compareAgents(
   a: AgentDefinition,
   b: AgentDefinition,
@@ -516,18 +791,16 @@ function compareAgents(
   return { winner, scoreA, scoreB, margin };
 }
 
-/**
- * Creates a QualityScorer instance with score() and compare() methods.
- */
 export function createQualityScorer(): QualityScorer {
   return {
+    analyze: analyzeAgent,
     score: scoreAgent,
     compare: compareAgents,
   };
 }
 
-// Export individual scoring functions for testing
 export {
+  analyzeAgent,
   scorePromptSpecificity,
   scoreDeliverableStructure,
   scoreWorkflowCompleteness,

@@ -1090,6 +1090,7 @@ async function initDeferredModules(): Promise<void> {
       try {
         const { join } = await import('node:path');
         const { importDirectory } = await import('../agent-catalog/agent-importer');
+        const { createRegistryImportSnapshot } = await import('../agent-catalog/agent-population');
         const { importAgents, AGENT_REGISTRY: currentRegistry, AGENT_TOOL_PERMISSIONS: currentPermissions } = await import('../agents/agent-registry');
         const { detectDuplicates, resolve: resolveDuplicate } = await import('../agent-catalog/duplicate-detector');
         const { createCatalogVersioning } = await import('../agent-catalog/catalog-versioning');
@@ -1097,6 +1098,9 @@ async function initDeferredModules(): Promise<void> {
 
         const agentsDataPath = join(__dirname, '..', 'data', 'agents');
         const result = await importDirectory(agentsDataPath);
+        // Freeze the complete unfiltered source/static/effective population before
+        // duplicate resolution or registry mutation can suppress source evidence.
+        const population = createRegistryImportSnapshot(currentRegistry, result.imported);
 
         // ── Catalog Versioning: create snapshot before import (Req 11.2, 11.3) ──
         // Preserves previous version so we can roll back if needed.
@@ -1144,7 +1148,7 @@ async function initDeferredModules(): Promise<void> {
         }
 
         // ── Import agents (existing pipeline) ──
-        const { added, skipped } = importAgents(filteredImported);
+        const { added, skipped } = importAgents(filteredImported, population);
 
         // ── Quality Scoring: evaluate imported agents, warn if below threshold (Req 13.1, 13.2, 13.3) ──
         try {
@@ -1649,6 +1653,7 @@ async function completeLazyDeferredInit(): Promise<void> {
       try {
         const { join } = await import('node:path');
         const { importDirectory } = await import('../agent-catalog/agent-importer');
+        const { createRegistryImportSnapshot } = await import('../agent-catalog/agent-population');
         const { importAgents, AGENT_REGISTRY: currentRegistry, AGENT_TOOL_PERMISSIONS: currentPermissions } = await import('../agents/agent-registry');
         const { detectDuplicates, resolve: resolveDuplicate } = await import('../agent-catalog/duplicate-detector');
         const { createCatalogVersioning } = await import('../agent-catalog/catalog-versioning');
@@ -1656,6 +1661,9 @@ async function completeLazyDeferredInit(): Promise<void> {
 
         const agentsDataPath = join(__dirname, '..', 'data', 'agents');
         const result = await importDirectory(agentsDataPath);
+        // Freeze the complete unfiltered source/static/effective population before
+        // duplicate resolution or registry mutation can suppress source evidence.
+        const population = createRegistryImportSnapshot(currentRegistry, result.imported);
 
         // ── Catalog Versioning: create snapshot before import (Req 11.2, 11.3) ──
         try {
@@ -1690,7 +1698,7 @@ async function completeLazyDeferredInit(): Promise<void> {
           console.warn('[IPC] Duplicate detection failed (non-fatal):', dupErr);
         }
 
-        const { added, skipped } = importAgents(filteredImported);
+        const { added, skipped } = importAgents(filteredImported, population);
 
         // ── Quality Scoring (Req 13.1, 13.2, 13.3) ──
         try {
@@ -1928,6 +1936,7 @@ function ensureInit() {
           try {
             const path = require('node:path');
             const { importDirectory } = require('../agent-catalog/agent-importer');
+            const { createRegistryImportSnapshot } = require('../agent-catalog/agent-population');
             const { importAgents, AGENT_REGISTRY: currentRegistry, AGENT_TOOL_PERMISSIONS: currentPermissions } = require('../agents/agent-registry');
             const { detectDuplicates, resolve: resolveDuplicate } = require('../agent-catalog/duplicate-detector');
             const { createCatalogVersioning } = require('../agent-catalog/catalog-versioning');
@@ -1935,6 +1944,8 @@ function ensureInit() {
 
             const agentsDataPath = path.join(__dirname, '..', 'data', 'agents');
             importDirectory(agentsDataPath).then((result: any) => {
+              // Freeze all parsed candidates before duplicate filtering or mutation.
+              const population = createRegistryImportSnapshot(currentRegistry, result.imported);
               // ── Catalog Versioning: create snapshot before import (Req 11.2, 11.3) ──
               try {
                 const catalogVersioning = createCatalogVersioning(db, {
@@ -1968,7 +1979,7 @@ function ensureInit() {
                 console.warn('[IPC] Duplicate detection failed (non-fatal):', dupErr);
               }
 
-              const { added, skipped } = importAgents(filteredImported);
+              const { added, skipped } = importAgents(filteredImported, population);
 
               // ── Quality Scoring (Req 13.1, 13.2, 13.3) ──
               try {
@@ -2107,6 +2118,7 @@ export async function initDeferredSubsystems(): Promise<void> {
       try {
         const { join } = await import('node:path');
         const { importDirectory } = await import('../agent-catalog/agent-importer');
+        const { createRegistryImportSnapshot } = await import('../agent-catalog/agent-population');
         const { importAgents, AGENT_REGISTRY: currentRegistry, AGENT_TOOL_PERMISSIONS: currentPermissions } = await import('../agents/agent-registry');
         const { detectDuplicates, resolve: resolveDuplicate } = await import('../agent-catalog/duplicate-detector');
         const { createCatalogVersioning } = await import('../agent-catalog/catalog-versioning');
@@ -2114,6 +2126,9 @@ export async function initDeferredSubsystems(): Promise<void> {
 
         const agentsDataPath = join(__dirname, '..', 'data', 'agents');
         const result = await importDirectory(agentsDataPath);
+        // Freeze the complete unfiltered source/static/effective population before
+        // duplicate resolution or registry mutation can suppress source evidence.
+        const population = createRegistryImportSnapshot(currentRegistry, result.imported);
 
         // ── Catalog Versioning: create snapshot before import (Req 11.2, 11.3) ──
         try {
@@ -2148,7 +2163,7 @@ export async function initDeferredSubsystems(): Promise<void> {
           console.warn('[IPC] Duplicate detection failed (non-fatal):', dupErr);
         }
 
-        const { added, skipped } = importAgents(filteredImported);
+        const { added, skipped } = importAgents(filteredImported, population);
 
         // ── Quality Scoring (Req 13.1, 13.2, 13.3) ──
         try {
@@ -3429,7 +3444,19 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
       role: agent.specialty,
       systemPrompt: agent.systemPrompt,
       soul: '# ' + agent.emoji + ' ' + agent.name + '\n\nDepartment: ' + agent.department + '\n\n' + agent.specialty,
-      identity: agent.systemPrompt,
+      identity: `Agent Identity\n` +
+        `─────────────────────────────────────────\n\n` +
+        `   agent identifier   k1auth:${agent.id}@localhost:4000\n\n` +
+        `   department         ${agent.department}\n\n` +
+        `   specialty          ${agent.specialty}\n\n` +
+        `   status             ⏳ identity verification not configured\n\n` +
+        `─────────────────────────────────────────\n\n` +
+        `Identity verification will be available once the\n` +
+        `agent identity service is configured. This will show:\n\n` +
+        `   • loaded anchor key from disk\n` +
+        `   • verified agent identifier\n` +
+        `   • acting-for user binding\n` +
+        `   • identity attestation chain\n`,
       tools: 'All tools available for ' + agent.department + ' department.',
       claude: 'Model-specific instructions for ' + agent.name,
       model: 'deepseek/deepseek-chat',
@@ -5497,7 +5524,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
             if (event.error) {
               mainWindow.webContents.send('chat:error', { msgId: event.msgId, partial: '', error: event.content || 'Stream error' });
             } else {
-              mainWindow.webContents.send('chat:done', { msgId: event.msgId, usage: {} });
+              mainWindow.webContents.send('chat:done', { msgId: event.msgId, usage: {}, reasoning: event.reasoning || undefined });
             }
           } else if (event.token === '' && !event.done) {
             // Start signal — create the message bubble
@@ -5519,7 +5546,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
             if (event.token === '' && !event.done) {
               dispatchBridge.onStreamStart(event.msgId, event.agentName || 'Agent', { provider: activeProviderType, model: activeModelId });
             } else if (event.done && !event.error) {
-              dispatchBridge.onStreamDone(event.msgId);
+              dispatchBridge.onStreamDone(event.msgId, event.reasoning);
             } else if (event.done && event.error) {
               dispatchBridge.onStreamError(event.msgId, event.content || 'Stream error');
             } else {
@@ -5714,7 +5741,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
             if (event.error) {
               mainWindow.webContents.send('chat:error', { msgId: event.msgId, partial: '', error: event.content || 'Stream error' });
             } else {
-              mainWindow.webContents.send('chat:done', { msgId: event.msgId, usage: {} });
+              mainWindow.webContents.send('chat:done', { msgId: event.msgId, usage: {}, reasoning: event.reasoning || undefined });
             }
           } else if (event.token === '' && !event.done) {
             const agentProv2 = agentProviderMap.get(event.agentId || '') || { provider: activeProviderType, model: activeModelId };
@@ -5734,7 +5761,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
             if (event.token === '' && !event.done) {
               dispatchBridge.onStreamStart(event.msgId, event.agentName || 'Agent', { provider: activeProviderType, model: activeModelId });
             } else if (event.done && !event.error) {
-              dispatchBridge.onStreamDone(event.msgId);
+              dispatchBridge.onStreamDone(event.msgId, event.reasoning);
             } else if (event.done && event.error) {
               dispatchBridge.onStreamError(event.msgId, event.content || 'Stream error');
             } else {
