@@ -47,3 +47,47 @@ export {
   type AutocompleteStatus,
   type AutocompleteConfig,
 } from './autocomplete-ipc-client';
+
+export {
+  CompletionController,
+  ContentIdentityCache,
+  type ModelRole,
+  type ModelRoleConfig,
+  type WorkspaceCompletionConfig,
+  type CompletionRequestEnvelope,
+  type CompletionResult,
+  type CancellationReason,
+} from './completion-controller';
+
+export {
+  CompletionRenderer,
+  type RenderMode,
+  type RenderedCompletion,
+  type InlineDiffMarker,
+} from './completion-renderer';
+
+export {
+  CompletionControlsService,
+  type CompletionAction,
+  type ControlActionResult,
+  type KeyBindingConfig,
+  type RegenerationRequest,
+  type PendingCompletion,
+} from './completion-controls-service';
+
+export {
+  ContextAuthorizationGuard,
+  type ContextItem,
+  type AuthorizationPolicy,
+  type AuthorizationResult,
+  type StructuralContext,
+  type AuthorizedPayload,
+} from './context-authorization-guard';
+
+export {
+  CompletionMetrics,
+  type CompletionOutcome,
+  type CompletionMetricRecord,
+  type MetricsSummary,
+  type MetricsConfig,
+} from './completion-metrics';

@@ -1,5 +1,6 @@
 export { RuntimeManager } from './runtime-manager.js';
 export { NativeProcessRunner } from './native-process-runner.js';
+export { RuntimeProfileService } from './runtime-profile-service.js';
 export {
   type StackType,
   type ServiceStatus,
@@ -12,3 +13,35 @@ export {
   type RuntimeError,
   DEFAULT_CONTAINER_PORTS,
 } from './types.js';
+export {
+  type RuntimeProfile,
+  type RuntimeProcess,
+  type ProcessStatus,
+  type PackageManager,
+  type NetworkPolicy,
+  type EnvironmentType,
+  type RuntimeFailureKind,
+  type DatabaseService,
+  type PreviewProbe,
+  type ProbeResult,
+  type SmokeTestEvidence,
+  type UIPreviewEvidence,
+  type AccessibilityScanStatus,
+  type MigrationTestResult,
+  type RuntimeFailure,
+  type CredentialDecision,
+  type BoundedLogEntry,
+  type HealthCheckConfig,
+  type HealthCheckMode,
+  type ResourceLimits,
+  type EnvVarDefinition,
+  type RuntimeCommandExecutor,
+  type HealthChecker,
+  type UIPreviewAdapter,
+  type AccessibilityScanAdapter,
+  type MigrationTestAdapter,
+  ProductionCredentialDeniedError,
+  ProcessNotFoundError,
+  HealthCheckFailedError,
+  MigrationNotApprovedError,
+} from './runtime-profile-service.js';
