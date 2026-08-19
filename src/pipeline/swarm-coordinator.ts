@@ -626,6 +626,7 @@ export class SwarmCoordinator {
         // Generate response — use agent-specific LLM, fall back to default, then simulation
         let response: string;
         let agentReasoning: string | undefined;
+        let streamMsgId: string | undefined;
         // Check abort before expensive LLM call
         if (this._aborted) {
           return { id: agentTask.id, response: '' };
@@ -694,7 +695,7 @@ export class SwarmCoordinator {
 
             // Use true streaming — forward tokens as they arrive from the LLM
             const crypto = require('node:crypto');
-            const streamMsgId = crypto.randomUUID();
+            streamMsgId = crypto.randomUUID();
             let streamedContent = '';
 
             // Signal stream start
@@ -816,6 +817,7 @@ ${troubleshootingSteps.join('\n')}
           phase,
           content: response,
           reasoning: agentReasoning,
+          msgId: streamMsgId,
         });
 
         return { id: agentTask.id, response };

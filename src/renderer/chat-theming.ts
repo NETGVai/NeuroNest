@@ -13,14 +13,14 @@
   var style = document.createElement('style');
   style.id = 'neuronest-chat-theming';
   style.textContent = `
-    /* ── 24.3: Chat area background — subtle grid pattern at 2% opacity ── */
+    /* Plain, theme-token background across every chat/main surface. */
+    #main-content,
+    #chat-view,
     #chat-area {
-      background-color: var(--bg-primary);
-      background-image:
-        linear-gradient(var(--nn-color-on-accent-muted) 1px, transparent 1px),
-        linear-gradient(90deg, var(--nn-color-on-accent-muted) 1px, transparent 1px);
-      background-size: 24px 24px;
-      background-blend-mode: overlay;
+      background-color: var(--bg-primary) !important;
+      background-image: none !important;
+      background-size: auto !important;
+      background-blend-mode: normal !important;
     }
 
     /* ── 24.1: User messages — accent background, on-accent text, rounded, drop shadow ── */
@@ -46,6 +46,58 @@
     }
     .message.assistant .message-body {
       color: var(--nn-color-content-fg) !important;
+    }
+
+    /* Code blocks sit one surface level above their parent response card.
+       This creates a restrained contrast step in every theme without using
+       hard-coded dark/light colors. */
+    .message.assistant .message-body .code-block-wrapper {
+      background-color: var(--surface-container-highest, var(--bg-input)) !important;
+      border-color: var(--outline, var(--nn-color-code-border)) !important;
+      box-shadow: inset 0 1px 0 var(--surface-hover), var(--shadow-sm, none);
+    }
+    .message.assistant .message-body .code-block-header {
+      background-color: var(--surface-container, var(--nn-color-code-header-bg)) !important;
+      border-bottom-color: var(--outline-variant, var(--nn-color-code-border)) !important;
+    }
+    .message.assistant .message-body .code-block-wrapper pre.code-block-pre {
+      background-color: transparent !important;
+    }
+
+    /* Light-surface themes require an explicitly dark command foreground.
+       Semantic foreground tokens can be accent-derived in these themes, so
+       use each theme's primary text token for skill/status command cards. */
+    body.theme-light .message.command-result .message-body,
+    body.theme-sepia .message.command-result .message-body,
+    body.theme-zen .message.command-result .message-body,
+    .theme-light .message.command-result .message-body,
+    .theme-sepia .message.command-result .message-body,
+    .theme-zen .message.command-result .message-body {
+      color: var(--text-primary) !important;
+    }
+    body.theme-light .message.command-result .message-body strong,
+    body.theme-light .message.command-result .message-body b,
+    body.theme-sepia .message.command-result .message-body strong,
+    body.theme-sepia .message.command-result .message-body b,
+    body.theme-zen .message.command-result .message-body strong,
+    body.theme-zen .message.command-result .message-body b,
+    .theme-light .message.command-result .message-body strong,
+    .theme-light .message.command-result .message-body b,
+    .theme-sepia .message.command-result .message-body strong,
+    .theme-sepia .message.command-result .message-body b,
+    .theme-zen .message.command-result .message-body strong,
+    .theme-zen .message.command-result .message-body b {
+      color: var(--text-primary) !important;
+      -webkit-text-fill-color: var(--text-primary) !important;
+    }
+    body.theme-light .message.command-result .role-label,
+    body.theme-sepia .message.command-result .role-label,
+    body.theme-zen .message.command-result .role-label,
+    .theme-light .message.command-result .role-label,
+    .theme-sepia .message.command-result .role-label,
+    .theme-zen .message.command-result .role-label {
+      color: var(--accent) !important;
+      font-weight: 650;
     }
 
     /* ── 24.4: Message transitions — fade-in on new messages ── */

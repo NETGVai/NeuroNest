@@ -3789,6 +3789,15 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
     const trimmed = (message || '').trim();
     if (!trimmed) return;
 
+    // Explicit lifecycle events keep the visible legacy working card active
+    // throughout orchestration and post-generation validation. They carry no
+    // transcript text and are therefore not persisted as chat messages.
+    emitShippedChat(mainWindow, 'chat-response', {
+      role: 'meta',
+      type: 'execution-lifecycle',
+      lifecycle: 'working',
+    });
+
     const legacyMessageId = (typeof arg === 'object' && arg !== null && typeof arg.messageId === 'string' && arg.messageId)
       || require('node:crypto').randomUUID();
     activeLegacyTurnContext = {
@@ -5841,8 +5850,18 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
             }
           }
 
-          // ── Agent response already streamed via agent_token events ──
-          // Just store for DB and memory, don't send to renderer again
+          // The canonical projection consumes the token stream, but the visible legacy
+          // chat surface also needs a complete, authoritative payload. Emit the final
+          // response as an upsert fallback, then persist it exactly once. The renderer
+          // correlates this with the agent's live stream so no duplicate bubble appears.
+          emitShippedChat(mainWindow, 'chat-response', {
+            role: 'assistant',
+            content: agentContent,
+            agent: event.agentName || 'Agent',
+            reasoning: event.reasoning,
+            msgId: event.msgId,
+            isAgentFinal: true,
+          });
           storeMessage('assistant', agentContent, event.agentName || 'Agent');
 
           if (event.content && event.agentName) {
@@ -6036,7 +6055,17 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
             });
           }
 
-          // ── Agent response already streamed via agent_token events ──
+          // Emit a complete response for the active legacy chat surface and use it as
+          // an authoritative upsert for the token stream. Persistence remains separate
+          // so the history row is written exactly once.
+          emitShippedChat(mainWindow, 'chat-response', {
+            role: 'assistant',
+            content: agentContent,
+            agent: event.agentName || 'Agent',
+            reasoning: event.reasoning,
+            msgId: event.msgId,
+            isAgentFinal: true,
+          });
           storeMessage('assistant', agentContent, event.agentName || 'Agent');
 
           // Store agent output in shared memory for other agents to reference
@@ -6596,6 +6625,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
         role: 'assistant',
         content: '📊 **Swarm Complete** — ' + agentCount + ' agents, ' + swarmResult.totalPhases + ' phases, ' + totalFiles + ' files extracted\n\nAgents: ' + agentList,
         agent: 'NeuroNest',
+        deferCompletion: true,
       });
     } catch (summaryErr: any) {
       console.error('[IPC] Final summary error:', summaryErr);
@@ -6603,6 +6633,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
         role: 'assistant',
         content: '📊 **Swarm Complete** — Processing finished',
         agent: 'NeuroNest',
+        deferCompletion: true,
       });
     }
 
@@ -7081,6 +7112,14 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
           agent: 'NeuroNest',
         });
       } catch {}
+    } finally {
+      // Runs for success, errors, and every early-return route (including
+      // rejected dashboard dispatches), so the working card cannot get stuck.
+      emitShippedChat(mainWindow, 'chat-response', {
+        role: 'meta',
+        type: 'execution-lifecycle',
+        lifecycle: 'complete',
+      });
     }
   });
 

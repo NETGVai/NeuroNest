@@ -99,43 +99,42 @@
       --sidebar-width: 260px;
       --inspector-width: 300px;
       --bottom-panel-height: 200px;
-      /* Dark theme — Eclipse Theia / VS Code inspired */
-      --bg-primary: #1e1e1e;
-      --bg-sidebar: #252526;
-      --bg-inspector: #252526;
-      --bg-chat: #1e1e1e;
-      --bg-input: #3c3c3c;
-      --bg-message-user: #264f78;
-      --bg-message-agent: #1e1e1e;
-      /* Surface tones — Theia layered hierarchy */
-      --surface-container: #252526;
-      --surface-container-high: #2d2d2d;
-      --surface-container-highest: #333333;
-      --on-surface: #cccccc;
-      --on-surface-variant: #969696;
-      --outline: #3c3c3c;
-      --outline-variant: #2d2d2d;
-      --text-primary: #cccccc;
-      --text-secondary: #969696;
-      --text-dim: #5a5a5a;
-      --border-color: #2d2d2d;
-      --accent: #007AFF; /* iOS blue for consistency */
-      --accent-hover: #3399FF;
-      --accent-container: rgba(108,140,255,0.12);
-      --green: #4ade80;
-      --green-container: rgba(74,222,128,0.12);
-      --red: #f87171;
-      --red-container: rgba(248,113,113,0.12);
-      --yellow: #fbbf24;
-      --yellow-container: rgba(251,191,36,0.12);
+      /* Dark theme — SMUI Nord-inspired (Polar Night) */
+      --bg-primary: #1a1e24;
+      --bg-sidebar: #21262e;
+      --bg-inspector: #21262e;
+      --bg-chat: #1a1e24;
+      --bg-input: #282e37;
+      --bg-message-user: #2f3640;
+      --bg-message-agent: #21262e;
+      /* Surface hierarchy (SMUI 4-level depth) */
+      --surface-container: #21262e;
+      --surface-container-high: #282e37;
+      --surface-container-highest: #2f3640;
+      --on-surface: #d8dee9;
+      --on-surface-variant: #8e99a8;
+      --outline: #3b4252;
+      --outline-variant: #2f3640;
+      --text-primary: #d8dee9;
+      --text-secondary: #8e99a8;
+      --text-dim: #5c6678;
+      --border-color: #3b4252;
+      --accent: #88c0d0;
+      --accent-hover: #8fbcbb;
+      --accent-container: rgba(136,192,208,0.10);
+      --green: #a3be8c;
+      --green-container: rgba(163,190,140,0.10);
+      --red: #d4737c;
+      --red-container: rgba(212,115,124,0.10);
+      --yellow: #ebcb8b;
+      --yellow-container: rgba(235,203,139,0.10);
       --titlebar-height: 38px;
-      /* Panel border — subtle separator between major panels */
-      --panel-border: 1px solid rgba(255,255,255,0.12);
-      /* Shape system — varied radii */
-      --radius-xs: 4px;
-      --radius-sm: 8px;
-      --radius: 12px;
-      --radius-lg: 16px;
+      --panel-border: 1px solid #3b4252;
+      /* Shape — SMUI zero radius (sharp corners) */
+      --radius-xs: 0px;
+      --radius-sm: 0px;
+      --radius: 0px;
+      --radius-lg: 0px;
       --radius-xl: 24px;
       --radius-full: 9999px;
       /* Elevation */
@@ -167,7 +166,7 @@
     html, body {
       height: 100%;
       font-size: 13px;
-      font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Inter', 'Helvetica Neue', sans-serif;
+      font-family: 'JetBrains Mono', 'SF Mono', 'Cascadia Code', 'Fira Code', 'Menlo', 'Consolas', monospace;
       color: var(--text-primary);
       background: var(--bg-primary);
       overflow: hidden;
@@ -891,18 +890,20 @@
       box-sizing: border-box;
     }
     
-    /* User messages — full width with right alignment */
+    /* User messages — SMUI accent card */
     .message.user {
-      align-items: stretch; /* Full width */
+      align-items: stretch;
     }
     .message.user .message-inner {
-      background: var(--accent);
-      color: #ffffff;
-      border-radius: 0; /* Full width appearance */
-      border: none; /* Remove border for cleaner look */
-      flex-direction: row-reverse; /* Avatar on right */
-      width: 100%; /* Full width */
-      justify-content: flex-start; /* Content alignment */
+      background: var(--surface-container-highest, #2f3640);
+      color: var(--text-primary);
+      border-radius: 0;
+      border: 1px solid var(--accent, #88c0d0);
+      border-left: 3px solid var(--accent, #88c0d0);
+      flex-direction: row-reverse;
+      width: 100%;
+      justify-content: flex-start;
+      padding: 12px 18px;
     }
     .message.user .message-content {
       text-align: right;
@@ -914,28 +915,35 @@
       color: #ffffff;
     }
     
-    /* Agent messages — full width with left alignment */
+    /* Agent messages — SMUI/beautifului.dev response card */
     .message.assistant {
-      align-items: stretch; /* Full width */
+      align-items: stretch;
     }
     .message.assistant .message-inner {
-      background: var(--surface-container, rgba(255,255,255,0.08));
-      border: 1px solid var(--border-color);
-      border-radius: 0; /* Full width appearance */
-      width: 100%; /* Full width */
-      justify-content: flex-start; /* Content alignment */
+      background: var(--surface-container, #21262e);
+      border: 1px solid var(--border-color, #3b4252);
+      border-radius: 0;
+      width: 100%;
+      justify-content: flex-start;
+      padding: 14px 18px;
+      transition: border-color 0.15s ease;
+    }
+    .message.assistant .message-inner:hover {
+      border-color: var(--accent, #88c0d0);
     }
     
-    /* System/command messages — full width */
+    /* System/command messages — SMUI subtle card */
     .message.command-result {
-      align-items: stretch; /* Full width */
+      align-items: stretch;
     }
     .message.command-result .message-inner {
-      background: var(--surface-hover, rgba(128,128,128,0.04));
-      border: 1px solid var(--border-color);
-      border-radius: 0; /* Full width appearance */
-      width: 100%; /* Full width */
-      justify-content: flex-start; /* Content alignment */
+      background: var(--surface-container, #21262e);
+      border: 1px solid var(--border-color, #3b4252);
+      border-left: 3px solid var(--yellow, #ebcb8b);
+      border-radius: 0;
+      width: 100%;
+      justify-content: flex-start;
+      padding: 10px 16px;
     }
     
     .message-avatar {
@@ -952,13 +960,39 @@
     }
     .message-content { 
       flex: 1; 
-      min-width: 0; 
+      min-width: 0;
+      max-width: calc(100% - 40px);
+      overflow: hidden;
+    }
+    /* Code blocks use full content width */
+    .message-body .code-block-wrapper,
+    .message-body > pre {
+      max-width: 100%;
+      overflow-x: auto;
+    }
+    /* beautifului.dev code streaming animation */
+    .code-block-wrapper {
+      animation: nn-code-appear 0.3s ease-out;
+    }
+    @keyframes nn-code-appear {
+      from { opacity: 0; transform: translateY(4px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    /* Message appear animation */
+    .message {
+      animation: nn-msg-appear 0.2s ease-out;
+    }
+    @keyframes nn-msg-appear {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: translateY(0); }
     }
     .message .role-label {
-      font-size: 12px;
-      font-weight: 600;
-      margin-bottom: 3px;
-      color: var(--text-primary);
+      font-size: 11px;
+      font-weight: 500;
+      margin-bottom: 4px;
+      color: var(--text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
     }
     .message.user .role-label {
       color: rgba(255,255,255,0.9);
@@ -968,7 +1002,7 @@
       text-align: right;
     }
     .message.command-result .role-label { color: var(--accent); }
-    .message .message-body { color: var(--text-secondary); }
+    .message .message-body { color: var(--text-primary); }
     .message.user .message-body { 
       color: #ffffff; 
       text-align: right;
@@ -1211,39 +1245,89 @@
     .badge.green { background: rgba(166,227,161,0.15); color: var(--green); }
     .badge.yellow { background: rgba(249,226,175,0.15); color: var(--yellow); }
 
-    /* ── Light — Minimal Neutral ── */
+    /* ── Light — SMUI Snow Storm ── */
     .theme-light {
-      --bg-primary: #fafafa;
-      --bg-sidebar: #f4f4f5;
-      --bg-inspector: #f4f4f5;
-      --bg-chat: #fafafa;
-      --bg-input: #ffffff;
-      --bg-message-user: #f0f0f1;
-      --surface-container: #f4f4f5;
-      --surface-container-high: #ebebec;
-      --surface-container-highest: #e4e4e5;
-      --on-surface: #18181b;
-      --on-surface-variant: #52525b;
-      --outline: #d4d4d8;
-      --outline-variant: #e4e4e7;
-      --text-primary: #18181b;
-      --text-secondary: #52525b;
-      --text-dim: #a1a1aa;
-      --border-color: #e4e4e7;
-      --accent: #18181b;
-      --accent-hover: #3f3f46;
-      --accent-container: rgba(24,24,27,0.06);
-      --green: #16a34a;
-      --green-container: rgba(22,163,74,0.1);
-      --red: #dc2626;
-      --red-container: rgba(220,38,38,0.1);
-      --yellow: #ca8a04;
-      --yellow-container: rgba(202,138,4,0.1);
-      --surface-hover: rgba(0,0,0,0.03);
-      --surface-active: rgba(0,0,0,0.06);
-      --shadow-sm: 0 1px 2px rgba(0,0,0,0.04);
-      --shadow-md: 0 2px 8px rgba(0,0,0,0.06);
-      --shadow-lg: 0 8px 32px rgba(0,0,0,0.08);
+      --bg-primary: #eceff4;
+      --bg-sidebar: #e5e9f0;
+      --bg-inspector: #e5e9f0;
+      --bg-chat: #eceff4;
+      --bg-input: #d8dee9;
+      --bg-message-user: #c8ced9;
+      --surface-container: #e5e9f0;
+      --surface-container-high: #d8dee9;
+      --surface-container-highest: #c8ced9;
+      --on-surface: #2e3440;
+      --on-surface-variant: #48505c;
+      --outline: #c9cfda;
+      --outline-variant: #d8dee9;
+      --text-primary: #2e3440;
+      --text-secondary: #48505c;
+      --text-dim: #7b8394;
+      --border-color: #c9cfda;
+      --accent: #4c6d94;
+      --accent-hover: #5e81ac;
+      --accent-container: rgba(76,109,148,0.08);
+      --green: #4d7c0f;
+      --green-container: rgba(77,124,15,0.08);
+      --red: #a3303d;
+      --red-container: rgba(163,48,61,0.08);
+      --yellow: #92700c;
+      --yellow-container: rgba(146,112,12,0.08);
+      --surface-hover: rgba(0,0,0,0.04);
+      --surface-active: rgba(0,0,0,0.07);
+      --shadow-sm: 0 1px 2px rgba(46,52,64,0.06);
+      --shadow-md: 0 2px 8px rgba(46,52,64,0.08);
+      --shadow-lg: 0 8px 32px rgba(46,52,64,0.10);
+    }
+
+    /* Light theme message card overrides — SMUI Snow Storm */
+    .theme-light .message.assistant .message-inner,
+    .theme-sepia .message.assistant .message-inner,
+    .theme-zen .message.assistant .message-inner {
+      background: var(--surface-container, #e5e9f0);
+      border-color: var(--border-color, #c9cfda);
+    }
+    .theme-light .message.assistant .message-inner:hover,
+    .theme-sepia .message.assistant .message-inner:hover,
+    .theme-zen .message.assistant .message-inner:hover {
+      border-color: var(--accent, #4c6d94);
+    }
+    .theme-light .message .message-body,
+    .theme-sepia .message .message-body,
+    .theme-zen .message .message-body {
+      color: var(--text-primary);
+    }
+    .theme-light .message .role-label,
+    .theme-sepia .message .role-label,
+    .theme-zen .message .role-label {
+      color: var(--text-secondary);
+    }
+    .theme-light .message.user .message-inner,
+    .theme-sepia .message.user .message-inner,
+    .theme-zen .message.user .message-inner {
+      background: var(--surface-container-highest, #c8ced9);
+      border-color: var(--accent, #4c6d94);
+      color: var(--text-primary);
+    }
+    .theme-light .message.user .message-body,
+    .theme-sepia .message.user .message-body,
+    .theme-zen .message.user .message-body {
+      color: var(--text-primary);
+    }
+    .theme-light .message-body pre,
+    .theme-light .message-body .code-block-wrapper,
+    .theme-sepia .message-body pre,
+    .theme-sepia .message-body .code-block-wrapper,
+    .theme-zen .message-body pre,
+    .theme-zen .message-body .code-block-wrapper {
+      background: var(--surface-container-highest, #c8ced9);
+      border-color: var(--border-color);
+    }
+    .theme-light .message-body code,
+    .theme-sepia .message-body code,
+    .theme-zen .message-body code {
+      background: var(--surface-container-high, #d8dee9);
+      color: var(--text-primary);
     }
 
     /* ── Midnight — immersive deep dark ── */
@@ -1392,10 +1476,17 @@
 
     .message.command-result { border-color: var(--accent); background: rgba(137,180,250,0.05); }
     .message.command-result .role-label { color: var(--accent); }
-    .message-body { line-height: 1.6; }
-    .message-body pre { background: rgba(0,0,0,0.3); padding: 10px 14px; border-radius: 6px; margin: 8px 0; overflow-x: auto; }
-    .message-body code { font-family: 'SF Mono', 'Menlo', monospace; font-size: 13px; }
-    .message-body pre code { background: none; padding: 0; }
+    .message-body { line-height: 1.7; }
+    .message-body pre,
+    .message-body .code-block-wrapper { background: var(--surface-container-high, #282e37); padding: 0; border-radius: 0; margin: 10px 0; overflow-x: auto; border: 1px solid var(--border-color, #3b4252); width: 100%; box-sizing: border-box; }
+    .message-body .code-block-wrapper pre,
+    .message-body .code-block-pre { background: transparent; border: none; margin: 0; padding: 14px 16px; width: 100%; box-sizing: border-box; border-radius: 0; overflow-x: auto; }
+    .message-body code { font-family: 'JetBrains Mono', 'SF Mono', 'Cascadia Code', monospace; font-size: 13px; background: var(--surface-container-highest, #2f3640); padding: 2px 6px; border-radius: 0; }
+    .message-body pre code { background: none; padding: 0; display: block; color: var(--text-primary); }
+    .code-block-header { display: flex; align-items: center; justify-content: space-between; padding: 6px 14px; background: var(--surface-container-highest, #2f3640); border-bottom: 1px solid var(--border-color, #3b4252); }
+    .code-lang-badge { font-size: 11px; font-weight: 500; text-transform: uppercase; letter-spacing: 1.5px; color: var(--accent, #88c0d0); }
+    .code-copy-btn { background: transparent; border: none; color: var(--text-dim); cursor: pointer; font-size: 14px; padding: 2px 6px; transition: color 0.12s; }
+    .code-copy-btn:hover { color: var(--text-primary); }
     .message-body .bullet { padding: 2px 0; }
 
     .autocomplete-popup { position: absolute; bottom: 100%; left: 0; right: 0; background: var(--bg-sidebar); border: 1px solid var(--border-color); border-radius: 8px; margin-bottom: 4px; overflow: hidden; box-shadow: 0 -4px 16px rgba(0,0,0,0.3); z-index: 100; }

@@ -123,6 +123,10 @@
    ══════════════════════════════════════════════════════════════ */
 
 body.theme-light {
+  /* Override any dark semantic values applied on the document root. */
+  --nn-color-content-fg: #2e3440;
+  --nn-color-content-fg-muted: #48505c;
+  --nn-color-content-fg-dim: #626b78;
   --nn-color-syntax-keyword: #af00db;
   --nn-color-syntax-string: #a31515;
   --nn-color-syntax-number: #098658;
@@ -149,6 +153,10 @@ body.theme-midnight {
 }
 
 body.theme-sepia {
+  /* Warm light surface: all general response foregrounds remain dark. */
+  --nn-color-content-fg: #3d3020;
+  --nn-color-content-fg-muted: #6b5d48;
+  --nn-color-content-fg-dim: #806f57;
   --nn-color-syntax-keyword: #8b4513;
   --nn-color-syntax-string: #6b4226;
   --nn-color-syntax-number: #2e7d32;
@@ -188,6 +196,10 @@ body.theme-terminal {
 }
 
 body.theme-zen {
+  /* Soft light surface: force readable dark content foregrounds. */
+  --nn-color-content-fg: #3d3929;
+  --nn-color-content-fg-muted: #6b6456;
+  --nn-color-content-fg-dim: #7c7465;
   --nn-color-syntax-keyword: #8b6914;
   --nn-color-syntax-string: #6b7c3e;
   --nn-color-syntax-number: #2e7d32;

@@ -145,6 +145,11 @@ var activeStreamSession = null;
 var _streamListener = null;
 var _doneListener = null;
 var _errorListener = null;
+// Multiple swarm workers stream in parallel. Track each bubble independently
+// instead of letting the most recent worker overwrite one global session.
+var _nnLiveStreams = Object.create(null);
+var _nnStreamsByAgent = Object.create(null);
+var _nnExplicitExecutionLifecycleActive = false;
 
 // ── Enhanced Firewall UI Types and Interfaces ──
 // These are TypeScript interfaces for development - they get stripped out in the build process
@@ -702,7 +707,8 @@ function _nnStartStream(messageEl) {
     buffer: '',
     userScrolledUp: false,
     lastRenderTime: 0,
-    renderTimer: null
+    renderTimer: null,
+    isStreaming: true
   };
   return _nnStreamSession;
 }
@@ -732,7 +738,9 @@ function _nnFinalizeStream(session) {
     clearTimeout(session.renderTimer);
     session.renderTimer = null;
   }
+  session.isStreaming = false;
   _nnRenderSession(session);
+  removeTypingCursor(session.messageEl);
 
   // ── Inline Action Buttons: detect confirmation prompts and render clickable buttons ──
   if (session.buffer) {
@@ -981,17 +989,17 @@ function _nnCreateActionButton(label, variant) {
   btn.type = 'button';
   btn.setAttribute('aria-label', label);
 
-  // Theme-aware styles using CSS variables with polished defaults
-  var baseStyle = 'border-radius:6px;padding:7px 16px;font-size:13px;font-weight:500;' +
+  // Theme-aware styles using CSS variables — beautifului.dev approval card style
+  var baseStyle = 'border-radius:8px;padding:9px 18px;font-size:12px;font-weight:600;' +
     'font-family:inherit;cursor:pointer;display:inline-flex;align-items:center;gap:6px;' +
-    'line-height:1.4;transition:all 0.2s ease;outline:none;position:relative;' +
-    'box-shadow:0 1px 3px rgba(0,0,0,0.15);';
+    'line-height:1.4;transition:all 0.15s ease;outline:none;position:relative;' +
+    'letter-spacing:0.01em;';
 
   var variantStyles = {
-    primary: 'background:var(--accent, #0078d4);color:#fff;border:none;',
-    secondary: 'background:var(--bg-input, #2d2d2d);color:var(--text-primary, #e0e0e0);border:1px solid var(--border-color, #555);',
-    danger: 'background:var(--red, #d32f2f);color:#fff;border:none;',
-    ghost: 'background:transparent;color:var(--text-secondary, #aaa);border:1px solid var(--border-color, #444);box-shadow:none;'
+    primary: 'background:var(--accent, #0078d4);color:#fff;border:none;box-shadow:0 1px 3px rgba(0,0,0,0.12);',
+    secondary: 'background:var(--surface-container-high, #2d2d2d);color:var(--text-primary, #e0e0e0);border:1px solid var(--outline-variant, var(--border-color, #555));box-shadow:none;',
+    danger: 'background:var(--red, #dc2626);color:#fff;border:none;box-shadow:0 1px 3px rgba(220,38,38,0.3);',
+    ghost: 'background:transparent;color:var(--text-secondary, #aaa);border:1px solid var(--outline-variant, var(--border-color, #444));box-shadow:none;'
   };
 
   btn.style.cssText = baseStyle + (variantStyles[variant] || variantStyles.secondary);
@@ -1056,6 +1064,7 @@ function _nnRenderSession(session) {
   if (!body) return;
 
   body.innerHTML = formatMsg(session.buffer);
+  if (session.isStreaming) addTypingCursor(session.messageEl);
   session.lastRenderTime = Date.now();
 
   // Auto-scroll: find the scrollable container
@@ -1128,8 +1137,10 @@ function showErrorIndicator(el, errorMessage) {
 
 var _thinkingIndicatorActive = false;
 
-function showThinkingIndicator() {
-  // Remove existing indicator DOM element (but don't reset the flag)
+function showThinkingIndicator(statusText) {
+  // Keep exactly one animated working card at the bottom of the transcript.
+  // Re-appending it after each response makes the in-progress state visible
+  // between worker messages until the explicit execution completion event.
   var existing = $('#thinking-indicator');
   if (existing) existing.remove();
   _thinkingIndicatorActive = true;
@@ -1138,7 +1149,10 @@ function showThinkingIndicator() {
   var el = document.createElement('div');
   el.id = 'thinking-indicator';
   el.className = 'thinking-indicator';
-  el.innerHTML = '\ud83e\udde0 Working Hard To Serve You Better....';
+  el.setAttribute('role', 'status');
+  el.setAttribute('aria-live', 'polite');
+  el.innerHTML = '<div class="thinking-orb" aria-hidden="true"><span></span><span></span><span></span></div>' +
+    '<div class="thinking-copy"><strong>Agents are working</strong><span>' + escHtml(statusText || 'Building, validating, and preparing the next response…') + '</span></div>';
   area.appendChild(el);
   area.scrollTop = area.scrollHeight;
 }
@@ -1149,35 +1163,109 @@ function removeThinkingIndicator() {
   if (el) el.remove();
 }
 
-// ── Stream Listeners (retired by task 13.3, enhanced-chat-ui) ──
+// ── Live Stream Listeners for the visible legacy chat surface ──
 //
-// The legacy `chat:stream`, `chat:done`, and `chat:error` IPC channels are
-// still emitted by producers that have not yet migrated, but no renderer
-// code may subscribe to them. The main-process compatibility ingress
-// (`src/main/chat/legacy-canonical-ingestion.ts`, invoked from
-// `src/main/chat/*-legacy-bridge.ts`) parses those payloads into canonical
-// SessionLog events; the renderer only ever sees canonical projection
-// deltas (see `panels/chat/projection-chat-integration.ts`).
-//
-// `setupStreamListeners`/`cleanupStreamListeners` remain as inert stubs
-// with the same signatures so the god-file's call sites do not need
-// invasive edits during migration. They perform no work and register no
-// listeners. Requirements: 5.7, 9.1, 9.6, 10.1–10.7, 15.3–15.5.
+// The canonical ingestion bridge still receives these events in main. The
+// legacy #chat-area must subscribe as well because this window does not mount
+// #nn-root. Sessions are keyed by msgId so parallel workers cannot overwrite
+// one another.
 
 function cleanupStreamListeners() {
-  // No-op: task 13.3 retired the legacy chat stream subscriptions. The
-  // renderer's sole rendering input is the canonical projection surface.
+  if (typeof _streamListener === 'function') { try { _streamListener(); } catch (e) {} }
+  if (typeof _doneListener === 'function') { try { _doneListener(); } catch (e) {} }
+  if (typeof _errorListener === 'function') { try { _errorListener(); } catch (e) {} }
   _streamListener = null;
   _doneListener = null;
   _errorListener = null;
 }
 
+function _nnCreateLiveStream(data) {
+  if (!data || !data.msgId) return null;
+  if (_nnLiveStreams[data.msgId]) return _nnLiveStreams[data.msgId];
+
+  var meta = {
+    label: data.agent || 'Agent',
+    provider: data.provider || undefined,
+    model: data.model || undefined
+  };
+  var storeEntry = {
+    role: 'assistant',
+    text: '',
+    meta: meta,
+    timestamp: Date.now(),
+    streamId: data.msgId,
+    isStreaming: true
+  };
+  chatMessageStore.push(storeEntry);
+  msgCount++;
+  var stat = $$('#stat-messages');
+  if (stat) stat.textContent = String(msgCount);
+
+  var messageEl = appendMsgEl('assistant', '', meta);
+  if (!messageEl) {
+    // The user may be viewing another panel. Keep collecting into the store;
+    // the final response will be rendered when chat is opened again.
+    messageEl = document.createElement('div');
+    messageEl.innerHTML = '<div class="message-body"></div>';
+  } else {
+    messageEl.setAttribute('data-stream-id', data.msgId);
+  }
+
+  var session = _nnStartStream(messageEl);
+  session.msgId = data.msgId;
+  session.agent = data.agent || 'Agent';
+  session.storeEntry = storeEntry;
+  session.done = false;
+  _nnLiveStreams[data.msgId] = session;
+  _nnStreamsByAgent[session.agent] = session;
+  activeStreamId = data.msgId;
+  activeStreamSession = session;
+  addTypingCursor(messageEl);
+  if (isProcessing) showThinkingIndicator(session.agent + ' is generating a response…');
+  return session;
+}
+
 function setupStreamListeners() {
-  // No-op: task 13.3 retired the legacy chat stream subscriptions. Callers
-  // may still invoke this function to signal "chat view is active"; the
-  // canonical projection integration is wired independently in
-  // `panels/chat/index.ts` via `createProjectionChatIntegration`.
   cleanupStreamListeners();
+  var api = eapi();
+  if (!api || typeof api.on !== 'function') return;
+
+  _streamListener = api.on('chat:stream', function(data) {
+    if (!data || !data.msgId) return;
+    var session = _nnLiveStreams[data.msgId];
+    if (data.start || !session) session = _nnCreateLiveStream(data);
+    if (!session) return;
+    if (data.token) {
+      _nnAppendChunk(session, data.token);
+      session.storeEntry.text = session.buffer;
+    }
+  });
+
+  _doneListener = api.on('chat:done', function(data) {
+    if (!data || !data.msgId) return;
+    var session = _nnLiveStreams[data.msgId];
+    if (!session) return;
+    if (data.reasoning) session.storeEntry.meta.reasoning = data.reasoning;
+    session.storeEntry.text = session.buffer;
+    session.storeEntry.isStreaming = false;
+    session.done = true;
+    _nnFinalizeStream(session);
+    if (isProcessing) showThinkingIndicator('Response received. Other agents may still be working…');
+  });
+
+  _errorListener = api.on('chat:error', function(data) {
+    if (!data || !data.msgId) return;
+    var session = _nnLiveStreams[data.msgId];
+    if (!session) return;
+    if (data.partial && !session.buffer) session.buffer = data.partial;
+    session.storeEntry.text = session.buffer;
+    session.storeEntry.isStreaming = false;
+    session.storeEntry.error = true;
+    session.done = true;
+    _nnFinalizeStream(session);
+    showErrorIndicator(session.messageEl, data.error || 'Unknown error');
+    if (isProcessing) showThinkingIndicator('Recovering from an interrupted agent response…');
+  });
 }
 
 // ── Plan gating helpers ──
@@ -1458,7 +1546,13 @@ function switchToChatView() {
       }
       for (var i = startIdx; i < messagesToRender.length; i++) {
         var m = messagesToRender[i];
-        appendMsgEl(m.role, m.content || m.text || '', m.meta);
+        var renderedMessage = appendMsgEl(m.role, m.content || m.text || '', m.meta);
+        if (renderedMessage && m.streamId && _nnLiveStreams[m.streamId]) {
+          var liveSession = _nnLiveStreams[m.streamId];
+          liveSession.messageEl = renderedMessage;
+          renderedMessage.setAttribute('data-stream-id', m.streamId);
+          if (m.isStreaming) addTypingCursor(renderedMessage);
+        }
       }
     }
   }
@@ -1470,14 +1564,8 @@ function switchToChatView() {
   }
 
   // Restore thinking indicator if it was active before navigating away
-  if (_thinkingIndicatorActive) {
-    if (!document.getElementById('thinking-indicator')) {
-      var thinkEl = document.createElement('div');
-      thinkEl.id = 'thinking-indicator';
-      thinkEl.className = 'thinking-indicator';
-      thinkEl.innerHTML = '\ud83e\udde0 Working Hard To Serve You Better....';
-      area.appendChild(thinkEl);
-    }
+  if (_thinkingIndicatorActive && !document.getElementById('thinking-indicator')) {
+    showThinkingIndicator();
   }
   area.scrollTop = area.scrollHeight;
   highlightNav('Chat');
@@ -2648,6 +2736,8 @@ function terminateAllAgents() {
 var brainTimeout = null;
 function setBrainActive(active) {
   isProcessing = active;
+  if (active) showThinkingIndicator();
+  else removeThinkingIndicator();
   if (brainTimeout) { clearTimeout(brainTimeout); brainTimeout = null; }
   if (active) {
     brainTimeout = setTimeout(function() {
@@ -2772,6 +2862,21 @@ function setupIPC() {
       appEl.setAttribute('data-launch-mode', newMode);
     }
 
+    // If switching to classic, reset the main panel if showing an advanced-only view
+    if (newMode === 'classic') {
+      var advancedOnlyViews = ['agents', 'channels', 'skills', 'design', 'dashboard', 'settings'];
+      if (typeof activeView !== 'undefined' && advancedOnlyViews.indexOf(activeView) !== -1) {
+        switchToChatView();
+        // Clear active state on activity buttons without hiding the sidebar
+        var allBtns = document.querySelectorAll('.activity-btn');
+        for (var bi = 0; bi < allBtns.length; bi++) {
+          allBtns[bi].classList.remove('active');
+        }
+        activeView = 'chat';
+        try { localStorage.setItem('nn-active-view', ''); } catch (e) {}
+      }
+    }
+
     // If switching to advanced, initialize Inspector-gated features
     if (newMode === 'advanced') {
       loadProdAuthStatus();
@@ -2818,9 +2923,21 @@ function setupIPC() {
   });
 
   api.on('chat-response', function(data) {
-    removeThinkingIndicator();
     hideTyping();
     if (!data) return;
+
+    if (data.type === 'execution-lifecycle') {
+      if (data.lifecycle === 'working') {
+        _nnExplicitExecutionLifecycleActive = true;
+        setBrainActive(true);
+      }
+      if (data.lifecycle === 'complete') {
+        _nnExplicitExecutionLifecycleActive = false;
+        setBrainActive(false);
+      }
+      if (!data.text && !data.content) return;
+    }
+
     var text = data.text || data.content || '';
 
     // Live map: detect file paths in agent responses
@@ -2881,7 +2998,7 @@ function setupIPC() {
       meta.isChannelStreaming = true;
     }
     // Detect completion — turn off brain animation
-    if (data.agent === 'NeuroNest' || data.agent === 'NeuroNest Architect' || data.agent === 'Agent Loop' || (text && text.indexOf('Swarm Complete') !== -1) || (data.noProvider)) {
+    if (!_nnExplicitExecutionLifecycleActive && !data.deferCompletion && (data.agent === 'NeuroNest' || data.agent === 'NeuroNest Architect' || data.agent === 'Agent Loop' || (text && text.indexOf('Swarm Complete') !== -1) || (data.noProvider))) {
       setBrainActive(false);
       // Move all remaining active agents to completed (don't clear the list)
       syncAgentArrays();
@@ -2919,7 +3036,7 @@ function setupIPC() {
       }
     }
     // Also turn off on errors
-    if (text && (text.indexOf('Error:') === 0 || text.indexOf('No model provider') !== -1)) {
+    if (!_nnExplicitExecutionLifecycleActive && text && (text.indexOf('Error:') === 0 || text.indexOf('No model provider') !== -1)) {
       setBrainActive(false);
       syncAgentArrays();
       for (var ca2 = 0; ca2 < activeAgents.length; ca2++) {
@@ -2940,42 +3057,58 @@ function setupIPC() {
     if (data.agent === 'ZERA') addActiveAgent('ZERA Optimizer');
     if (data.agent === 'Orchestrator') { removeActiveAgent('ZERA Optimizer'); addActiveAgent('Orchestrator'); }
     if (data.agent === 'Swarm' && text && text.indexOf('Phase') !== -1) { removeActiveAgent('Orchestrator'); }
-    // ── Legacy ad hoc renderer retired (task 13.3, enhanced-chat-ui) ──
-    //
-    // The previous body of this branch created message-local stream
-    // sessions (`_nnStartStream`/`_nnAppendChunk`/`_nnFinalizeStream`),
-    // appended assistant bubbles directly with `addMsg`, and animated
-    // text-only responses via `_animateMessage`. All rendering is now
-    // performed by the canonical projection surface mounted in
-    // `panels/chat/index.ts` via `createProjectionChatIntegration`. The
-    // main-process compatibility ingress
-    // (`src/main/chat/legacy-canonical-ingestion.ts`) translates the
-    // legacy `chat-response` payload into canonical SessionLog events,
-    // and the projection publisher re-emits them as canonical projection
-    // deltas.
-    //
-    // The retained side effects below preserve god-file behaviour that
-    // has no canonical replacement yet: the persistent chat-message
-    // store used by other views, the message-count status readout, and
-    // the unread-message badge on the sidebar.
-    // Requirements: 5.7, 9.1, 9.6, 10.1–10.7, 15.3–15.5.
+
+    // Agent completion carries the authoritative full Markdown as a fallback.
+    // Correlate by the per-execution stream message ID so parallel workers,
+    // including repeated agent names, always update the correct bubble. This
+    // also closes incomplete fences before the final Markdown render.
+    var correlatedFinalSession = data.msgId
+      ? _nnLiveStreams[data.msgId]
+      : (data.agent ? _nnStreamsByAgent[data.agent] : null);
+    if (data.isAgentFinal && correlatedFinalSession) {
+      correlatedFinalSession.buffer = text;
+      correlatedFinalSession.storeEntry.text = text;
+      correlatedFinalSession.storeEntry.isStreaming = false;
+      if (data.reasoning) correlatedFinalSession.storeEntry.meta.reasoning = data.reasoning;
+      correlatedFinalSession.done = true;
+      _nnFinalizeStream(correlatedFinalSession);
+      if (correlatedFinalSession.agent) delete _nnStreamsByAgent[correlatedFinalSession.agent];
+      if (correlatedFinalSession.msgId) delete _nnLiveStreams[correlatedFinalSession.msgId];
+      if (isProcessing) showThinkingIndicator((data.agent || 'Agent') + ' finished. Waiting for the remaining work…');
+      return;
+    }
+
+    // The active window is the legacy #chat-area surface. Keep its in-memory
+    // transcript and DOM synchronized with complete compatibility responses;
+    // canonical ingestion continues in parallel in the main process.
     if (text) {
-      chatMessageStore.push({ role: data.role || 'assistant', text: text, meta: meta });
+      chatMessageStore.push({ role: data.role || 'assistant', text: text, meta: meta, timestamp: Date.now() });
       msgCount++;
       var elStat = $$('#stat-messages');
       if (elStat) elStat.textContent = String(msgCount);
-      // Show unread badge if user is on another view. The canonical
-      // projection surface handles the visible message rendering when
-      // the chat view is active; the badge is a global sidebar hint.
+
+      // Render the message in the legacy chat area (DOM only, store already updated above)
+      appendMsgEl('assistant', text, meta);
+
+      // Detect confirmation prompts and render clickable action buttons
+      var chatArea = $$('#chat-area');
+      if (chatArea) {
+        var lastMsg = chatArea.lastElementChild;
+        if (lastMsg && lastMsg.classList.contains('message')) {
+          _nnDetectAndRenderActionButtons(lastMsg, text);
+        }
+      }
+
+      // Show unread badge if user is on another view.
       if (!$$('#chat-area')) {
         chatUnreadCount++;
         updateChatUnreadBadge();
       }
-      // Show thinking indicator after "starting..." messages — this is a
-      // small non-rendering global affordance surfaced by the god-file
-      // outside the chat message stream.
-      if (text.indexOf('starting...') !== -1 && data.isCommand) {
-        showThinkingIndicator();
+      // Keep the animated working card below the latest response until the
+      // main process emits the explicit execution-lifecycle completion event.
+      if (isProcessing) {
+        var workingLabel = data.agent && data.agent !== 'System' ? data.agent + ' reported progress. Continuing…' : undefined;
+        showThinkingIndicator(workingLabel);
       }
     }
   });

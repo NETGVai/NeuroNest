@@ -1719,7 +1719,7 @@ export function createProjectionDrivenChatShell(
     }
 
     reconcileBlocks(rg, entry.composition);
-    reconcileResponseGroupChrome(rg, entry.composition, attempt);
+    reconcileResponseGroupChrome(rg, entry.composition, attempt, entry.assistantNode);
   }
 
   function reconcileBlocks(
@@ -1790,6 +1790,7 @@ export function createProjectionDrivenChatShell(
     rg: ResponseGroupBinding,
     composition: ResponseCompositionV1,
     attempt: number | undefined,
+    assistantNode?: MessageNodeV1 | null,
   ): void {
     // 1. Remove prior chrome — this leaves block elements intact because they
     //    are tracked separately in `rg.blockElements`.
@@ -1801,6 +1802,45 @@ export function createProjectionDrivenChatShell(
     // 2. Assemble the desired child sequence and reposition in one pass so
     //    both blocks and chrome land in the correct visual order.
     const desiredChildren: HTMLElement[] = [];
+
+    // 2a. Metadata header (agent, provider, model) — extracted from passthrough
+    //     fields on the assistant node when available.
+    if (assistantNode) {
+      const nodeAny = assistantNode as Record<string, unknown>;
+      const metaFields: string[] = [];
+      if (typeof nodeAny['agent'] === 'string' && nodeAny['agent']) {
+        metaFields.push(String(nodeAny['agent']));
+      }
+      if (typeof nodeAny['provider'] === 'string' && nodeAny['provider']) {
+        metaFields.push(String(nodeAny['provider']));
+      }
+      if (typeof nodeAny['model'] === 'string' && nodeAny['model']) {
+        metaFields.push(String(nodeAny['model']));
+      }
+      if (metaFields.length > 0) {
+        const metaEl = document.createElement('div');
+        metaEl.className = METADATA_CSS_CLASS;
+        metaEl.style.minWidth = '0';
+        metaEl.style.maxWidth = '100%';
+        metaEl.style.overflowWrap = 'anywhere';
+        for (let fi = 0; fi < metaFields.length; fi++) {
+          const fieldText = metaFields[fi] ?? '';
+          if (fi > 0) {
+            const sep = document.createElement('span');
+            sep.className = METADATA_SEPARATOR_CSS_CLASS;
+            sep.textContent = ' · ';
+            sep.setAttribute('aria-hidden', 'true');
+            metaEl.appendChild(sep);
+          }
+          const field = document.createElement('span');
+          field.className = `${METADATA_CSS_CLASS}__field`;
+          field.textContent = fieldText;
+          metaEl.appendChild(field);
+        }
+        rg.chromeElements.push(metaEl);
+        desiredChildren.push(metaEl);
+      }
+    }
 
     if (typeof attempt === 'number' && attempt > 1) {
       const badge = document.createElement('span');

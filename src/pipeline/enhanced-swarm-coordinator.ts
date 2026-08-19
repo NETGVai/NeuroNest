@@ -62,6 +62,8 @@ export class EnhancedSwarmCoordinator extends SwarmCoordinator {
   private sessionId: string | null = null;
   private enhancedMemoryPool: SwarmMemoryPool;
   private enhancedLLMClient: LLMClient | null;
+  /** Correlates each final worker response with its live renderer stream. */
+  private agentStreamMsgIds: Map<string, string> = new Map();
   /** Skill IDs actually injected into an agent's prompt during the current run (Requirement: accurate "Skills Used" reporting). */
   private appliedSkillIds: Set<string> = new Set();
 
@@ -195,6 +197,7 @@ export class EnhancedSwarmCoordinator extends SwarmCoordinator {
     agentLLMConfigs?: Map<string, LLMClient>
   ): Promise<SwarmResult> {
     const outputs = new Map<string, string>();
+    this.agentStreamMsgIds.clear();
     const phases = this.createPhases(plan.agents);
 
     // Detect if we're using a local provider (Ollama/llama.cpp) — must run agents sequentially
@@ -356,7 +359,9 @@ export class EnhancedSwarmCoordinator extends SwarmCoordinator {
         phase: 0,
         content: response,
         reasoning: this.enhancedMemoryPool.get(`reasoning:${agentTask.id}`) || undefined,
+        msgId: this.agentStreamMsgIds.get(agentTask.id),
       });
+      this.agentStreamMsgIds.delete(agentTask.id);
 
       return { id: agentTask.id, response };
 
@@ -397,7 +402,9 @@ export class EnhancedSwarmCoordinator extends SwarmCoordinator {
         agentName,
         phase: 0,
         content: `## ❌ ${agentName} Failed\n\n${errorMessage}`,
+        msgId: this.agentStreamMsgIds.get(agentTask.id),
       });
+      this.agentStreamMsgIds.delete(agentTask.id);
 
       console.error('[EnhancedSwarm] Agent', agentTask.id, 'failed:', errorMessage);
 
@@ -518,6 +525,7 @@ export class EnhancedSwarmCoordinator extends SwarmCoordinator {
     // Use true streaming — forward tokens as they arrive from the LLM
     const crypto = require('node:crypto');
     const streamMsgId = crypto.randomUUID();
+    this.agentStreamMsgIds.set(agentTask.id, streamMsgId);
     let streamedContent = '';
     const agentName = agentDef?.name || agentTask.id;
 
