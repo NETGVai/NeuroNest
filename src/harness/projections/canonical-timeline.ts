@@ -79,14 +79,54 @@ interface IndexedNode {
  * Used for bounded windowed retrieval. (Req 47.3)
  */
 export interface PageCursor {
-  /** The stable key of the boundary node */
+  /** Cursor contract version; must match the configured projection schema. */
+  schemaVersion: 1;
+  /** Scope prevents a cursor from being replayed against another timeline. */
+  sessionId: string;
+  branchId: string;
+  /** The stable identity of the boundary node. */
   boundaryStableKey: string;
-  /** The sort key at the boundary for deterministic resume */
+  /** The complete encoded sort tuple at the boundary. */
   boundarySequence: number;
   boundaryOrdinal: number;
-  /** Direction: 'forward' fetches newer nodes, 'backward' fetches older */
+  /** Direction: 'forward' fetches newer nodes, 'backward' fetches older. */
   direction: 'forward' | 'backward';
 }
+
+export interface TimelinePageInitialQuery {
+  kind: 'initial';
+  /** Initial paging must explicitly choose the oldest or latest edge. */
+  position: 'oldest' | 'latest';
+  pageSize?: number;
+  schemaVersion: 1;
+}
+
+export interface TimelinePageCursorQuery {
+  kind: 'cursor';
+  /** Opaque value returned by a prior page from the same projection scope. */
+  cursor: string;
+  pageSize?: number;
+  schemaVersion: 1;
+}
+
+export type TimelinePageQuery = TimelinePageInitialQuery | TimelinePageCursorQuery;
+
+export type TimelinePageUnavailableReason =
+  | 'malformed_cursor'
+  | 'stale_cursor'
+  | 'invalid_page_size'
+  | 'unsupported_schema_version';
+
+export type TimelinePageResult =
+  | { ok: true; page: TimelinePageV1 }
+  | {
+      ok: false;
+      unavailable: true;
+      reasonCode: TimelinePageUnavailableReason;
+      projectionRevision: number;
+      sourceSequence: number;
+      schemaVersion: 1;
+    };
 
 /**
  * Encode a page cursor to an opaque string.
@@ -97,19 +137,28 @@ export function encodePageCursor(cursor: PageCursor): string {
 
 /**
  * Decode a page cursor from an opaque string.
- * Returns null if the cursor is malformed.
+ * Returns null if the cursor is malformed. Timeline identity and sort-tuple
+ * freshness are validated by the reducer that owns the projection.
  */
 export function decodePageCursor(encoded: string): PageCursor | null {
   try {
+    if (typeof encoded !== 'string' || encoded.length === 0) return null;
     const json = Buffer.from(encoded, 'base64url').toString('utf-8');
-    const parsed = JSON.parse(json);
+    const parsed: unknown = JSON.parse(json);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    const value = parsed as Record<string, unknown>;
     if (
-      typeof parsed.boundaryStableKey === 'string' &&
-      typeof parsed.boundarySequence === 'number' &&
-      typeof parsed.boundaryOrdinal === 'number' &&
-      (parsed.direction === 'forward' || parsed.direction === 'backward')
+      value.schemaVersion === 1 &&
+      typeof value.sessionId === 'string' && value.sessionId.length > 0 &&
+      typeof value.branchId === 'string' && value.branchId.length > 0 &&
+      typeof value.boundaryStableKey === 'string' && value.boundaryStableKey.length > 0 &&
+      typeof value.boundarySequence === 'number' &&
+      Number.isSafeInteger(value.boundarySequence) && value.boundarySequence >= 0 &&
+      typeof value.boundaryOrdinal === 'number' &&
+      Number.isSafeInteger(value.boundaryOrdinal) && value.boundaryOrdinal >= 0 &&
+      (value.direction === 'forward' || value.direction === 'backward')
     ) {
-      return parsed as PageCursor;
+      return value as unknown as PageCursor;
     }
     return null;
   } catch {
@@ -156,12 +205,16 @@ export interface TimelineDelta {
  * A bounded page of the canonical timeline with cursors for navigation.
  */
 export interface TimelinePageV1 {
+  /** Page contract version, aligned with the projection configuration. */
+  schemaVersion: 1;
   /** Ordered Chat_Nodes for this page */
   nodes: ChatNodeV1[];
-  /** Cursor for fetching older nodes (null if at the beginning) */
+  /** Cursor for prepending older nodes (null if at the beginning). */
   beforeCursor: string | null;
-  /** Cursor for fetching newer nodes (null if at the end) */
+  /** Cursor for fetching newer nodes (null if at the end). */
   afterCursor: string | null;
+  /** Inclusive source sequence range represented by this page. */
+  sourceRange: { fromSequence: number; toSequence: number } | null;
   /** Total projected node count for this session/branch */
   totalNodeCount: number;
   /** Unread tracking metadata */
@@ -461,7 +514,7 @@ export interface CanonicalTimelineConfig {
   /** Maximum nodes per page (for bounded retrieval) */
   pageSize: number;
   /** The current schema version for projection compatibility */
-  schemaVersion: number;
+  schemaVersion: 1;
 }
 
 /**
@@ -485,8 +538,10 @@ export class CanonicalTimelineReducer {
   private nodeMap: Map<string, IndexedNode> = new Map();
   /** Sorted projection (invalidated on mutation) */
   private sortedNodes: IndexedNode[] | null = null;
-  /** Current projection revision (incremented on each reduce) */
+  /** Current visible projection revision (incremented only on node mutations) */
   private projectionRevision: number = 0;
+  /** Durable event identities already reduced; exact replay is a no-op. */
+  private processedEventIds = new Set<string>();
   /** Highest source sequence ingested */
   private sourceSequence: number = -1;
   /** Unread tracking */
@@ -513,45 +568,30 @@ export class CanonicalTimelineReducer {
     const added: ChatNodeV1[] = [];
     const updated: ChatNodeV1[] = [];
     const removed: string[] = [];
+    const acceptedEvents: SessionEventV1[] = [];
 
     for (const event of events) {
       if (event.sessionId !== this.sessionId || event.branchId !== this.branchId) {
-        continue; // Skip incompatible events
+        continue;
       }
-
-      // Enforce monotonic sequence
-      if (event.sequence <= this.sourceSequence) {
-        // Check if this is an update to an existing node
-        const indexedNodes = mapEventToNodes(event);
-        for (const indexed of indexedNodes) {
-          const existing = this.nodeMap.get(indexed.node.stableKey);
-          if (existing) {
-            // Update: same key, new content revision
-            const updatedNode = {
-              ...indexed.node,
-              contentRevision: existing.node.contentRevision + 1,
-              sourceSequenceEnd: Math.max(
-                (existing.node as ChatNodeBaseV1).sourceSequenceEnd,
-                event.sequence,
-              ),
-            } as ChatNodeV1;
-            this.nodeMap.set(indexed.node.stableKey, {
-              sortKey: existing.sortKey, // Preserve original sort position
-              node: updatedNode,
-            });
-            updated.push(updatedNode);
-          }
-        }
+      if (this.processedEventIds.has(event.eventId)) {
         continue;
       }
 
+      // Session_Log is append-only and ordered. Remember unseen identities before
+      // sequence validation so stale/conflicting replay cannot mutate the view later.
+      this.processedEventIds.add(event.eventId);
+      if (event.sequence <= this.sourceSequence) {
+        continue;
+      }
+
+      acceptedEvents.push(event);
       this.sourceSequence = event.sequence;
       const indexedNodes = mapEventToNodes(event);
 
       for (const indexed of indexedNodes) {
         const existing = this.nodeMap.get(indexed.node.stableKey);
         if (existing) {
-          // Update existing node with new content revision
           const updatedNode = {
             ...indexed.node,
             contentRevision: existing.node.contentRevision + 1,
@@ -559,41 +599,40 @@ export class CanonicalTimelineReducer {
             sourceSequenceEnd: event.sequence,
           } as ChatNodeV1;
           this.nodeMap.set(indexed.node.stableKey, {
-            sortKey: existing.sortKey, // Keep original sort position
+            sortKey: existing.sortKey,
             node: updatedNode,
           });
           updated.push(updatedNode);
         } else {
-          // New node
           this.nodeMap.set(indexed.node.stableKey, indexed);
           added.push(indexed.node);
         }
       }
     }
 
-    // Handle compaction-driven removals
-    for (const event of events) {
-      if (event.eventType === 'compaction' && event.sessionId === this.sessionId) {
-        const payload = event.payload as Record<string, unknown>;
-        const removedKeys = payload['removedStableKeys'] as string[] | undefined;
-        if (removedKeys) {
-          for (const key of removedKeys) {
-            if (this.nodeMap.has(key)) {
-              this.nodeMap.delete(key);
-              removed.push(key);
-            }
-          }
+    // Apply removals only for newly accepted compaction facts. Replayed
+    // compaction records therefore cannot remove a node restored by later facts.
+    for (const event of acceptedEvents) {
+      if (event.eventType !== 'compaction') continue;
+      const payload = event.payload as Record<string, unknown>;
+      const removedKeys = payload['removedStableKeys'] as string[] | undefined;
+      if (!removedKeys) continue;
+      for (const key of removedKeys) {
+        if (this.nodeMap.has(key)) {
+          this.nodeMap.delete(key);
+          removed.push(key);
         }
       }
     }
 
-    // Invalidate sorted cache
-    this.sortedNodes = null;
-    this.projectionRevision++;
+    const hasVisibleMutation = added.length > 0 || updated.length > 0 || removed.length > 0;
+    if (hasVisibleMutation) {
+      this.sortedNodes = null;
+      this.projectionRevision++;
 
-    // Update unread count if not following bottom
-    if (!this.unread.bottomFollow) {
-      this.unread.unreadCount += added.length;
+      if (!this.unread.bottomFollow) {
+        this.unread.unreadCount += added.length;
+      }
     }
 
     return {
@@ -612,77 +651,145 @@ export class CanonicalTimelineReducer {
    * Requirements: 35.17
    */
   getSortedNodes(): ChatNodeV1[] {
-    if (!this.sortedNodes) {
-      const entries = Array.from(this.nodeMap.values());
-      entries.sort((a, b) => compareProjectionSortKeys(a.sortKey, b.sortKey));
-      this.sortedNodes = entries;
-    }
-    return this.sortedNodes.map(e => e.node);
+    return this.getSortedIndexedNodes().map(entry => entry.node);
   }
 
   /**
-   * Get a bounded page of the timeline with cursors for navigation.
+   * Execute a versioned page query. Initial callers must explicitly select the
+   * oldest or latest edge; cursor callers receive typed unavailable outcomes
+   * instead of silently moving to another position.
    *
-   * Requirements: 47.3
+   * Requirements: 19.3–19.4, 21.2, 22.4
    */
-  getPage(cursor?: PageCursor | null, pageSize?: number): TimelinePageV1 {
+  queryPage(query: TimelinePageQuery): TimelinePageResult {
+    if (!query || query.schemaVersion !== this.config.schemaVersion) {
+      return this.pageUnavailable('unsupported_schema_version');
+    }
+
+    const limit = query.pageSize ?? this.config.pageSize;
+    if (!Number.isSafeInteger(limit) || limit <= 0 || limit > this.config.pageSize) {
+      return this.pageUnavailable('invalid_page_size');
+    }
+
+    if (query.kind === 'initial') {
+      if (query.position !== 'oldest' && query.position !== 'latest') {
+        return this.pageUnavailable('unsupported_schema_version');
+      }
+      return { ok: true, page: this.buildPage(null, limit, query.position) };
+    }
+
+    if (query.kind !== 'cursor' || typeof query.cursor !== 'string') {
+      return this.pageUnavailable('malformed_cursor');
+    }
+
+    const cursor = decodePageCursor(query.cursor);
+    if (!cursor) {
+      return this.pageUnavailable('malformed_cursor');
+    }
+    if (!this.isCurrentCursor(cursor)) {
+      return this.pageUnavailable('stale_cursor');
+    }
+
+    return { ok: true, page: this.buildPage(cursor, limit, 'oldest') };
+  }
+
+  /**
+   * Compatibility API for existing in-process callers. New projection/query
+   * boundaries should use queryPage so malformed and stale cursors are typed.
+   * A null cursor retains the historical oldest-page behavior.
+   */
+  getPage(query: TimelinePageQuery): TimelinePageResult;
+  getPage(cursor?: PageCursor | null, pageSize?: number): TimelinePageV1;
+  getPage(
+    cursorOrQuery?: TimelinePageQuery | PageCursor | null,
+    pageSize?: number,
+  ): TimelinePageV1 | TimelinePageResult {
+    if (
+      cursorOrQuery &&
+      typeof cursorOrQuery === 'object' &&
+      ('kind' in cursorOrQuery)
+    ) {
+      return this.queryPage(cursorOrQuery as TimelinePageQuery);
+    }
     const limit = pageSize ?? this.config.pageSize;
-    const allNodes = this.getSortedNodes();
-    const totalNodeCount = allNodes.length;
+    return this.buildPage(
+      (cursorOrQuery as PageCursor | null | undefined) ?? null,
+      Math.min(Math.max(1, limit), this.config.pageSize),
+      'oldest',
+    );
+  }
+
+  private buildPage(
+    cursor: PageCursor | null,
+    limit: number,
+    initialPosition: 'oldest' | 'latest',
+  ): TimelinePageV1 {
+    const allEntries = this.getSortedIndexedNodes();
+    const totalNodeCount = allEntries.length;
 
     if (totalNodeCount === 0) {
       return {
+        schemaVersion: this.config.schemaVersion,
         nodes: [],
         beforeCursor: null,
         afterCursor: null,
+        sourceRange: null,
         totalNodeCount: 0,
         unread: { ...this.unread },
       };
     }
 
-    let startIndex = 0;
-    let endIndex = Math.min(limit, totalNodeCount);
+    let startIndex = initialPosition === 'latest' ? Math.max(totalNodeCount - limit, 0) : 0;
+    let endIndex = initialPosition === 'latest'
+      ? totalNodeCount
+      : Math.min(limit, totalNodeCount);
 
     if (cursor) {
-      // Find the boundary position
-      const boundaryIndex = this.findNodeIndexByKey(cursor.boundaryStableKey);
-
-      if (boundaryIndex >= 0) {
-        if (cursor.direction === 'forward') {
-          startIndex = boundaryIndex + 1;
-          endIndex = Math.min(startIndex + limit, totalNodeCount);
-        } else {
-          endIndex = boundaryIndex;
-          startIndex = Math.max(endIndex - limit, 0);
-        }
+      const boundaryIndex = allEntries.findIndex(
+        entry => entry.node.stableKey === cursor.boundaryStableKey,
+      );
+      // queryPage validates this first. The compatibility API returns an empty
+      // page rather than silently jumping to a different timeline position.
+      if (boundaryIndex < 0 || !this.cursorMatchesEntry(cursor, allEntries[boundaryIndex]!)) {
+        startIndex = 0;
+        endIndex = 0;
+      } else if (cursor.direction === 'forward') {
+        startIndex = boundaryIndex + 1;
+        endIndex = Math.min(startIndex + limit, totalNodeCount);
+      } else {
+        endIndex = boundaryIndex;
+        startIndex = Math.max(endIndex - limit, 0);
       }
-      // If boundary not found, fall back to start/end
     }
 
-    const pageNodes = allNodes.slice(startIndex, endIndex);
+    const pageEntries = allEntries.slice(startIndex, endIndex);
+    const pageNodes = pageEntries.map(entry => entry.node);
 
-    const beforeCursor = startIndex > 0
-      ? encodePageCursor({
-        boundaryStableKey: allNodes[startIndex]!.stableKey,
-        boundarySequence: (allNodes[startIndex] as ChatNodeBaseV1).sourceSequenceStart,
-        boundaryOrdinal: 0,
-        direction: 'backward',
-      })
+    const beforeCursor = startIndex > 0 && pageEntries.length > 0
+      ? encodePageCursor(this.createPageCursor(pageEntries[0]!, 'backward'))
       : null;
 
-    const afterCursor = endIndex < totalNodeCount
-      ? encodePageCursor({
-        boundaryStableKey: allNodes[endIndex - 1]!.stableKey,
-        boundarySequence: (allNodes[endIndex - 1] as ChatNodeBaseV1).sourceSequenceStart,
-        boundaryOrdinal: 0,
-        direction: 'forward',
-      })
+    const afterCursor = endIndex < totalNodeCount && pageEntries.length > 0
+      ? encodePageCursor(this.createPageCursor(pageEntries[pageEntries.length - 1]!, 'forward'))
+      : null;
+
+    const sourceRange = pageNodes.length > 0
+      ? {
+          fromSequence: Math.min(
+            ...pageNodes.map(node => (node as ChatNodeBaseV1).sourceSequenceStart),
+          ),
+          toSequence: Math.max(
+            ...pageNodes.map(node => (node as ChatNodeBaseV1).sourceSequenceEnd),
+          ),
+        }
       : null;
 
     return {
+      schemaVersion: this.config.schemaVersion,
       nodes: pageNodes,
       beforeCursor,
       afterCursor,
+      sourceRange,
       totalNodeCount,
       unread: { ...this.unread },
     };
@@ -706,7 +813,7 @@ export class CanonicalTimelineReducer {
       projectionKind: 'canonical_timeline',
       projectionRevision: this.projectionRevision,
       sourceSequence: this.sourceSequence,
-      schemaVersion: 1,
+      schemaVersion: this.config.schemaVersion,
       checkpointHash: this.computeCheckpointHash(),
       generatedAt: new Date().toISOString(),
       stale: false,
@@ -789,6 +896,7 @@ export class CanonicalTimelineReducer {
    */
   reset(): void {
     this.nodeMap.clear();
+    this.processedEventIds.clear();
     this.sortedNodes = null;
     this.projectionRevision = 0;
     this.sourceSequence = -1;
@@ -801,14 +909,64 @@ export class CanonicalTimelineReducer {
 
   // ─── Private Helpers ────────────────────────────────────────────
 
-  private findNodeIndexByKey(stableKey: string): number {
-    const allNodes = this.getSortedNodes();
-    return allNodes.findIndex(n => n.stableKey === stableKey);
+  private getSortedIndexedNodes(): IndexedNode[] {
+    if (!this.sortedNodes) {
+      const entries = Array.from(this.nodeMap.values());
+      entries.sort((a, b) => compareProjectionSortKeys(a.sortKey, b.sortKey));
+      this.sortedNodes = entries;
+    }
+    return this.sortedNodes;
+  }
+
+  private createPageCursor(
+    entry: IndexedNode,
+    direction: PageCursor['direction'],
+  ): PageCursor {
+    return {
+      schemaVersion: this.config.schemaVersion,
+      sessionId: this.sessionId,
+      branchId: this.branchId,
+      boundaryStableKey: entry.node.stableKey,
+      boundarySequence: entry.sortKey.sessionSequence,
+      boundaryOrdinal: entry.sortKey.intraEventOrdinal,
+      direction,
+    };
+  }
+
+  private cursorMatchesEntry(cursor: PageCursor, entry: IndexedNode): boolean {
+    return cursor.boundaryStableKey === entry.node.stableKey &&
+      cursor.boundaryStableKey === entry.sortKey.stableKey &&
+      cursor.boundarySequence === entry.sortKey.sessionSequence &&
+      cursor.boundaryOrdinal === entry.sortKey.intraEventOrdinal;
+  }
+
+  private isCurrentCursor(cursor: PageCursor): boolean {
+    if (
+      cursor.schemaVersion !== this.config.schemaVersion ||
+      cursor.sessionId !== this.sessionId ||
+      cursor.branchId !== this.branchId
+    ) {
+      return false;
+    }
+    const entry = this.nodeMap.get(cursor.boundaryStableKey);
+    return entry !== undefined && this.cursorMatchesEntry(cursor, entry);
+  }
+
+  private pageUnavailable(reasonCode: TimelinePageUnavailableReason): TimelinePageResult {
+    return {
+      ok: false,
+      unavailable: true,
+      reasonCode,
+      projectionRevision: this.projectionRevision,
+      sourceSequence: this.sourceSequence,
+      schemaVersion: this.config.schemaVersion,
+    };
   }
 
   private computeCheckpointHash(): string {
-    const allNodes = this.getSortedNodes();
-    const content = allNodes.map(n => `${n.stableKey}:${n.contentRevision}`).join('|');
+    // Include the complete ordered canonical node payload, not only identity and
+    // revision counters, so independent replay checkpoints detect content loss.
+    const content = JSON.stringify(this.getSortedNodes());
     return crypto.createHash('sha256').update(content).digest('hex').slice(0, 16);
   }
 }

@@ -243,6 +243,9 @@ export interface CollaborationTakeoverState {
 
   /** Current collaboration identity and revision for duplicate detection (Req 38.15). */
   currentIdentity?: { collaborationId: string; revision: number };
+
+  /** The canonical stable key from projection (Req 9.1–9.2). No independent key derivation. */
+  canonicalStableKey?: string;
 }
 
 // ─── Preserved Draft ────────────────────────────────────────────

@@ -14,10 +14,50 @@
 import type { BrowserWindow } from 'electron';
 import type Database from 'better-sqlite3';
 
+/**
+ * Optional handle to the legacy chat compatibility bridge. When supplied,
+ * every `chat:stream-chunk` emission is mirrored through the same canonical
+ * ingestion path that receives `chat-response`/`chat:stream`/`chat:done`/
+ * `chat:error`. The mirror is fire-and-forget — dispatch delivery never
+ * blocks on canonical ingestion, and canonical ingestion never re-emits a
+ * renderer-visible chat channel.
+ */
+export interface DispatchLegacyBridgePort {
+  feed(
+    channel: 'chat:stream-chunk',
+    payload: Record<string, unknown>,
+    metadata?: {
+      family?:
+        | 'start'
+        | 'token'
+        | 'reasoning'
+        | 'completion'
+        | 'cancellation'
+        | 'error'
+        | 'retry'
+        | 'reconnect'
+        | 'duplicate_delivery';
+      origin?: 'chat' | 'dashboard' | 'channel' | 'system';
+      agent?: string;
+      provider?: string;
+      model?: string;
+      channelId?: string;
+      ordinal?: number;
+      occurredAt?: string;
+    },
+  ): void;
+}
+
 /** Configuration required to instantiate a DispatchBridge. */
 export interface DispatchBridgeConfig {
   mainWindow: BrowserWindow;
   db: Database.Database;
+  /**
+   * Optional legacy-compatibility bridge that receives every
+   * `chat:stream-chunk` emission alongside the renderer send. When omitted the
+   * DispatchBridge behaves exactly as it did before task 8.4.
+   */
+  legacyBridge?: DispatchLegacyBridgePort;
 }
 
 /** Context tracked for each in-flight dispatch. */
@@ -153,21 +193,28 @@ export class DispatchBridge {
     const agentEmoji = (metadata?.agentEmoji as string) || undefined;
     ctx.agentEmoji = agentEmoji;
 
+    const startPayload = {
+      messageId: msgId,
+      chunk: '',
+      start: true,
+      agent: agentName,
+      agentEmoji: agentEmoji,
+      source: 'dashboard',
+    };
     try {
       if (!this.config.mainWindow.isDestroyed()) {
-        this.config.mainWindow.webContents.send('chat:stream-chunk', {
-          messageId: msgId,
-          chunk: '',
-          start: true,
-          agent: agentName,
-          agentEmoji: agentEmoji,
-          source: 'dashboard',
-        });
+        this.config.mainWindow.webContents.send('chat:stream-chunk', startPayload);
       }
     } catch (err) {
       // Fail-soft: ChatService delivery failure must not block dashboard (Req 5.4)
       console.warn('[DispatchBridge] Failed to emit stream start:', (err as Error)?.message);
     }
+
+    this.mirrorToCanonicalIngestion(startPayload, {
+      family: 'start',
+      origin: 'dashboard',
+      agent: agentName,
+    });
   }
 
   /**
@@ -184,17 +231,24 @@ export class DispatchBridge {
     // Accumulate token in buffer for persistence on completion
     ctx.buffer += token;
 
+    const tokenPayload = {
+      messageId: msgId,
+      chunk: token,
+    };
     try {
       if (!this.config.mainWindow.isDestroyed()) {
-        this.config.mainWindow.webContents.send('chat:stream-chunk', {
-          messageId: msgId,
-          chunk: token,
-        });
+        this.config.mainWindow.webContents.send('chat:stream-chunk', tokenPayload);
       }
     } catch (err) {
       // Fail-soft: ChatService delivery failure must not block dashboard (Req 5.4)
       console.warn('[DispatchBridge] Failed to emit stream token:', (err as Error)?.message);
     }
+
+    this.mirrorToCanonicalIngestion(tokenPayload, {
+      family: 'token',
+      origin: 'dashboard',
+      agent: ctx.agent,
+    });
   }
 
   /**
@@ -241,18 +295,25 @@ export class DispatchBridge {
     }
 
     // Emit stream done to ChatService, including reasoning in the payload
+    const donePayload = {
+      messageId: msgId,
+      chunk: '',
+      done: true,
+      reasoning: reasoning || undefined,
+    };
     try {
       if (!this.config.mainWindow.isDestroyed()) {
-        this.config.mainWindow.webContents.send('chat:stream-chunk', {
-          messageId: msgId,
-          chunk: '',
-          done: true,
-          reasoning: reasoning || undefined,
-        });
+        this.config.mainWindow.webContents.send('chat:stream-chunk', donePayload);
       }
     } catch (err) {
       console.warn('[DispatchBridge] Failed to emit stream done:', (err as Error)?.message);
     }
+
+    this.mirrorToCanonicalIngestion(donePayload, {
+      family: 'completion',
+      origin: 'dashboard',
+      agent: ctx.agent,
+    });
 
     // Remove from active dispatches
     this.activeDispatches.delete(msgId);
@@ -294,19 +355,57 @@ export class DispatchBridge {
     }
 
     // Emit stream error to ChatService
+    const errorPayload = {
+      messageId: msgId,
+      chunk: '',
+      error,
+    };
     try {
       if (!this.config.mainWindow.isDestroyed()) {
-        this.config.mainWindow.webContents.send('chat:stream-chunk', {
-          messageId: msgId,
-          chunk: '',
-          error,
-        });
+        this.config.mainWindow.webContents.send('chat:stream-chunk', errorPayload);
       }
     } catch (err) {
       console.warn('[DispatchBridge] Failed to emit stream error:', (err as Error)?.message);
     }
 
+    this.mirrorToCanonicalIngestion(errorPayload, {
+      family: 'error',
+      origin: 'dashboard',
+      agent: ctx.agent,
+    });
+
     // Remove from active dispatches
     this.activeDispatches.delete(msgId);
+  }
+
+  /**
+   * Fire-and-forget mirror to the legacy canonical ingestion path.
+   *
+   * Task 8.4 requires every legacy chat channel (including `chat:stream-chunk`)
+   * to reach the same canonical ingestion boundary that receives
+   * `chat-response`/`chat:stream`/`chat:done`/`chat:error`. The mirror never
+   * throws into the dispatch code path and never emits an additional
+   * renderer-visible chat event — canonical ingestion only produces
+   * projection-only records.
+   */
+  private mirrorToCanonicalIngestion(
+    payload: Record<string, unknown>,
+    metadata: {
+      family: 'start' | 'token' | 'completion' | 'error';
+      origin: 'dashboard';
+      agent?: string;
+    },
+  ): void {
+    const legacyBridge = this.config.legacyBridge;
+    if (!legacyBridge) return;
+    try {
+      legacyBridge.feed('chat:stream-chunk', payload, metadata);
+    } catch (err) {
+      // Fail-soft: canonical ingestion failure must never break dispatch.
+      console.warn(
+        '[DispatchBridge] Failed to mirror chat:stream-chunk to canonical ingestion:',
+        (err as Error)?.message,
+      );
+    }
   }
 }

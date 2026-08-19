@@ -16,10 +16,14 @@ import type { SessionEventV1, SessionEventPayloadV1 } from '../contracts/event.j
 export interface AppendEventCommand {
   sessionId: string;
   branchId?: string;
+  /** Optional authority-issued durable identity. Generated when omitted. */
+  eventId?: string;
   eventType: string;
   payload: SessionEventPayloadV1;
   actor: ActorRef;
   scope: ScopeDescriptorV1;
+  /** Optional source timestamp retained for imported or normalized facts. */
+  occurredAt?: string;
   idempotencyKey?: string;
 }
 
@@ -27,10 +31,14 @@ export interface AtomicEventBatchCommand {
   sessionId: string;
   branchId?: string;
   events: Array<{
+    /** Optional authority-issued durable identity. Generated when omitted. */
+    eventId?: string;
     eventType: string;
     payload: SessionEventPayloadV1;
     actor: ActorRef;
     scope: ScopeDescriptorV1;
+    /** Optional source timestamp retained for imported or normalized facts. */
+    occurredAt?: string;
     idempotencyKey?: string;
   }>;
 }

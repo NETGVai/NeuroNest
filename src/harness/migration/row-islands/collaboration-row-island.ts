@@ -195,7 +195,7 @@ export class CollaborationRowIslandAdapter implements RowIsland<CollaborationRow
     return {
       islandKind: 'collaboration',
       presentation,
-      stableKey: `collaboration:${input.collaborationId}`,
+      stableKey: input.canonicalStableKey,
       accessibilityLabel,
       usedFallback: false,
     };
@@ -206,16 +206,23 @@ export class CollaborationRowIslandAdapter implements RowIsland<CollaborationRow
    *
    * Maps older session collaboration records into the typed input format.
    * Preserves readability for old sessions by inferring kind and status.
+   *
+   * For legacy data, generates a deterministic key since no canonical projection
+   * existed. New projections MUST supply the canonical stable key directly.
    */
-  adaptLegacy(legacy: LegacyCollaborationData, collaborationId: string): CollaborationRowIslandInput {
+  adaptLegacy(legacy: LegacyCollaborationData, collaborationId: string, canonicalStableKey?: string): CollaborationRowIslandInput {
     // Infer kind from type string
     const kind = inferCollaborationKind(legacy.type);
 
     // Infer status
     const status = legacy.resolved ? 'committed' : 'active';
 
+    // Use provided canonical key or generate a legacy-compat key
+    const stableKey = canonicalStableKey || `legacy-collab:${collaborationId}`;
+
     return {
       collaborationId,
+      canonicalStableKey: stableKey,
       kind,
       displayText: legacy.description || 'Collaboration item',
       owner: legacy.owner || 'unknown',

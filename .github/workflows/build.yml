@@ -152,6 +152,9 @@ jobs:
       - name: Renderer file-size ratchet
         run: node scripts/check-renderer-file-size.mjs
 
+      - name: Architecture audit — structured renderer constraints
+        run: node scripts/check-structured-renderer-architecture.mjs
+
       - name: Security lint (sandbox enforcement & swarm stub detection)
         run: bash scripts/security-lint.sh
 

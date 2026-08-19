@@ -45,6 +45,27 @@ export {
   assertCanarySafe,
 } from './canary-labels';
 
+export {
+  ContentSanitizationAdapter,
+  DenyAllNavigationAuthority,
+  SafeProtocolNavigationAuthority,
+  escapeHtml,
+  sanitizeNavigationUrl,
+  hasExecutableExtension,
+  isRemoteUri,
+  ALLOWED_MARKDOWN_ELEMENTS,
+  ALLOWED_ATTRIBUTES,
+  EVENT_HANDLER_PATTERN,
+  EMBEDDED_CONTENT_PATTERN,
+  type ContentSanitizationResult,
+  type SanitizationOptions,
+  type NavigationRequest,
+  type NavigationResult,
+  type RemoteArtifactConsentRequest,
+  type RemoteArtifactConsentResult,
+  type NavigationAuthority,
+} from './content-sanitization-adapter';
+
 export type {
   AuthorizedActionKind,
   AuthorizationDecision,

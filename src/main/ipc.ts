@@ -147,6 +147,27 @@ import { registerNotebookIPC } from './notebook-ipc.js';
 import { registerMarketplaceIPC } from './marketplace-ipc.js';
 // Dispatch-to-Chat-Panel bridge (dispatch-chat-visibility spec, Req 1.1, 3.4, 3.5)
 import { DispatchBridge } from './dispatch-bridge';
+import {
+  LegacyResponseIPCBridge,
+  type LegacyResponseAdapterPort,
+  type LegacyResponseEmissionMetadata,
+  type LegacyResponseTurnContext,
+  type ShippedLegacyChatChannel,
+} from './chat/legacy-response-ipc-bridge';
+import {
+  registerAppBootstrapIPC,
+  type AppBootstrapIPCRegistration,
+  type AppBootstrapIPCServices,
+} from './app-bootstrap-ipc';
+import {
+  registerShellOpenExternalHandler,
+  type ShellOpenExternalHandlerRegistration,
+} from './shell-open-external-handler';
+import {
+  registerProjectionQueryIPC,
+  type ProjectionQueryIPCDependencies,
+  type ProjectionQueryIPCRegistration,
+} from './chat/projection-query-ipc';
 // P5 orphan sweep (task 23.2) — Category A unwired IPC handler modules, wired
 // onto the live IPC path from registerIPCHandlers below (R16.3, R16.4).
 import { registerVisionIPC } from './vision-ipc.js';
@@ -275,6 +296,58 @@ import { parseConnectChannelArg, isParseError } from './connect-channel-parser';
 // Singleton AsyncCommandRunner instance for non-blocking command execution
 const asyncCommandRunner = new AsyncCommandRunner();
 
+let legacyResponseIPCBridge: LegacyResponseIPCBridge | null = null;
+let projectionQueryIPCRegistration: ProjectionQueryIPCRegistration | null = null;
+let appBootstrapIPCRegistration: AppBootstrapIPCRegistration | null = null;
+let shellOpenExternalRegistration: ShellOpenExternalHandlerRegistration | null = null;
+let activeLegacyTurnContext: LegacyResponseTurnContext | null = null;
+
+const unavailableAppBootstrapServices: AppBootstrapIPCServices = {
+  readBootstrap: () => {
+    throw new Error('unavailable');
+  },
+  readLaunchModeSettings: () => {
+    throw new Error('unavailable');
+  },
+  updateLaunchMode: () => {
+    throw new Error('unavailable');
+  },
+  readProxyCredentialStatus: () => {
+    throw new Error('unavailable');
+  },
+  readEntitlementStatus: () => {
+    throw new Error('unavailable');
+  },
+  readCloudProviderKeyMigrationStatus: () => {
+    throw new Error('unavailable');
+  },
+  listLegacyProviderKeys: () => {
+    throw new Error('unavailable');
+  },
+  deleteLegacyProviderKey: () => {
+    throw new Error('unavailable');
+  },
+  readInspectorLayout: () => {
+    throw new Error('unavailable');
+  },
+  updateInspectorLayout: () => {
+    throw new Error('unavailable');
+  },
+};
+
+function emitShippedChat(
+  mainWindow: { webContents: { send(channel: string, payload: unknown): void } },
+  channel: ShippedLegacyChatChannel,
+  payload: any,
+  metadata: LegacyResponseEmissionMetadata = {},
+): void {
+  if (legacyResponseIPCBridge) {
+    legacyResponseIPCBridge.emit(mainWindow, channel, payload, metadata);
+    return;
+  }
+  mainWindow.webContents.send(channel, payload);
+}
+
 function sendAndStore(mainWindow: any, data: any) {
   // Auto-attach provider/model to every message if not already present
   if (!data.provider || !data.model) {
@@ -301,7 +374,7 @@ function sendAndStore(mainWindow: any, data: any) {
       // This can fail at startup before DB is ready — non-fatal
     }
   }
-  mainWindow.webContents.send('chat-response', data);
+  emitShippedChat(mainWindow, 'chat-response', data);
   storeMessage(data.role || 'assistant', data.content || '', data.agent);
 }
 
@@ -335,6 +408,12 @@ function formatBytes(bytes: number): string {
 
 export interface IPCDependencies {
   mainWindow: BrowserWindow;
+  /** Optional shadow-stage adapter; it receives mirrored facts but owns no renderer channel. */
+  legacyResponseAdapter?: LegacyResponseAdapterPort;
+  /** Canonical read-only services used by the versioned structured-chat query boundary. */
+  projectionQueries?: Omit<ProjectionQueryIPCDependencies, 'ipcMain'>;
+  /** Main-owned providers for fixed, non-secret bootstrap/settings IPC methods. */
+  appBootstrap?: Partial<AppBootstrapIPCServices>;
 }
 
 // Subsystem singletons — initialized once
@@ -2227,9 +2306,17 @@ export async function initDeferredSubsystems(): Promise<void> {
     try {
       channelManager.onMessage(async (msg: any) => {
         if (!_ipcMainWindow || _ipcMainWindow.isDestroyed()) return;
+        legacyResponseIPCBridge?.enterTurn({
+          sessionId: activeSessionId || 'legacy-unscoped',
+          turnId: msg.turnId || msg.messageId || msg.id || require('node:crypto').randomUUID(),
+          messageId: msg.messageId || msg.id || undefined,
+          origin: 'channel',
+          agent: msg.channelId,
+          channelId: msg.channelId,
+        });
         console.log('[Channel]', msg.channelId, 'from', msg.from, ':', (msg.content || '').slice(0, 50));
         const _deferredDisplayInfo = channelManager.getChannelDisplayInfo(msg.channelId);
-        _ipcMainWindow.webContents.send('chat-response', {
+        emitShippedChat(_ipcMainWindow, 'chat-response', {
           role: 'user',
           content: msg.content || '',
           agent: msg.channelId,
@@ -2260,7 +2347,16 @@ export async function initDeferredSubsystems(): Promise<void> {
       // channel source badges and relay indicator badges on messages.
       channelManager.onChannelRelay((payload: ChannelRelayPayload) => {
         if (!_ipcMainWindow || _ipcMainWindow.isDestroyed()) return;
-        _ipcMainWindow.webContents.send('chat-response', {
+        const relayChannelId = payload.channelSource?.channelId || payload.relayTarget?.channelId;
+        legacyResponseIPCBridge?.enterTurn({
+          sessionId: activeSessionId || 'legacy-unscoped',
+          turnId: (payload as any).turnId || (payload as any).messageId || require('node:crypto').randomUUID(),
+          messageId: (payload as any).messageId || undefined,
+          origin: 'channel',
+          agent: relayChannelId || 'NeuroNest',
+          channelId: relayChannelId,
+        });
+        emitShippedChat(_ipcMainWindow, 'chat-response', {
           role: payload.role,
           content: payload.content,
           agent: payload.channelSource?.channelId || payload.relayTarget?.channelId || 'NeuroNest',
@@ -2680,6 +2776,62 @@ async function requestTerminalApproval(command: string): Promise<boolean> {
 export function registerIPCHandlers(deps: IPCDependencies): void {
   const { mainWindow } = deps;
   _ipcMainWindow = mainWindow; // Store for deferred channel wiring
+
+  // Re-registration (tests, reloads, or window replacement) must release the
+  // previous shadow correlation state and all canonical query handlers.
+  legacyResponseIPCBridge?.dispose();
+  projectionQueryIPCRegistration?.dispose();
+  appBootstrapIPCRegistration?.dispose();
+  shellOpenExternalRegistration?.dispose();
+  activeLegacyTurnContext = null;
+  const responseBridge = new LegacyResponseIPCBridge({ adapter: deps.legacyResponseAdapter });
+  legacyResponseIPCBridge = responseBridge;
+  const queryRegistration = registerProjectionQueryIPC({
+    ipcMain,
+    resolveProjectionService: deps.projectionQueries?.resolveProjectionService
+      ?? (() => undefined),
+    resolveDiagnosticsService: deps.projectionQueries?.resolveDiagnosticsService
+      ?? (() => undefined),
+  });
+  projectionQueryIPCRegistration = queryRegistration;
+  const bootstrapRegistration = registerAppBootstrapIPC({
+    ipcMain,
+    ...unavailableAppBootstrapServices,
+    ...deps.appBootstrap,
+  });
+  appBootstrapIPCRegistration = bootstrapRegistration;
+
+  // Fixed external-link IPC (task 10.6). Renderer → main pathway that
+  // reparses, allowlists, and forwards to `shell.openExternal`. Every
+  // rendered anchor routes through this contract; the window-hardener's
+  // window-open handler never auto-opens URLs.
+  const externalLinkRegistration = registerShellOpenExternalHandler({
+    ipcMain,
+    shell: require('electron').shell,
+  });
+  shellOpenExternalRegistration = externalLinkRegistration;
+
+  const windowWithLifecycle = mainWindow as BrowserWindow & { once?: (event: string, listener: () => void) => void };
+  windowWithLifecycle.once?.('closed', () => {
+    if (legacyResponseIPCBridge === responseBridge) {
+      responseBridge.dispose();
+      legacyResponseIPCBridge = null;
+      activeLegacyTurnContext = null;
+    }
+    if (projectionQueryIPCRegistration === queryRegistration) {
+      queryRegistration.dispose();
+      projectionQueryIPCRegistration = null;
+    }
+    if (appBootstrapIPCRegistration === bootstrapRegistration) {
+      bootstrapRegistration.dispose();
+      appBootstrapIPCRegistration = null;
+    }
+    if (shellOpenExternalRegistration === externalLinkRegistration) {
+      externalLinkRegistration.dispose();
+      shellOpenExternalRegistration = null;
+    }
+  });
+
   ensureInit();
 
   // ── Instantiate DispatchBridge (dispatch-chat-visibility, Req 1.1, 3.4, 3.5) ──
@@ -2830,6 +2982,14 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
   // in lazy mode, channelManager is deferred and wired after initDeferredSubsystems)
   if (channelManager) {
   channelManager.onMessage(async (msg) => { 
+    legacyResponseIPCBridge?.enterTurn({
+      sessionId: activeSessionId || 'legacy-unscoped',
+      turnId: (msg as any).turnId || (msg as any).messageId || (msg as any).id || require('node:crypto').randomUUID(),
+      messageId: (msg as any).messageId || (msg as any).id || undefined,
+      origin: 'channel',
+      agent: msg.channelId,
+      channelId: msg.channelId,
+    });
     console.log('[Channel]', msg.channelId, 'from', msg.from, ':', msg.content.slice(0, 50)); 
     
     // ── Firewall: scan channel messages for security ──
@@ -2843,7 +3003,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
       if (fwResult.blocked) {
         // Block malicious channel messages
         console.warn('[Firewall] Blocked channel message from', msg.from, 'on', msg.channelId);
-        mainWindow.webContents.send('chat-response', { 
+        emitShippedChat(mainWindow, 'chat-response', {
           role: 'assistant', 
           content: '🛡️ **Channel Message Blocked** — A message from ' + msg.from + ' on ' + msg.channelId + ' was blocked by security policy.',
           agent: 'Firewall', 
@@ -2876,7 +3036,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
     
     // Show incoming message in the UI with channel source metadata (REQ 3.1, 3.5)
     const _channelDisplayInfo = channelManager.getChannelDisplayInfo(msg.channelId);
-    mainWindow.webContents.send('chat-response', { 
+    emitShippedChat(mainWindow, 'chat-response', {
       role: 'user', 
       content: channelContent, 
       agent: msg.channelId, 
@@ -2909,7 +3069,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
           }
         } catch {}
 
-        mainWindow.webContents.send('chat-response', { 
+        emitShippedChat(mainWindow, 'chat-response', {
           role: 'assistant', 
           content: '🧠 Processing message from ' + msg.from + ' on ' + msg.channelId + ' [' + channelMode + ' mode]...', 
           agent: 'NeuroNest', 
@@ -3021,7 +3181,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
         const sendResult = await channelManager.sendWithRetry(msg.channelId, msg.from, plainResponseText);
         
         if (sendResult.success) {
-          mainWindow.webContents.send('chat-response', { 
+          emitShippedChat(mainWindow, 'chat-response', {
             role: 'assistant', 
             content: responseText.slice(0, 500) + (responseText.length > 500 ? '...' : ''), 
             agent: 'NeuroNest', 
@@ -3035,7 +3195,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
             },
           });
         } else {
-          mainWindow.webContents.send('chat-response', { 
+          emitShippedChat(mainWindow, 'chat-response', {
             role: 'assistant', 
             content: '⚠️ Generated response but failed to send back to ' + msg.channelId + ': ' + sendResult.message, 
             agent: 'NeuroNest', 
@@ -3106,7 +3266,16 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
   channelManager.onChannelRelay((payload: ChannelRelayPayload) => {
     if (!mainWindow || mainWindow.isDestroyed()) return;
     try {
-      mainWindow.webContents.send('chat-response', {
+      const relayChannelId = payload.channelSource?.channelId || payload.relayTarget?.channelId;
+      legacyResponseIPCBridge?.enterTurn({
+        sessionId: activeSessionId || 'legacy-unscoped',
+        turnId: (payload as any).turnId || (payload as any).messageId || require('node:crypto').randomUUID(),
+        messageId: (payload as any).messageId || undefined,
+        origin: 'channel',
+        agent: relayChannelId || 'NeuroNest',
+        channelId: relayChannelId,
+      });
+      emitShippedChat(mainWindow, 'chat-response', {
         role: payload.role,
         content: payload.content,
         agent: payload.channelSource?.channelId || payload.relayTarget?.channelId || 'NeuroNest',
@@ -3619,6 +3788,22 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
     const dispatchSource: string | null = (typeof arg === 'object' && arg !== null && arg.source) || null;
     const trimmed = (message || '').trim();
     if (!trimmed) return;
+
+    const legacyMessageId = (typeof arg === 'object' && arg !== null && typeof arg.messageId === 'string' && arg.messageId)
+      || require('node:crypto').randomUUID();
+    activeLegacyTurnContext = {
+      sessionId: activeSessionId || (typeof arg === 'object' && arg !== null && arg.projectId) || 'legacy-unscoped',
+      branchId: (typeof arg === 'object' && arg !== null && arg.branchId) || 'main',
+      turnId: (typeof arg === 'object' && arg !== null && arg.turnId) || legacyMessageId,
+      messageId: legacyMessageId,
+      attempt: (typeof arg === 'object' && arg !== null && Number.isInteger(arg.attempt)) ? arg.attempt : 0,
+      origin: dispatchSource === 'dashboard' ? 'dashboard' : 'chat',
+      agent: agentHint || undefined,
+      provider: (typeof arg === 'object' && arg !== null && arg.provider) || undefined,
+      model: (typeof arg === 'object' && arg !== null && arg.model) || undefined,
+    };
+    legacyResponseIPCBridge?.enterTurn(activeLegacyTurnContext);
+
     console.log('[IPC] chat-message received:', trimmed, isSteerRedirect ? '(steer redirect)' : '', isSpecMode ? '(spec mode)' : '', actionContext ? '(action-context)' : '', agentHint ? `(agent: ${agentHint})` : '', dispatchSource ? `(source: ${dispatchSource})` : '');
 
     // ── Dispatch-to-Chat Bridge (dispatch-chat-visibility, Req 1.1, 3.4, 3.5) ──
@@ -3639,9 +3824,9 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
         return;
       }
 
-      // Generate a unique msgId and register the dispatch
-      const crypto = require('node:crypto');
-      const msgId = crypto.randomUUID();
+      // Reuse the normalization correlation identity so dashboard and shipped
+      // stream branches describe one logical turn without a parallel owner.
+      const msgId = legacyMessageId;
       dispatchBridge.registerDispatch({
         projectId: dispatchProjectId,
         message: trimmed,
@@ -3682,7 +3867,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
         } else {
           sendAndStore(mainWindow, { role: 'assistant', content: '🧠 **NeuroNest** is an agent-first IDE by NETGV AI. For more detailed information, visit [neuronest.cc](https://neuronest.cc).', agent: 'NeuroNest' });
         }
-        mainWindow.webContents.send('chat-response', { role: 'assistant', content: '', agent: 'NeuroNest' });
+        emitShippedChat(mainWindow, 'chat-response', { role: 'assistant', content: '', agent: 'NeuroNest' });
         return;
       }
 
@@ -3697,7 +3882,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
           '💡 *You can ask me about NeuroNest — features, pricing, security, agents, providers, or capabilities — anytime without a project!*',
         agent: 'NeuroNest',
       });
-      mainWindow.webContents.send('chat-response', { role: 'assistant', content: '', agent: 'NeuroNest' });
+      emitShippedChat(mainWindow, 'chat-response', { role: 'assistant', content: '', agent: 'NeuroNest' });
       return;
     }
 
@@ -3715,7 +3900,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
           isCommand: true, agent: 'Firewall',
         });
         // Send completion signal so the brain stops spinning
-        mainWindow.webContents.send('chat-response', { role: 'assistant', content: '', agent: 'NeuroNest' });
+        emitShippedChat(mainWindow, 'chat-response', { role: 'assistant', content: '', agent: 'NeuroNest' });
         mainWindow.webContents.send('firewall-event', { type: 'block', events: fwResult.events });
         return;
       }
@@ -3752,7 +3937,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
           role: 'assistant', content: '\u26d4 Pipeline aborted. All agent processes terminated.', isCommand: true, agent: 'System',
         });
         // Send completion signal to deactivate brain
-        mainWindow.webContents.send('chat-response', { role: 'assistant', content: '', agent: 'NeuroNest' });
+        emitShippedChat(mainWindow, 'chat-response', { role: 'assistant', content: '', agent: 'NeuroNest' });
         return;
       }
 
@@ -3764,7 +3949,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
           role: 'assistant', content: `Available commands:\n\n${helpText}`,
           isCommand: true,
         });
-        mainWindow.webContents.send('chat-response', { role: 'assistant', content: '', agent: 'NeuroNest' });
+        emitShippedChat(mainWindow, 'chat-response', { role: 'assistant', content: '', agent: 'NeuroNest' });
         return;
       }
 
@@ -3786,14 +3971,14 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
             isCommand: true,
           });
         }
-        mainWindow.webContents.send('chat-response', { role: 'assistant', content: '', agent: 'NeuroNest' });
+        emitShippedChat(mainWindow, 'chat-response', { role: 'assistant', content: '', agent: 'NeuroNest' });
         return;
       }
 
       // Handle special command outputs
       if (result.success && result.output.startsWith('__CLEAR__')) {
         mainWindow.webContents.send('clear-chat', {});
-        mainWindow.webContents.send('chat-response', { role: 'assistant', content: '', agent: 'NeuroNest' });
+        emitShippedChat(mainWindow, 'chat-response', { role: 'assistant', content: '', agent: 'NeuroNest' });
         return;
       }
       if (result.success && result.output.startsWith('__SWARM__')) {
@@ -3810,14 +3995,14 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
         });
         const displayPromptOnly = zeraOnly.optimizedPrompt.split('---')[0].split('Existing project code')[0].trim();
         sendAndStore(mainWindow, { role: 'assistant', content: '\u{1F4CB} **Optimized Prompt:**\n\n> ' + displayPromptOnly.replace(/\n/g, '\n> '), isCommand: true, agent: 'ZERA' });
-        mainWindow.webContents.send('chat-response', { role: 'assistant', content: '', agent: 'NeuroNest' });
+        emitShippedChat(mainWindow, 'chat-response', { role: 'assistant', content: '', agent: 'NeuroNest' });
         return;
       } else if (result.success && result.output.startsWith('__PLAN__')) {
         const planTask = result.output.slice(8);
         const planOnly = orchestratorPlanner.createPlan(planTask);
         const planAgents = planOnly.agents.map((a: any) => { const def = AGENT_REGISTRY.find((r: any) => r.id === a.id); return (def ? def.emoji + ' ' + def.name : a.id) + ': ' + a.task.slice(0, 100); }).join('\n');
         sendAndStore(mainWindow, { role: 'assistant', content: '\u{1F3AD} **Execution Plan**\n\nStrategy: ' + planOnly.plan + '\nTopology: ' + planOnly.topology + '\n\nAgents:\n' + planAgents, isCommand: true, agent: 'Orchestrator' });
-        mainWindow.webContents.send('chat-response', { role: 'assistant', content: '', agent: 'NeuroNest' });
+        emitShippedChat(mainWindow, 'chat-response', { role: 'assistant', content: '', agent: 'NeuroNest' });
         return;
       } else if (result.success && result.output.startsWith('__MODEL_STATUS__')) {
         const override = smartRouterRef ? smartRouterRef.getOverride() : null;
@@ -3831,14 +4016,14 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
         if (routerCfg.routes.reasoning) statusMsg += '**Reasoning model:** ' + routerCfg.routes.reasoning + '\n';
         if (routerCfg.routes.longContext) statusMsg += '**Long context model:** ' + routerCfg.routes.longContext + '\n';
         sendAndStore(mainWindow, { role: 'assistant', content: statusMsg, isCommand: true, agent: 'Router' });
-        mainWindow.webContents.send('chat-response', { role: 'assistant', content: '', agent: 'NeuroNest' });
+        emitShippedChat(mainWindow, 'chat-response', { role: 'assistant', content: '', agent: 'NeuroNest' });
         return;
       } else if (result.success && result.output.startsWith('__MODEL_SWITCH__')) {
         const modelStr = result.output.slice(16);
         const [switchProvider, switchModel] = modelStr.split(',');
         if (smartRouterRef) smartRouterRef.setOverride(switchProvider, switchModel);
         sendAndStore(mainWindow, { role: 'assistant', content: '🔀 Model switched to **' + switchProvider + '/' + switchModel + '**. Use `/model` to check status or clear with the Router settings.', isCommand: true, agent: 'Router' });
-        mainWindow.webContents.send('chat-response', { role: 'assistant', content: '', agent: 'NeuroNest' });
+        emitShippedChat(mainWindow, 'chat-response', { role: 'assistant', content: '', agent: 'NeuroNest' });
         return;
       } else if (result.success && result.output.startsWith('__COMMIT_GENERATE__')) {
         // Smart Commit Message Generation (Kilo-Inspired Feature)
@@ -3872,7 +4057,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
         } catch (commitErr: any) {
           sendAndStore(mainWindow, { role: 'assistant', content: '❌ Commit message generation failed: ' + (commitErr?.message || 'Unknown error'), isCommand: true, agent: 'CommitGen' });
         }
-        mainWindow.webContents.send('chat-response', { role: 'assistant', content: '', agent: 'NeuroNest' });
+        emitShippedChat(mainWindow, 'chat-response', { role: 'assistant', content: '', agent: 'NeuroNest' });
         return;
       } else {
         // Regular command result
@@ -3881,7 +4066,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
           content: result.success ? result.output : 'Error: ' + result.error,
           isCommand: true,
         });
-        mainWindow.webContents.send('chat-response', { role: 'assistant', content: '', agent: 'NeuroNest' });
+        emitShippedChat(mainWindow, 'chat-response', { role: 'assistant', content: '', agent: 'NeuroNest' });
         return;
       }
     }
@@ -3934,7 +4119,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
       } else {
         sendAndStore(mainWindow, { role: 'assistant', content: '🧠 **NeuroNest** is an agent-first IDE by NETGV AI. For more detailed information, visit [neuronest.cc](https://neuronest.cc).', agent: 'NeuroNest' });
       }
-      mainWindow.webContents.send('chat-response', { role: 'assistant', content: '', agent: 'NeuroNest' });
+      emitShippedChat(mainWindow, 'chat-response', { role: 'assistant', content: '', agent: 'NeuroNest' });
       console.log('[IPC] Self-knowledge query intercepted — responded from knowledge base');
       return;
     }
@@ -4032,7 +4217,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
           notifyProjectFilesUpdated(activeSessionId);
         }
 
-        mainWindow.webContents.send('chat-response', { role: 'assistant', content: '', agent: 'NeuroNest' });
+        emitShippedChat(mainWindow, 'chat-response', { role: 'assistant', content: '', agent: 'NeuroNest' });
         console.log('[IPC] Confirmation handled by simple responder, filesChanged:', confResponse.filesChanged);
         return;
       } catch (confErr: any) {
@@ -4086,7 +4271,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
                 agent: 'NeuroNest Architect',
                 isCommand: true,
               });
-              mainWindow.webContents.send('chat-response', { role: 'assistant', content: '', agent: 'NeuroNest Architect' });
+              emitShippedChat(mainWindow, 'chat-response', { role: 'assistant', content: '', agent: 'NeuroNest Architect' });
               console.log('[IPC] Grill-me follow-up question dispatched');
               return;
             }
@@ -4097,7 +4282,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
                 agent: 'NeuroNest Architect',
                 isCommand: true,
               });
-              mainWindow.webContents.send('chat-response', { role: 'assistant', content: '', agent: 'NeuroNest Architect' });
+              emitShippedChat(mainWindow, 'chat-response', { role: 'assistant', content: '', agent: 'NeuroNest Architect' });
               console.log('[IPC] Grill-me interview aborted:', step.reason);
               return;
             }
@@ -4215,7 +4400,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
               agent: 'NeuroNest Architect',
               isCommand: true,
             });
-            mainWindow.webContents.send('chat-response', { role: 'assistant', content: '', agent: 'NeuroNest Architect' });
+            emitShippedChat(mainWindow, 'chat-response', { role: 'assistant', content: '', agent: 'NeuroNest Architect' });
             console.log('[IPC] Grill-me interview started for build_task');
             return;
           }
@@ -4438,7 +4623,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
         } catch (cacheErr) { /* non-fatal */ }
         
         // Send completion signal
-        mainWindow.webContents.send('chat-response', { role: 'assistant', content: '', agent: 'NeuroNest' });
+        emitShippedChat(mainWindow, 'chat-response', { role: 'assistant', content: '', agent: 'NeuroNest' });
         console.log('[IPC] Conversational message handled by simple responder');
         return;
       } catch (simpleErr: any) {
@@ -4453,7 +4638,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
           isCommand: false,
           streamAnimate: true,
         });
-        mainWindow.webContents.send('chat-response', { role: 'assistant', content: '', agent: 'NeuroNest' });
+        emitShippedChat(mainWindow, 'chat-response', { role: 'assistant', content: '', agent: 'NeuroNest' });
         console.log('[IPC] Conversational message handled by fallback (simple responder failed)');
         return;
       }
@@ -4475,7 +4660,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
           agent: 'NeuroNest',
           isCommand: true,
         });
-        mainWindow.webContents.send('chat-response', { role: 'assistant', content: '', agent: 'NeuroNest' });
+        emitShippedChat(mainWindow, 'chat-response', { role: 'assistant', content: '', agent: 'NeuroNest' });
         console.log('[IPC] Ambiguous message routed to clarification prompt (confidence:', routingDecision.intent.confidence + ')');
         return;
       }
@@ -4517,7 +4702,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
     // Check if we should skip the full pipeline for conversational messages
     if ((routingDecision.route as string) === 'simple_responder' && skillRouteOutput) {
       // Skill provided output for a conversational message - send completion signal and return
-      mainWindow.webContents.send('chat-response', { role: 'assistant', content: '', agent: 'NeuroNest' });
+      emitShippedChat(mainWindow, 'chat-response', { role: 'assistant', content: '', agent: 'NeuroNest' });
       console.log('[IPC] Conversational message handled by skill, skipping pipeline');
       return;
     }
@@ -5209,7 +5394,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
         if (groundingContextMap.size > 0) {
           const allUngrounded = Array.from(groundingContextMap.values()).every(ctx => ctx.coverage === 'ungrounded');
           if (allUngrounded) {
-            mainWindow.webContents.send('chat-response', {
+            emitShippedChat(mainWindow, 'chat-response', {
               role: 'assistant',
               content: '💡 Grounded answers require an indexed project. Generate a Knowledge Graph from the project menu for better accuracy.',
               isCommand: true,
@@ -5223,7 +5408,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
       console.warn('[Grounding] GroundingEnforcer initialization failed, continuing without grounding:', groundingInitErr?.message);
       // ── Graceful Degradation: notify user when graph is unavailable during session ──
       if (activeSessionId) {
-        mainWindow.webContents.send('chat-response', {
+        emitShippedChat(mainWindow, 'chat-response', {
           role: 'assistant',
           content: '⚠️ Knowledge Graph temporarily unavailable — responses may have reduced accuracy',
           isCommand: true,
@@ -5475,7 +5660,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
             agent: 'PhasedPipeline',
           });
         }
-        mainWindow.webContents.send('chat-response', { role: 'assistant', content: '', agent: 'NeuroNest' });
+        emitShippedChat(mainWindow, 'chat-response', { role: 'assistant', content: '', agent: 'NeuroNest' });
         return;
       } catch (phasedErr: unknown) {
         // R9.6: On PhasedPipeline failure with the flag on, fall back to swarm dispatch,
@@ -5522,21 +5707,21 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
           // True streaming: forward LLM tokens directly to the renderer
           if (event.done) {
             if (event.error) {
-              mainWindow.webContents.send('chat:error', { msgId: event.msgId, partial: '', error: event.content || 'Stream error' });
+              emitShippedChat(mainWindow, 'chat:error', { msgId: event.msgId, partial: '', error: event.content || 'Stream error' });
             } else {
-              mainWindow.webContents.send('chat:done', { msgId: event.msgId, usage: {}, reasoning: event.reasoning || undefined });
+              emitShippedChat(mainWindow, 'chat:done', { msgId: event.msgId, usage: {}, reasoning: event.reasoning || undefined });
             }
           } else if (event.token === '' && !event.done) {
             // Start signal — create the message bubble
             const agentProv = agentProviderMap.get(event.agentId || '') || { provider: activeProviderType, model: activeModelId };
-            mainWindow.webContents.send('chat:stream', { msgId: event.msgId, token: '', agent: event.agentName || 'Agent', start: true, provider: agentProv.provider || activeProviderType, model: agentProv.model || activeModelId });
+            emitShippedChat(mainWindow, 'chat:stream', { msgId: event.msgId, token: '', agent: event.agentName || 'Agent', start: true, provider: agentProv.provider || activeProviderType, model: agentProv.model || activeModelId });
             // Notify the dashboard so it can correlate its "preparing" card with the stream
             if (dispatchSource === 'dashboard') {
               mainWindow.webContents.send('dashboard:session-started', { msgId: event.msgId });
             }
           } else {
             // Token chunk
-            mainWindow.webContents.send('chat:stream', { msgId: event.msgId, token: event.token });
+            emitShippedChat(mainWindow, 'chat:stream', { msgId: event.msgId, token: event.token });
           }
 
           // ── DispatchBridge routing (dispatch-chat-visibility, Req 2.1, 2.3, 2.4, 2.5, 5.1–5.4) ──
@@ -5630,7 +5815,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
 
           // ── Send hallucination score to renderer via chat-response metadata ──
           if (hallucinationScore !== undefined) {
-            mainWindow.webContents.send('chat-response', {
+            emitShippedChat(mainWindow, 'chat-response', {
               role: 'meta',
               type: 'hallucination-score',
               agentId: event.agentId,
@@ -5739,19 +5924,19 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
           // True streaming: forward LLM tokens directly to the renderer
           if (event.done) {
             if (event.error) {
-              mainWindow.webContents.send('chat:error', { msgId: event.msgId, partial: '', error: event.content || 'Stream error' });
+              emitShippedChat(mainWindow, 'chat:error', { msgId: event.msgId, partial: '', error: event.content || 'Stream error' });
             } else {
-              mainWindow.webContents.send('chat:done', { msgId: event.msgId, usage: {}, reasoning: event.reasoning || undefined });
+              emitShippedChat(mainWindow, 'chat:done', { msgId: event.msgId, usage: {}, reasoning: event.reasoning || undefined });
             }
           } else if (event.token === '' && !event.done) {
             const agentProv2 = agentProviderMap.get(event.agentId || '') || { provider: activeProviderType, model: activeModelId };
-            mainWindow.webContents.send('chat:stream', { msgId: event.msgId, token: '', agent: event.agentName || 'Agent', start: true, provider: agentProv2.provider || activeProviderType, model: agentProv2.model || activeModelId });
+            emitShippedChat(mainWindow, 'chat:stream', { msgId: event.msgId, token: '', agent: event.agentName || 'Agent', start: true, provider: agentProv2.provider || activeProviderType, model: agentProv2.model || activeModelId });
             // Notify the dashboard so it can correlate its "preparing" card with the stream
             if (dispatchSource === 'dashboard') {
               mainWindow.webContents.send('dashboard:session-started', { msgId: event.msgId });
             }
           } else {
-            mainWindow.webContents.send('chat:stream', { msgId: event.msgId, token: event.token });
+            emitShippedChat(mainWindow, 'chat:stream', { msgId: event.msgId, token: event.token });
           }
 
           // ── DispatchBridge routing (dispatch-chat-visibility, Req 2.1, 2.3, 2.4, 2.5, 5.1–5.4) ──
@@ -5842,7 +6027,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
 
           // ── Send hallucination score to renderer via chat-response metadata ──
           if (hallucinationScore !== undefined) {
-            mainWindow.webContents.send('chat-response', {
+            emitShippedChat(mainWindow, 'chat-response', {
               role: 'meta',
               type: 'hallucination-score',
               agentId: event.agentId,
@@ -7374,7 +7559,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
   ipcMain.handle('install-ollama', async () => {
     try {
       const result = await installOllama((msg) => {
-        mainWindow.webContents.send('chat-response', { role: 'assistant', content: msg, isCommand: true, agent: 'System' });
+        emitShippedChat(mainWindow, 'chat-response', { role: 'assistant', content: msg, isCommand: true, agent: 'System' });
       });
       return result;
     } catch (e) { return { success: false, message: String(e) }; }
@@ -9235,6 +9420,10 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
 
   ipcMain.on('abort-pipeline', () => {
     console.log('[IPC] Abort pipeline signal received');
+    if (activeLegacyTurnContext) {
+      legacyResponseIPCBridge?.enterTurn(activeLegacyTurnContext);
+    }
+    legacyResponseIPCBridge?.cancel({ origin: activeLegacyTurnContext?.origin || 'chat' });
     if (activeSwarmCoordinator) {
       activeSwarmCoordinator.abort();
       activeSwarmCoordinator = null;
@@ -9276,7 +9465,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
       content: result.success ? result.output : `Error: ${result.error}`,
       isCommand: true,
     });
-    mainWindow.webContents.send('chat-response', { role: 'assistant', content: '', agent: 'NeuroNest' });
+    emitShippedChat(mainWindow, 'chat-response', { role: 'assistant', content: '', agent: 'NeuroNest' });
   });
 
   // ── Graph Management (Graphify Integration) ──
@@ -9322,7 +9511,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
     } catch (e: any) {
       // ── Graceful Degradation: notify user when loadGraph throws during active session ──
       if (activeSessionId) {
-        mainWindow.webContents.send('chat-response', {
+        emitShippedChat(mainWindow, 'chat-response', {
           role: 'assistant',
           content: '⚠️ Knowledge Graph temporarily unavailable — responses may have reduced accuracy',
           isCommand: true,

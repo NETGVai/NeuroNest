@@ -12,6 +12,21 @@
  */
 
 export { dispatchPresentation, getSupportedIntentKinds } from './dispatch';
+export {
+  RESPONSE_COMPATIBILITY_CONTRACT_VERSION,
+  RESPONSE_COMPATIBILITY_MATRIX_V1,
+  RESPONSE_INTENT_KINDS_V1,
+  responseCompatibilityMatrix,
+  evaluateResponseCompatibility,
+  evaluateResponseBlockCompatibility,
+} from './response-compatibility';
+export type {
+  ResponseIntentKind,
+  ResponseCompatibilityMatrix,
+  ResponseCompatibilityFailureReason,
+  ResponseCompatibilityDecision,
+  ResponseBlockCompatibilityDecision,
+} from './response-compatibility';
 export { sanitizeContent, sanitizeUrl, sanitizeFilePath, checkContentSafety } from './sanitize';
 export type {
   PresentationOutput,
@@ -35,6 +50,20 @@ export {
 } from './renderers';
 
 export { DraftTransactionStore } from './composer';
+export {
+  OwningAuthorityDuplicateGuard,
+  type AuthoritySubmissionReceiptV1,
+  type DuplicateProtectionFailureReasonV1,
+  type NonIdempotentSubmissionRequestV1,
+  type ProtectedActionClassV1,
+  type ProtectedSubmissionSnapshotV1,
+  type ProtectedSubmissionStateV1,
+  type ReceiptRecordFailureReasonV1,
+  type ReceiptRecordResultV1,
+  type ReplayPolicyV1,
+  type SubmissionReservationResultV1,
+  type SubmissionReservationV1,
+} from './authority-actions';
 export type {
   SubmissionContext,
   DraftChange,
@@ -50,3 +79,20 @@ export type {
   DraftTransactionStoreConfig,
   QueuePlacement,
 } from './composer';
+
+export {
+  CompatibleConfirmationReconciler,
+  changedCompatibilityFields,
+} from './pending-commands';
+export type {
+  ActionCompatibilitySnapshot,
+  ProjectedActionOutcome,
+  TransportReceiptState,
+  PendingActionSubmission,
+  ProjectedActionSnapshot,
+  ProjectedActionResolution,
+  ActionConfirmationProjection,
+  PendingActionReconciliationView,
+  CompatibilityField,
+  ActionReconciliationResult,
+} from './pending-commands';

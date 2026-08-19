@@ -12,7 +12,50 @@
  * incorrectly categorized channels are rejected.
  * ─────────────────────────────────────────────────────────────────────────────
  */
+import {
+  IpcCleanupReason,
+  IpcSubscriptionRegistry,
+  IpcSubscriptionScope,
+} from './preload-subscription-registry';
+
+import type {
+  AppBootstrapSnapshot,
+  CloudProviderKeysMigrationConfigPayload,
+  InspectorLayoutState,
+  LaunchModeSettings,
+  LegacyProviderKeyDeleteRequestV1,
+  LegacyProviderKeyDeleteResultV1,
+  LegacyProviderKeyListV1,
+} from '../shared/app-bootstrap-contracts.js';
+import type {
+  EntitlementStatusV1,
+  InspectorLayoutUpdateRequestV1,
+  LaunchModeUpdateRequestV1,
+  ProxyCredentialStatusV1,
+} from '../shared/app-bootstrap-ipc-contracts.js';
+import type {
+  ChatProjectionCompositionQueryV1,
+  ChatProjectionCompositionResultV1,
+  ChatProjectionInvalidatedV1,
+  ChatProjectionPageQueryV1,
+  ChatProjectionPageResultV1,
+  ChatProjectionScopeV1,
+  ChatProjectionUnsubscribe,
+  ChatRenderStatusResultV1,
+  ScopedChatProjectionDeltaV1,
+} from './types/structured-chat-preload.js';
+import type {
+  CommandEnvelopeV1,
+  CommandTransportReceiptV1,
+} from '../harness/contracts/index.js';
+import type {
+  ExternalLinkRequestV1,
+  ExternalLinkResultV1,
+} from '../shared/external-link-ipc-contracts.js';
+import { SHELL_OPEN_EXTERNAL_CHANNEL } from '../shared/external-link-ipc-contracts.js';
+
 const { contextBridge, ipcRenderer } = require('electron');
+const ipcSubscriptions = new IpcSubscriptionRegistry(ipcRenderer);
 
 // ─── IPC Privilege Tiers ─────────────────────────────────────────────────────
 // Channels that expose system-level operations requiring caller authorization.
@@ -36,7 +79,6 @@ const PUBLIC_CHANNELS = [
   'get-agents',
   'get-departments',
   'get-app-version',
-  'get-config',
 ] as const;
 
 /**
@@ -76,7 +118,7 @@ const SEND_CHANNELS = [
 
 const INVOKE_CHANNELS = [
   'get-app-version', 'get-projects', 'get-active-project', 'get-agents', 'get-agent-details', 'get-theme',
-  'get-config', 'get-commands', 'save-providers', 'load-providers', 'get-agent-model', 'validate-api-key', 'list-provider-models', 'get-ollama-status', 'install-ollama', 'start-ollama', 'stop-ollama', 'start-llamacpp', 'stop-llamacpp', 'uninstall-ollama', 'uninstall-llamacpp', 'pull-ollama-model', 'set-default-provider', 'get-default-provider', 'set-execution-mode', 'get-project-files', 'read-project-file', 'get-dashboard-stats', 'get-system-stats', 'get-system-stats-slow', 'get-integrations', 'get-channel-configs', 'connect-channel', 'disconnect-channel', 'send-channel-message', 'get-channel-status', 'get-llamacpp-status', 'install-llamacpp', 'get-agent-prompt', 'get-departments', 'autocomplete-command', 'download-project-zip', 'webauthn-register-start', 'webauthn-register-finish', 'webauthn-login-start', 'webauthn-login-finish',
+  'get-commands', 'save-providers', 'load-providers', 'get-agent-model', 'validate-api-key', 'list-provider-models', 'get-ollama-status', 'install-ollama', 'start-ollama', 'stop-ollama', 'start-llamacpp', 'stop-llamacpp', 'uninstall-ollama', 'uninstall-llamacpp', 'pull-ollama-model', 'set-default-provider', 'get-default-provider', 'set-execution-mode', 'get-project-files', 'read-project-file', 'get-dashboard-stats', 'get-system-stats', 'get-system-stats-slow', 'get-integrations', 'get-channel-configs', 'connect-channel', 'disconnect-channel', 'send-channel-message', 'get-channel-status', 'get-llamacpp-status', 'install-llamacpp', 'get-agent-prompt', 'get-departments', 'autocomplete-command', 'download-project-zip', 'webauthn-register-start', 'webauthn-register-finish', 'webauthn-login-start', 'webauthn-login-finish',
   // Production auth channels
   'auth-start-registration', 'auth-start-login', 'auth-get-status', 'auth-renew-cert', 'auth-get-session', 'auth-get-registered-emails', 'auth-restart-server',
   'git-push-project', 'firewall-get-rules', 'firewall-get-events', 'firewall-get-stats', 'firewall-toggle-rule', 'firewall-update-action', 'test-llm-connection',
@@ -387,6 +429,9 @@ const INVOKE_CHANNELS = [
   'channel:list', 'channel:metadata',
   // Session Context Viewer (Requirement 5.4, 5.5)
   'list-active-sessions', 'get-session-info', 'clear-session-context',
+  // Structured response renderer — exact versioned read/command channels
+  'chat-projection:get-page-v1', 'chat-projection:get-composition-v1',
+  'chat-command:submit-v1', 'chat-diagnostics:get-render-status-v1',
 ];
 
 const RECEIVE_CHANNELS = [
@@ -469,15 +514,205 @@ const RECEIVE_CHANNELS = [
   'training:progress-update', 'training:job-state-changed', 'training:metrics-update', 'training:export-progress',
   // Agent Catalog updates (deferred import completed)
   'agents:catalog-updated',
+  // Launch mode hot-swap (Classic ↔ Advanced without restart)
+  'launch-mode:changed',
   // Knowledge Base Panel — real-time indexing/status updates (Main → Renderer)
   'kb:indexing-progress', 'kb:source-status-changed', 'kb:search-results',
   // User profile request (Main → Renderer, response via 'user-profile-response' send channel)
   'request-user-profile',
   // Channel Adapter System — registry change broadcast (Requirement 25.2)
   'channel-registry-update',
+  // Structured response renderer — exact versioned projection events
+  'chat-projection:delta-v1', 'chat-projection:invalidated-v1',
 ];
 
+type StructuredProjectionReceiveChannel =
+  | 'chat-projection:delta-v1'
+  | 'chat-projection:invalidated-v1';
+
+const scopedProjectionWrappers = new WeakMap<
+  (...args: never[]) => unknown,
+  Map<string, (payload: unknown) => void>
+>();
+
+/**
+ * Reverse mapping from scoped wrapper callback → original callback identity.
+ * Allows the disposal listener to purge the correct WeakMap entries when
+ * subscriptions are cleaned up, preventing retained composition/detail payloads.
+ */
+const wrapperOwnership = new Map<
+  (payload: unknown) => void,
+  { originalCallback: (...args: never[]) => unknown; wrapperKey: string }
+>();
+
+// ─── Projection Wrapper Cleanup ──────────────────────────────────
+// When subscriptions are disposed (session-switch, unload, rollback, or last
+// lease released), purge the corresponding scoped wrapper so that stale closures
+// cannot be reused and retained composition/detail payloads are released.
+ipcSubscriptions.onDispose((disposal) => {
+  if (!disposal.callback) return;
+  const scopedCb = disposal.callback as (payload: unknown) => void;
+  const ownership = wrapperOwnership.get(scopedCb);
+  if (!ownership) return;
+
+  // Remove the wrapper entry from the forward map
+  const wrappers = scopedProjectionWrappers.get(ownership.originalCallback);
+  if (wrappers) {
+    wrappers.delete(ownership.wrapperKey);
+    if (wrappers.size === 0) {
+      scopedProjectionWrappers.delete(ownership.originalCallback);
+    }
+  }
+  // Remove the reverse mapping
+  wrapperOwnership.delete(scopedCb);
+});
+
+function assertProjectionScope(scope: ChatProjectionScopeV1): void {
+  if (
+    scope === null
+    || typeof scope !== 'object'
+    || scope.schemaVersion !== 1
+    || typeof scope.sessionId !== 'string'
+    || scope.sessionId.length === 0
+    || typeof scope.branchId !== 'string'
+    || scope.branchId.length === 0
+  ) {
+    throw new TypeError('A version 1 projection session/branch scope is required');
+  }
+}
+
+/**
+ * Freezes the caller-supplied scope so post-subscribe mutation cannot change
+ * the filter identity or the {@link IpcSubscriptionScope} lease that owns the
+ * listener. This preserves the "ignore stale or mismatched stream events"
+ * invariant when the same scope literal is reused across subscriptions.
+ */
+function normalizeProjectionScope(scope: ChatProjectionScopeV1): ChatProjectionScopeV1 {
+  assertProjectionScope(scope);
+  return Object.freeze({
+    schemaVersion: 1 as const,
+    sessionId: scope.sessionId,
+    branchId: scope.branchId,
+  });
+}
+
+function subscribeScopedProjection<T extends ChatProjectionScopeV1>(
+  channel: StructuredProjectionReceiveChannel,
+  scope: ChatProjectionScopeV1,
+  callback: (event: T) => void,
+): ChatProjectionUnsubscribe {
+  const frozenScope = normalizeProjectionScope(scope);
+  if (typeof callback !== 'function') {
+    throw new TypeError('A projection subscription callback is required');
+  }
+
+  const wrapperKey = `${channel}\u0000${frozenScope.sessionId}\u0000${frozenScope.branchId}`;
+  let wrappers = scopedProjectionWrappers.get(callback);
+  if (!wrappers) {
+    wrappers = new Map<string, (payload: unknown) => void>();
+    scopedProjectionWrappers.set(callback, wrappers);
+  }
+
+  let scopedCallback = wrappers.get(wrapperKey);
+  if (!scopedCallback) {
+    scopedCallback = (payload: unknown): void => {
+      if (payload === null || typeof payload !== 'object') return;
+      const envelope = payload as Partial<ChatProjectionScopeV1>;
+      if (
+        envelope.schemaVersion !== 1
+        || envelope.sessionId !== frozenScope.sessionId
+        || envelope.branchId !== frozenScope.branchId
+      ) return;
+      callback(payload as T);
+    };
+    wrappers.set(wrapperKey, scopedCallback);
+    wrapperOwnership.set(scopedCallback, {
+      originalCallback: callback as unknown as (...args: never[]) => unknown,
+      wrapperKey,
+    });
+  }
+
+  return ipcSubscriptions.subscribe(channel, scopedCallback, {
+    sessionId: frozenScope.sessionId,
+    branchId: frozenScope.branchId,
+    gateId: 'structured_response_renderer',
+  });
+}
+
 contextBridge.exposeInMainWorld('electronAPI', {
+  getAppBootstrap(): Promise<AppBootstrapSnapshot> {
+    return ipcRenderer.invoke('app-bootstrap:get-v1');
+  },
+  getLaunchModeSettings(): Promise<LaunchModeSettings> {
+    return ipcRenderer.invoke('launch-settings:get-mode-v1');
+  },
+  updateLaunchMode(
+    request: LaunchModeUpdateRequestV1,
+  ): Promise<LaunchModeSettings> {
+    return ipcRenderer.invoke('launch-settings:update-mode-v1', request);
+  },
+  getProxyCredentialStatus(): Promise<ProxyCredentialStatusV1> {
+    return ipcRenderer.invoke('proxy-credential:get-status-v1');
+  },
+  getEntitlementStatus(): Promise<EntitlementStatusV1> {
+    return ipcRenderer.invoke('entitlements:get-status-v1');
+  },
+  getCloudProviderKeyMigrationStatus(): Promise<CloudProviderKeysMigrationConfigPayload> {
+    return ipcRenderer.invoke('cloud-provider-keys:get-migration-status-v1');
+  },
+  listLegacyProviderKeys(): Promise<LegacyProviderKeyListV1> {
+    return ipcRenderer.invoke('legacy-provider-keys:list-records-v1');
+  },
+  deleteLegacyProviderKey(
+    request: LegacyProviderKeyDeleteRequestV1,
+  ): Promise<LegacyProviderKeyDeleteResultV1> {
+    return ipcRenderer.invoke('legacy-provider-keys:delete-record-v1', request);
+  },
+  getInspectorLayout(): Promise<InspectorLayoutState> {
+    return ipcRenderer.invoke('inspector-layout:get-v1');
+  },
+  updateInspectorLayout(
+    request: InspectorLayoutUpdateRequestV1,
+  ): Promise<InspectorLayoutState> {
+    return ipcRenderer.invoke('inspector-layout:update-v1', request);
+  },
+  getChatProjectionPage(
+    query: ChatProjectionPageQueryV1,
+  ): Promise<ChatProjectionPageResultV1> {
+    return ipcRenderer.invoke('chat-projection:get-page-v1', query);
+  },
+  getChatProjectionComposition(
+    query: ChatProjectionCompositionQueryV1,
+  ): Promise<ChatProjectionCompositionResultV1> {
+    return ipcRenderer.invoke('chat-projection:get-composition-v1', query);
+  },
+  getChatRenderStatus(
+    scope: ChatProjectionScopeV1,
+  ): Promise<ChatRenderStatusResultV1> {
+    return ipcRenderer.invoke('chat-diagnostics:get-render-status-v1', scope);
+  },
+  submitChatCommand(
+    command: CommandEnvelopeV1,
+  ): Promise<CommandTransportReceiptV1> {
+    return ipcRenderer.invoke('chat-command:submit-v1', command);
+  },
+  openExternalLink(
+    request: ExternalLinkRequestV1,
+  ): Promise<ExternalLinkResultV1> {
+    return ipcRenderer.invoke(SHELL_OPEN_EXTERNAL_CHANNEL, request);
+  },
+  onChatProjectionDelta(
+    scope: ChatProjectionScopeV1,
+    callback: (delta: ScopedChatProjectionDeltaV1) => void,
+  ): ChatProjectionUnsubscribe {
+    return subscribeScopedProjection('chat-projection:delta-v1', scope, callback);
+  },
+  onChatProjectionInvalidated(
+    scope: ChatProjectionScopeV1,
+    callback: (event: ChatProjectionInvalidatedV1) => void,
+  ): ChatProjectionUnsubscribe {
+    return subscribeScopedProjection('chat-projection:invalidated-v1', scope, callback);
+  },
   send(channel: string, ...args: unknown[]) {
     if (SEND_CHANNELS.includes(channel)) ipcRenderer.send(channel, ...args);
   },
@@ -501,35 +736,49 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   on(channel: string, callback: (...args: unknown[]) => void) {
     if (RECEIVE_CHANNELS.includes(channel)) {
-      const wrapper = (_event: unknown, ...args: unknown[]) => callback(...args);
-      // Store the wrapper so removeListener can find it
-      if (!(callback as any).__ipcWrappers) (callback as any).__ipcWrappers = {};
-      (callback as any).__ipcWrappers[channel] = wrapper;
-      ipcRenderer.on(channel, wrapper);
+      return ipcSubscriptions.subscribe(channel, callback);
     }
+    return undefined;
+  },
+  onScoped(
+    channel: string,
+    scope: IpcSubscriptionScope,
+    callback: (...args: unknown[]) => void,
+  ) {
+    if (RECEIVE_CHANNELS.includes(channel)) {
+      return ipcSubscriptions.subscribe(channel, callback, scope);
+    }
+    return undefined;
   },
   removeListener(channel: string, callback: (...args: unknown[]) => void) {
-    if (RECEIVE_CHANNELS.includes(channel)) {
-      const wrapper = (callback as any).__ipcWrappers && (callback as any).__ipcWrappers[channel];
-      if (wrapper) {
-        ipcRenderer.removeListener(channel, wrapper);
-        delete (callback as any).__ipcWrappers[channel];
-      } else {
-        // Fallback: try removing directly (won't work for wrapped callbacks but won't error)
-        ipcRenderer.removeListener(channel, callback);
-      }
+    if (!RECEIVE_CHANNELS.includes(channel)) return 0;
+    return ipcSubscriptions.remove(channel, callback);
+  },
+  switchSubscriptionSession(sessionId: string, branchId = 'main') {
+    return ipcSubscriptions.switchSession(sessionId, branchId);
+  },
+  rollbackSubscriptionGate(gateId: string) {
+    return ipcSubscriptions.rollbackGate(gateId);
+  },
+  cleanupSubscriptions(reason: IpcCleanupReason) {
+    if (reason === 'session-switch') {
+      throw new Error('Use switchSubscriptionSession for session cleanup');
     }
+    return ipcSubscriptions.cleanup(reason);
   },
 });
 
-// ─── Window Unload Cleanup ──────────────────────────────────────
-// Remove all IPC listeners when the window is unloading to prevent
-// memory leaks and stale event handlers during navigation or reload.
-window.addEventListener('beforeunload', () => {
-  for (const channel of RECEIVE_CHANNELS) {
-    ipcRenderer.removeAllListeners(channel);
-  }
-});
+// ─── Window Lifecycle Cleanup ───────────────────────────────────
+// Remove only wrappers owned by this preload bridge. Calling Electron's
+// removeAllListeners here would also remove listeners installed by other owners.
+const cleanupForRendererUnload = () => {
+  ipcSubscriptions.cleanup('renderer-unload');
+};
+const cleanupForWindowDestruction = () => {
+  ipcSubscriptions.cleanup('window-destroyed');
+};
+window.addEventListener('beforeunload', cleanupForRendererUnload);
+window.addEventListener('unload', cleanupForWindowDestruction);
 
 // ─── Event_Bus_Bridge helper (`window.eventBusBridge`) ──────────
 // Renderer-side agents emit Pipeline_Events via this helper. The
@@ -557,7 +806,7 @@ contextBridge.exposeInMainWorld('eventBusBridge', {
 // When the main process needs the user profile from localStorage,
 // it sends 'request-user-profile' instead of using executeJavaScript.
 // This listener reads localStorage and sends the data back via IPC.
-ipcRenderer.on('request-user-profile', () => {
+ipcSubscriptions.subscribe('request-user-profile', () => {
   try {
     const raw = localStorage.getItem('neuronest-user-profile') || '{}';
     const profile = JSON.parse(raw);

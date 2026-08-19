@@ -19,10 +19,31 @@ export * from './actor';
 export * from './idempotency';
 export * from './error';
 export * from './command';
-export * from './provider-block';
+export {
+  ContentBlockV1Schema,
+  ReasoningBlockV1Schema as ProviderReasoningBlockV1Schema,
+  ToolCallBlockV1Schema,
+  UsageBlockV1Schema,
+  CompletionAnchorBlockV1Schema,
+  ProviderErrorBlockV1Schema,
+  ProviderBlockV1Schema,
+  ProviderBlockEnvelopeV1Schema,
+  type ProviderBlockV1,
+  type ProviderBlockEnvelopeV1,
+  type ContentBlockV1,
+  type ReasoningBlockV1 as ProviderReasoningBlockV1,
+  type ToolCallBlockV1,
+  type UsageBlockV1,
+  type CompletionAnchorBlockV1,
+  type ProviderErrorBlockV1,
+} from './provider-block';
 export * from './metrics';
 export * from './tool-value';
 export * from './render-intent';
 export * from './event';
 export * from './projection';
 export * from './chat-node';
+export * from './response-support';
+export * from './response-composition';
+export * from './structured-command';
+export * from './chat-stream-event';

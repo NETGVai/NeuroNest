@@ -16,6 +16,7 @@ import {
   RUNTIME_SECURITY_DEPENDENCIES,
   LOOP_ENGINE_DEPENDENCIES,
   KNOWLEDGE_TRAINING_DEPENDENCIES,
+  STRUCTURED_RESPONSE_DEPENDENCIES,
   type FeatureDependency,
   type FeatureGateFlags,
 } from './feature-gate-config.js';
@@ -557,6 +558,7 @@ export class FeatureGateStore {
       ...RUNTIME_SECURITY_DEPENDENCIES,
       ...LOOP_ENGINE_DEPENDENCIES,
       ...KNOWLEDGE_TRAINING_DEPENDENCIES,
+      ...STRUCTURED_RESPONSE_DEPENDENCIES,
     ];
   }
 

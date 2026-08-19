@@ -165,6 +165,8 @@ export interface LegacyTurnStatusData {
 export interface CollaborationRowIslandInput {
   /** Stable collaboration identity. */
   collaborationId: string;
+  /** Canonical stable key from the projection (replaces independent derivation). */
+  canonicalStableKey: string;
   /** Collaboration kind (question, approval, plan_review). */
   kind: TakeoverKind;
   /** Human-readable text describing the collaboration. */

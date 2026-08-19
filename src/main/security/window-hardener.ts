@@ -6,12 +6,17 @@
  * - Content Security Policy via session headers
  * - Nonce-based script allowlisting (no 'unsafe-inline')
  * - External navigation blocking
- * - New-window event interception
+ * - New-window event interception (always denied; never auto-opens)
+ *
+ * External navigation may only reach `shell.openExternal` via the fixed
+ * `shell:open-external-v1` IPC contract implemented in
+ * `../shell-open-external-handler.ts`. This module never opens URLs on
+ * behalf of the renderer — even for `https:` links.
  *
  * @module src/main/security/window-hardener
  */
 
-import { BrowserWindow, session, shell } from 'electron';
+import { BrowserWindow, session } from 'electron';
 import { randomBytes } from 'node:crypto';
 import { getLogger } from '../../utils/structured-logger';
 
@@ -202,22 +207,19 @@ export function blockExternalNavigation(win: BrowserWindow, allowedOrigins: stri
 }
 
 /**
- * Intercepts new-window events to prevent the renderer from spawning windows.
- * External URLs are optionally opened in the system default browser via shell.openExternal.
- * Internal URLs matching allowed origins are silently blocked (no new window).
+ * Intercepts new-window events. Every request is denied — including
+ * `https:` links — without any side effect. There is *no* auto-open via
+ * `shell.openExternal` from this path. Task 10.6 moved the sole
+ * authorized external-navigation route to the fixed
+ * `shell:open-external-v1` IPC contract; the renderer must route through
+ * that contract explicitly. `_allowedOrigins` is retained on the
+ * signature so callers do not break, but the value is unused.
  */
-function interceptNewWindow(win: BrowserWindow, allowedOrigins: string[]): void {
+function interceptNewWindow(win: BrowserWindow, _allowedOrigins: string[]): void {
   win.webContents.setWindowOpenHandler(({ url }) => {
-    // If the URL looks like a legitimate external link, open in system browser
-    if (url.startsWith('http://') || url.startsWith('https://')) {
-      shell.openExternal(url).catch((err) => {
-        getLogger().error(LOG_SOURCE, 'Failed to open URL in system browser', err instanceof Error ? err : new Error(String(err)), { url });
-      });
-    } else {
-      getLogger().warn(LOG_SOURCE, 'Blocked new-window event for URL', { url });
-    }
-
-    // Always deny the new window creation in the renderer
+    // Never auto-open. Renderer-side callers must use the fixed
+    // `shell:open-external-v1` IPC method after validation.
+    getLogger().warn(LOG_SOURCE, 'Denied window-open request', { url });
     return { action: 'deny' };
   });
 }

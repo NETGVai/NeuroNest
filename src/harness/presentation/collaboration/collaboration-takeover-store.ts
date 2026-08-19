@@ -111,8 +111,11 @@ export function validateAnswer(
 // ─── Timeline Key Derivation ────────────────────────────────────
 
 /**
- * Derives the stable timeline key for a collaboration contract
- * so the duplicate timeline card can be suppressed (Req 38.7).
+ * @deprecated Use the canonical stable key from the projection instead of
+ * deriving independent `collab:` keys. Retained only for legacy adapter
+ * compatibility until all consumers migrate to canonical keys.
+ *
+ * New callers MUST pass `canonicalStableKey` to `activate()` instead.
  */
 export function deriveTimelineKey(
   sessionId: string,
@@ -273,6 +276,11 @@ export class CollaborationTakeoverStore {
     return this.state.suppressedTimelineKeys.has(key);
   }
 
+  /** Get the canonical stable key used for this takeover (Req 9.1–9.2). */
+  getCanonicalStableKey(): string | undefined {
+    return this.state.canonicalStableKey;
+  }
+
   /** Get the current takeover view for rendering. */
   getView(): CollaborationTakeoverView {
     if (!this.state.active || !this.state.contract) {
@@ -326,12 +334,16 @@ export class CollaborationTakeoverStore {
    * Activate a collaboration takeover from a projected pending contract.
    *
    * Req 38.1–38.3: replaces ordinary submission controls
-   * Req 38.7: suppresses the duplicate timeline card
+   * Req 38.7: suppresses the duplicate timeline card using the canonical stable key
    * Req 38.8: preserves the prior draft
    * Req 38.15: deduplicates contracts with same identity
+   *
+   * Req 9.1–9.2 (structured-response-renderer): receives the canonical stable key
+   * directly from the projection; no independent `collab:`/`collaboration:` key derivation.
    */
   activate(params: {
     contract: ProjectedTakeoverContract;
+    canonicalStableKey: string;
     preservedDraft: PreservedDraft;
     projectionRevision: number;
   }): { success: boolean; reason?: string } {
@@ -341,6 +353,11 @@ export class CollaborationTakeoverStore {
     }
 
     const contract = parseResult.data as ProjectedTakeoverContract;
+
+    // Validate canonicalStableKey
+    if (!params.canonicalStableKey || typeof params.canonicalStableKey !== 'string') {
+      return { success: false, reason: 'canonicalStableKey is required and must be a non-empty string' };
+    }
 
     // Req 38.15: If duplicate collaboration records share one identity, render one takeover
     if (
@@ -361,14 +378,13 @@ export class CollaborationTakeoverStore {
       return { success: true };
     }
 
-    // Derive the timeline key to suppress (Req 38.7)
-    const timelineKey = deriveTimelineKey(contract.sessionId, contract.collaborationId);
-
+    // Use canonical stable key directly (Req 9.1–9.2, 38.7)
+    // No independent collab:/collaboration: key derivation.
     this.state = {
       active: true,
       contract,
       status: 'active',
-      suppressedTimelineKeys: new Set([timelineKey]),
+      suppressedTimelineKeys: new Set([params.canonicalStableKey]),
       preservedDraft: params.preservedDraft,
       pendingDecision: null,
       sourceProjectionRevision: params.projectionRevision,
@@ -376,6 +392,7 @@ export class CollaborationTakeoverStore {
         collaborationId: contract.collaborationId,
         revision: contract.revision,
       },
+      canonicalStableKey: params.canonicalStableKey,
     };
 
     return { success: true };

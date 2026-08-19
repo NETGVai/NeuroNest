@@ -43,3 +43,28 @@ export interface StateChangeEvent<K extends keyof AppState = keyof AppState> {
   value: AppState[K];
   previousValue: AppState[K];
 }
+
+export type {
+  AppBootstrapSnapshot,
+  AppEdition,
+  CloudProviderKeyMigrationStatus,
+  CloudProviderKeysMigrationConfigPayload,
+  EntitlementAvailability,
+  EntitlementStatusV1,
+  InspectorLayoutConfigPayload,
+  InspectorLayoutState,
+  InstallationClass,
+  LaunchMode,
+  LaunchModeConfigPayload,
+  LaunchModeInstallationClassConfigPayload,
+  LaunchModeResolution,
+  LaunchModeSettings,
+  LaunchModeSource,
+  LaunchModeUpdateRequestV1,
+  ProxyCredentialAvailability,
+  ProxyCredentialStatusV1,
+} from './app-bootstrap-preload.js';
+export type {
+  ElectronPreloadBridge,
+  LegacyElectronPreloadBridge,
+} from './electron-api.js';

@@ -1,7 +1,23 @@
 /**
  * Chat service — IPC wrappers for chat operations.
- * Provides a typed abstraction over Electron IPC for sending/receiving chat messages,
- * managing rooms, and handling streaming responses.
+ *
+ * Provides a typed abstraction over Electron IPC for **command-side** chat
+ * operations only: send/load messages, room CRUD, and the fixed
+ * `chat:message-received` acknowledgement that the main process emits after a
+ * successful send. Streaming and legacy chat delivery are handled by the
+ * canonical projection integration (see
+ * `src/renderer/panels/chat/projection-chat-integration.ts`).
+ *
+ * Task 13.2 (enhanced-chat-ui) — this service no longer subscribes to the
+ * five legacy chat channels (`chat-response`, `chat:stream`, `chat:done`,
+ * `chat:error`, `chat:stream-chunk`). Those channels still flow into the
+ * main-process SessionLog through `LegacyCanonicalIngestion`
+ * (`src/main/chat/legacy-canonical-ingestion.ts`) and are re-emitted as
+ * canonical projection deltas. The renderer's sole rendering input is the
+ * projection subscription surfaced through `chatProjection.*` in the
+ * preload bridge; a rollback to direct legacy delivery is not permitted.
+ *
+ * Requirements: 5.7, 9.1, 9.6, 10.1–10.7, 15.3–15.5
  */
 
 import type {
@@ -14,10 +30,9 @@ import type {
   RoomId,
   SendMessageRequest,
   SendMessageResponse,
-  StreamChunkPayload,
 } from './types';
 
-/** IPC channels used by the chat service. */
+/** IPC channels used by the chat service (command-side only). */
 const IPC_CHANNELS = {
   SEND_MESSAGE: 'chat:send-message',
   LOAD_MESSAGES: 'chat:load-messages',
@@ -25,7 +40,6 @@ const IPC_CHANNELS = {
   LIST_ROOMS: 'chat:list-rooms',
   DELETE_ROOM: 'chat:delete-room',
   MESSAGE_RECEIVED: 'chat:message-received',
-  STREAM_CHUNK: 'chat:stream-chunk',
 } as const;
 
 /**
@@ -51,21 +65,23 @@ function getIpcBridge(): {
 }
 
 /**
- * Chat service providing IPC-backed operations for the chat panel.
- * Manages subscriptions to incoming messages and stream chunks.
+ * Chat service providing IPC-backed command operations for the chat panel.
+ *
+ * Manages the `chat:message-received` send-acknowledgement subscription and
+ * the invoke-based send/load/room CRUD channels. Streaming and legacy chat
+ * deliveries (chat-response, chat:stream, chat:done, chat:error,
+ * chat:stream-chunk) are NOT subscribed here; those flow through the
+ * main-process compatibility ingress into SessionLog and are re-emitted as
+ * canonical projection deltas that the projection integration renders.
  */
 export class ChatService {
   private listeners: Set<ChatServiceListener> = new Set();
   private ipcMessageHandler: ((...args: unknown[]) => void) | null = null;
-  private ipcStreamHandler: ((...args: unknown[]) => void) | null = null;
-  private ipcChatResponseHandler: ((...args: unknown[]) => void) | null = null;
   private started = false;
-  /** Tracks msgIds that have received a `start` event. */
-  private startedStreams: Set<string> = new Set();
-  /** The current project/room ID, used when creating placeholder messages. */
+  /** The current project/room ID. Retained for send/load scoping. */
   currentProjectId: RoomId = 'default';
 
-  /** Start listening for incoming IPC events from the main process. */
+  /** Start listening for the send-acknowledgement IPC event. */
   start(): void {
     if (this.started) return;
     this.started = true;
@@ -73,96 +89,13 @@ export class ChatService {
     const bridge = getIpcBridge();
 
     this.ipcMessageHandler = (...args: unknown[]) => {
-      const message = args[0] as ChatMessage;
-      if (message && message.id) {
+      const message = args[0] as ChatMessage | undefined;
+      if (message && typeof message.id === 'string' && message.id.length > 0) {
         this.emit({ type: 'message-received', message });
       }
     };
 
-    this.ipcStreamHandler = (...args: unknown[]) => {
-      const data = args[0] as StreamChunkPayload | undefined;
-      if (!data || !data.messageId) return;
-
-      if (data.done) {
-        this.startedStreams.delete(data.messageId);
-        this.emit({ type: 'message-status-changed', messageId: data.messageId, status: 'sent', reasoning: data.reasoning || undefined });
-        return;
-      }
-
-      if (data.error) {
-        this.startedStreams.delete(data.messageId);
-        this.emit({ type: 'message-status-changed', messageId: data.messageId, status: 'error' });
-        return;
-      }
-
-      if (data.start) {
-        this.startedStreams.add(data.messageId);
-        this.emit({
-          type: 'message-received',
-          message: {
-            id: data.messageId,
-            roomId: this.currentProjectId,
-            sender: 'assistant',
-            content: '',
-            timestamp: Date.now(),
-            status: 'sending',
-            metadata: {
-              source: data.source,
-              agent: data.agent,
-              agentEmoji: data.agentEmoji,
-            },
-          },
-        });
-        return;
-      }
-
-      // Regular token — if no start event was received for this msgId, create a placeholder first (Req 2.7)
-      if (!this.startedStreams.has(data.messageId)) {
-        this.startedStreams.add(data.messageId);
-        this.emit({
-          type: 'message-received',
-          message: {
-            id: data.messageId,
-            roomId: this.currentProjectId,
-            sender: 'assistant',
-            content: '',
-            timestamp: Date.now(),
-            status: 'sending',
-          },
-        });
-      }
-
-      this.emit({ type: 'stream-chunk', messageId: data.messageId, chunk: data.chunk });
-    };
-
     bridge.on(IPC_CHANNELS.MESSAGE_RECEIVED, this.ipcMessageHandler);
-    bridge.on(IPC_CHANNELS.STREAM_CHUNK, this.ipcStreamHandler);
-
-    // Listen to legacy chat-response events for channel messages (REQ 3.1, 3.2, 3.3, 3.4, 3.5)
-    this.ipcChatResponseHandler = (...args: unknown[]) => {
-      const data = args[0] as Record<string, unknown> | undefined;
-      if (!data) return;
-      // Only handle channel messages — non-channel messages are handled by legacy renderer
-      if (!data.isChannelMessage && !data.channelSource && !data.relayTarget) return;
-
-      const message: ChatMessage = {
-        id: `channel-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
-        roomId: this.currentProjectId,
-        sender: (data.role as 'user' | 'assistant') === 'user' ? 'user' : 'assistant',
-        content: (data.content as string) || '',
-        timestamp: Date.now(),
-        status: 'sent',
-        metadata: {
-          agent: (data.agent as string) || undefined,
-          channelSource: data.channelSource as ChatMessage['metadata'] extends infer M ? M extends { channelSource?: infer C } ? C : never : never,
-          relayTarget: data.relayTarget as ChatMessage['metadata'] extends infer M ? M extends { relayTarget?: infer R } ? R : never : never,
-          isChannelMessage: true,
-          isChannelStreaming: (data.isChannelStreaming as boolean) || undefined,
-        },
-      };
-      this.emit({ type: 'message-received', message });
-    };
-    bridge.on('chat-response', this.ipcChatResponseHandler);
   }
 
   /** Stop listening for IPC events and clean up subscriptions. */
@@ -176,16 +109,6 @@ export class ChatService {
       bridge.off(IPC_CHANNELS.MESSAGE_RECEIVED, this.ipcMessageHandler);
       this.ipcMessageHandler = null;
     }
-    if (this.ipcStreamHandler) {
-      bridge.off(IPC_CHANNELS.STREAM_CHUNK, this.ipcStreamHandler);
-      this.ipcStreamHandler = null;
-    }
-    if (this.ipcChatResponseHandler) {
-      bridge.off('chat-response', this.ipcChatResponseHandler);
-      this.ipcChatResponseHandler = null;
-    }
-
-    this.startedStreams.clear();
   }
 
   /** Subscribe to chat service events. Returns an unsubscribe function. */

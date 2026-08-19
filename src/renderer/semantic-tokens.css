@@ -1,0 +1,231 @@
+/* ══════════════════════════════════════════════════════════════
+   semantic-tokens.css — Semantic Theme System tokens for rendered
+   chat content and Harness surfaces.
+
+   This is the ONE canonical location for color literals used by
+   rendered chat content. Every other rendered-content stylesheet
+   references these tokens via `var(--nn-color-*)` without inline
+   hex/rgb fallbacks; the CSS regression test in
+   chat-ui-token-hygiene.test.ts allowlists only this file.
+
+   Categories:
+   - Content foreground/background
+   - Borders (subtle / default / strong)
+   - Focus ring (high-contrast visible on every theme)
+   - Status (error / warning / info / success)
+   - Feedback (copy success / failure)
+   - Syntax highlighting (keyword / string / number / comment / …)
+   - Code chrome (block bg / header bg / border / inline bg)
+
+   Requirements: 14.1–14.3, 15.9
+
+   Structure:
+   - Root defaults use the dark-theme palette (matches existing
+     inline `:root` block in index.html which is dark-first).
+   - Body-scoped `.theme-*` overrides align with the classes that
+     `applyTheme()` toggles on `document.body`.
+   - `color-scheme: light dark;` plus a `prefers-color-scheme: light`
+     fallback keep unstyled/bare-CSS pages legible.
+   ══════════════════════════════════════════════════════════════ */
+
+:root {
+  /* Signals the UA that this document supports both color schemes
+     so form controls, scrollbars, and default text pick a legible
+     color when no theme class has been applied. */
+  color-scheme: light dark;
+
+  /* ── Content foreground/background (aliases legacy vars) ── */
+  --nn-color-content-fg: var(--text-primary);
+  --nn-color-content-fg-muted: var(--text-secondary);
+  --nn-color-content-fg-dim: var(--text-dim);
+  --nn-color-content-bg: var(--surface-container);
+  --nn-color-content-bg-inset: var(--surface-container-high);
+  --nn-color-content-bg-raised: var(--surface-container-highest);
+  --nn-color-content-link: var(--accent);
+  --nn-color-content-link-hover: var(--accent-hover);
+
+  /* ── Borders ── */
+  --nn-color-border-subtle: var(--border-color);
+  --nn-color-border-default: var(--outline-variant, var(--border-color));
+  --nn-color-border-strong: var(--outline, var(--border-color));
+
+  /* ── Focus ring (high-contrast on every theme) ── */
+  --nn-color-focus-ring: var(--accent);
+  --nn-color-focus-ring-inset: var(--accent-container);
+  --nn-color-focus-glow: var(--accent-container);
+
+  /* ── On-accent contrast (user bubble text, primary-button label) ── */
+  --nn-color-on-accent: var(--text-inverse, #ffffff);
+  --nn-color-on-accent-muted: color-mix(in srgb, var(--nn-color-on-accent) 55%, transparent);
+
+  /* ── Status ── */
+  --nn-color-status-error: var(--red);
+  --nn-color-status-error-bg: var(--red-container);
+  --nn-color-status-warning: var(--yellow);
+  --nn-color-status-warning-bg: var(--yellow-container);
+  --nn-color-status-info: var(--accent);
+  --nn-color-status-info-bg: var(--accent-container);
+  --nn-color-status-success: var(--green);
+  --nn-color-status-success-bg: var(--green-container);
+
+  /* ── Feedback (copy / retry outcomes) ── */
+  --nn-color-feedback-success: var(--green);
+  --nn-color-feedback-success-bg: var(--green-container);
+  --nn-color-feedback-failure: var(--red);
+  --nn-color-feedback-failure-bg: var(--red-container);
+
+  /* ── Syntax highlighting — dark defaults (VS Code style) ── */
+  --nn-color-syntax-keyword: #c586c0;
+  --nn-color-syntax-string: #ce9178;
+  --nn-color-syntax-number: #b5cea8;
+  --nn-color-syntax-comment: #6a9955;
+  --nn-color-syntax-function: #dcdcaa;
+  --nn-color-syntax-type: #4ec9b0;
+  --nn-color-syntax-literal: #569cd6;
+  --nn-color-syntax-built-in: #4fc1ff;
+  --nn-color-syntax-attr: #9cdcfe;
+  --nn-color-syntax-tag: #569cd6;
+
+  /* ── Code chrome ── */
+  --nn-color-code-bg: var(--surface-container);
+  --nn-color-code-header-bg: var(--surface-container-high);
+  --nn-color-code-border: var(--border-color);
+  --nn-color-inline-code-bg: var(--surface-container-high);
+}
+
+/* ──────────────────────────────────────────────────────────────
+   Unstyled fallback: when no theme class is present AND the user
+   prefers a light color scheme, override the dark syntax palette
+   with a legible light one so bare-CSS renders remain readable.
+   ────────────────────────────────────────────────────────────── */
+@media (prefers-color-scheme: light) {
+  :root {
+    --nn-color-syntax-keyword: #af00db;
+    --nn-color-syntax-string: #a31515;
+    --nn-color-syntax-number: #098658;
+    --nn-color-syntax-comment: #008000;
+    --nn-color-syntax-function: #795e26;
+    --nn-color-syntax-type: #267f99;
+    --nn-color-syntax-literal: #0000ff;
+    --nn-color-syntax-built-in: #267f99;
+    --nn-color-syntax-attr: #001080;
+    --nn-color-syntax-tag: #800000;
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════
+   Theme-class syntax overrides. Content foreground/background,
+   borders, focus, status, and feedback tokens all alias legacy
+   `--text-*`, `--surface-*`, `--accent`, `--red`, `--yellow`,
+   `--green` variables that `applyTheme()` already rewrites — the
+   overrides below cover the syntax layer that legacy vars do not
+   express.
+   ══════════════════════════════════════════════════════════════ */
+
+body.theme-light {
+  --nn-color-syntax-keyword: #af00db;
+  --nn-color-syntax-string: #a31515;
+  --nn-color-syntax-number: #098658;
+  --nn-color-syntax-comment: #008000;
+  --nn-color-syntax-function: #795e26;
+  --nn-color-syntax-type: #267f99;
+  --nn-color-syntax-literal: #0000ff;
+  --nn-color-syntax-built-in: #267f99;
+  --nn-color-syntax-attr: #001080;
+  --nn-color-syntax-tag: #800000;
+}
+
+body.theme-midnight {
+  --nn-color-syntax-keyword: #b48ead;
+  --nn-color-syntax-string: #a3be8c;
+  --nn-color-syntax-number: #d08770;
+  --nn-color-syntax-comment: #4c566a;
+  --nn-color-syntax-function: #88c0d0;
+  --nn-color-syntax-type: #8fbcbb;
+  --nn-color-syntax-literal: #81a1c1;
+  --nn-color-syntax-built-in: #5e81ac;
+  --nn-color-syntax-attr: #d8dee9;
+  --nn-color-syntax-tag: #81a1c1;
+}
+
+body.theme-sepia {
+  --nn-color-syntax-keyword: #8b4513;
+  --nn-color-syntax-string: #6b4226;
+  --nn-color-syntax-number: #2e7d32;
+  --nn-color-syntax-comment: #8b7355;
+  --nn-color-syntax-function: #5d4037;
+  --nn-color-syntax-type: #00695c;
+  --nn-color-syntax-literal: #1565c0;
+  --nn-color-syntax-built-in: #4e342e;
+  --nn-color-syntax-attr: #3e2723;
+  --nn-color-syntax-tag: #795548;
+}
+
+body.theme-nord {
+  --nn-color-syntax-keyword: #81a1c1;
+  --nn-color-syntax-string: #a3be8c;
+  --nn-color-syntax-number: #b48ead;
+  --nn-color-syntax-comment: #616e88;
+  --nn-color-syntax-function: #88c0d0;
+  --nn-color-syntax-type: #8fbcbb;
+  --nn-color-syntax-literal: #81a1c1;
+  --nn-color-syntax-built-in: #5e81ac;
+  --nn-color-syntax-attr: #d8dee9;
+  --nn-color-syntax-tag: #81a1c1;
+}
+
+body.theme-terminal {
+  --nn-color-syntax-keyword: #00ff41;
+  --nn-color-syntax-string: #66ff66;
+  --nn-color-syntax-number: #ffcc00;
+  --nn-color-syntax-comment: #116611;
+  --nn-color-syntax-function: #33ff99;
+  --nn-color-syntax-type: #00cc88;
+  --nn-color-syntax-literal: #00ffcc;
+  --nn-color-syntax-built-in: #33ccff;
+  --nn-color-syntax-attr: #99ff99;
+  --nn-color-syntax-tag: #00ff41;
+}
+
+body.theme-zen {
+  --nn-color-syntax-keyword: #8b6914;
+  --nn-color-syntax-string: #6b7c3e;
+  --nn-color-syntax-number: #2e7d32;
+  --nn-color-syntax-comment: #9c9484;
+  --nn-color-syntax-function: #5d4e37;
+  --nn-color-syntax-type: #4e7a6e;
+  --nn-color-syntax-literal: #5a7093;
+  --nn-color-syntax-built-in: #6b6456;
+  --nn-color-syntax-attr: #3d3929;
+  --nn-color-syntax-tag: #8b7355;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   Backward-compat aliases for the legacy `--hljs-*` and
+   `--code-block-*` variables that chat-ui.css previously defined
+   inline. Keeping them prevents surprises for any downstream code
+   that still references them while giving the new tokens the
+   single authoritative source.
+   ══════════════════════════════════════════════════════════════ */
+
+:root,
+body.theme-light,
+body.theme-midnight,
+body.theme-sepia,
+body.theme-nord,
+body.theme-terminal,
+body.theme-zen {
+  --hljs-keyword: var(--nn-color-syntax-keyword);
+  --hljs-string: var(--nn-color-syntax-string);
+  --hljs-number: var(--nn-color-syntax-number);
+  --hljs-comment: var(--nn-color-syntax-comment);
+  --hljs-function: var(--nn-color-syntax-function);
+  --hljs-type: var(--nn-color-syntax-type);
+  --hljs-literal: var(--nn-color-syntax-literal);
+  --hljs-built-in: var(--nn-color-syntax-built-in);
+  --hljs-attr: var(--nn-color-syntax-attr);
+  --hljs-tag: var(--nn-color-syntax-tag);
+  --code-block-bg: var(--nn-color-code-bg);
+  --code-block-header-bg: var(--nn-color-code-header-bg);
+  --code-block-border: var(--nn-color-code-border);
+}

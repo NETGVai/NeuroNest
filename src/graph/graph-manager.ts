@@ -5,7 +5,6 @@
  * without interfering with existing NeuroNest functionality.
  */
 
-import { createLLMClient } from '../pipeline/llm-client';
 import type { ConnectorNode, ConnectorEdge } from '../indexing/connectors/connector-interface';
 
 export interface GraphNode {

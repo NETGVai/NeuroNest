@@ -10,6 +10,27 @@
 export { SessionLog } from './session-log.js';
 export { computeIntegrityHash, verifyIntegrityChain } from './integrity.js';
 export { DefaultUpcasterRegistry } from './upcasters.js';
+export {
+  appendAcceptedChatLifecycleEvents,
+  appendAcceptedChatStreamEvents,
+  appendNormalizedChatEvent,
+  appendNormalizedChatEvents,
+  mapNormalizedChatEvent,
+  upcastNormalizedChatEvent,
+} from './normalized-events.js';
+export type {
+  AcceptedChatLifecycleEventV1,
+  AcceptedChatStreamEventV1Like,
+  AppendAcceptedChatLifecycleOptions,
+  ChatLifecycleObserverErrorPolicy,
+  CommittedChatLifecycleObserver,
+  DurableChatLifecycleAppendResult,
+  NormalizedAppendContext,
+  NormalizedChatEventInput,
+  NormalizedChatEventV0,
+  NormalizedChatEventV1,
+  NormalizedSessionEventTypeV1,
+} from './normalized-events.js';
 export type {
   IntegrityHashInput,
 } from './integrity.js';

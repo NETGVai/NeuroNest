@@ -192,6 +192,7 @@ export const FEATURE_FLAG_METADATA: Record<keyof FeatureGateFlags, FlagMetadata>
   ops_dashboard: { description: 'Operations monitoring dashboard panel', stability: 'experimental', group: 'runtime' },
   file_tree_panel: { description: 'File tree sidebar panel', stability: 'experimental', group: 'runtime' },
   spec_viewer_panel: { description: 'Spec document viewer panel', stability: 'experimental', group: 'runtime' },
-  enhanced_chat_renderer: { description: 'VS Code-style chat formatting', stability: 'experimental', group: 'runtime' },
+  enhanced_chat_renderer: { description: 'Legacy chat formatting compatibility flag', stability: 'deprecated', group: 'runtime' },
+  structured_response_renderer: { description: 'Typed composition surfaces for structured response rendering', stability: 'experimental', group: 'runtime' },
   skill_git_import: { description: 'Git repository skill import', stability: 'experimental', group: 'extensions' },
 };

@@ -21,6 +21,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
+import { redactForLog, redactString } from '../shared/observable-redaction';
+
 // --- Types ---
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
@@ -147,22 +149,29 @@ class StructuredLogger implements Logger {
       return;
     }
 
+    // Task 5.5 (enhanced-chat-ui): every log entry passes through the shared
+    // credential/content redaction boundary before it is serialized. Field
+    // deny-lists strip Proxy Credentials, legacy provider keys, prompt/
+    // response content, reasoning, and private tool payloads; canary
+    // patterns catch private paths, bearer tokens, and PEM blocks that
+    // survive as loose strings inside `message`, `stack`, or `context`.
     const entry: LogEntry = {
       timestamp: new Date().toISOString(),
       level,
       source,
-      message,
+      message: redactString(message),
     };
 
     // For error-level entries, always include context (even if empty)
     if (level === 'error') {
-      entry.context = (context as Record<string, unknown>) ?? {};
+      const rawContext = (context as Record<string, unknown>) ?? {};
+      entry.context = redactForLog(rawContext);
     } else if (context !== undefined) {
-      entry.context = context as Record<string, unknown>;
+      entry.context = redactForLog(context as Record<string, unknown>);
     }
 
     if (error?.stack) {
-      entry.stack = error.stack;
+      entry.stack = redactString(error.stack);
     }
 
     this.writeEntry(entry);

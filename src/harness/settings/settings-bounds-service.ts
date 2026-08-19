@@ -275,6 +275,90 @@ export class SettingsBoundsService {
 // ─── Helpers ────────────────────────────────────────────────────
 
 /**
+ * The complete resolved renderer bounds required for canonical renderer activation.
+ * Every field must be resolved from SettingsBoundsService — no silent constants.
+ */
+export interface ResolvedRendererBounds {
+  readableWidthDip: number;
+  minimumMainColumnWidthDip: number;
+  mountedNodeBound: number;
+  overscanNodeCount: number;
+  focusRetentionAllowance: number;
+  pageSize: number;
+  streamCoalesceMs: number;
+  accessibleAnnouncementMs: number;
+  markdownCollapseChars: number;
+  codeMaxHeightDip: number;
+  previewMaxChars: number;
+  tableInitialRows: number;
+  inspectorMaxWidthDip: number;
+  viewportMarginDip: number;
+  layoutStabilizationTimeoutMs: number;
+}
+
+/**
+ * Result of resolving renderer bounds, includes provenance for each value.
+ */
+export interface RendererBoundsResolution {
+  bounds: ResolvedRendererBounds;
+  resolutions: Map<string, ResolvedBound>;
+}
+
+/**
+ * Keys required to resolve all renderer bounds.
+ * Maps from ResolvedRendererBounds field name to the SettingsBoundsService key.
+ */
+const RENDERER_BOUND_KEYS: Record<keyof ResolvedRendererBounds, string> = {
+  readableWidthDip: 'renderer.readableWidthDip',
+  minimumMainColumnWidthDip: 'renderer.minimumMainColumnWidthDip',
+  mountedNodeBound: 'renderer.mountedNodeBound',
+  overscanNodeCount: 'renderer.overscanNodeCount',
+  focusRetentionAllowance: 'renderer.focusRetentionAllowance',
+  pageSize: 'renderer.pageSize',
+  streamCoalesceMs: 'renderer.streamCoalesceMs',
+  accessibleAnnouncementMs: 'accessibilityAnnouncement.coalesceIntervalMs',
+  markdownCollapseChars: 'renderer.markdownCollapseChars',
+  codeMaxHeightDip: 'renderer.codeMaxHeightDip',
+  previewMaxChars: 'renderer.previewMaxChars',
+  tableInitialRows: 'renderer.tableInitialRows',
+  inspectorMaxWidthDip: 'renderer.inspectorMaxWidthDip',
+  viewportMarginDip: 'renderer.viewportMarginDip',
+  layoutStabilizationTimeoutMs: 'renderer.layoutStabilizationTimeoutMs',
+};
+
+/**
+ * Resolve all renderer bounds required for canonical renderer activation.
+ * Blocks activation (throws) when any required bound is absent or invalid.
+ * Reports exact source revision and provenance for each resolved value.
+ * Never adds leaf fallback constants.
+ */
+export function resolveRendererBounds(service: SettingsBoundsService): RendererBoundsResolution {
+  const resolutions = new Map<string, ResolvedBound>();
+  const bounds: Partial<ResolvedRendererBounds> = {};
+
+  for (const [field, key] of Object.entries(RENDERER_BOUND_KEYS)) {
+    const resolved = service.resolveBound(key);
+    if (!resolved) {
+      throw new Error(
+        `Renderer bound "${key}" has no configured value at any scope level. ` +
+        'Canonical renderer activation is blocked — all bounds must come from Settings_Service configuration.',
+      );
+    }
+    resolutions.set(key, resolved);
+    (bounds as Record<string, number>)[field] = resolved.value;
+  }
+
+  return { bounds: bounds as ResolvedRendererBounds, resolutions };
+}
+
+/**
+ * Get all renderer bound keys needed for canonical activation.
+ */
+export function getRendererBoundKeys(): readonly string[] {
+  return Object.values(RENDERER_BOUND_KEYS);
+}
+
+/**
  * Flatten a nested OperationalBoundsV1 into dot-notation key-value pairs.
  */
 export function flattenBounds(bounds: OperationalBoundsV1): FlatBounds {

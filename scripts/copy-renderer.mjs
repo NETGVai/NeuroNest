@@ -18,6 +18,16 @@ if (existsSync(brandingSrc)) {
 cpSync(join(root, 'src', 'renderer', 'index.html'), join(root, 'dist', 'renderer', 'index.html'));
 console.log('Copied renderer/index.html');
 
+// Copy the restricted first-run route and point it at the parse-checked JS copy.
+const modeSelectorHtmlSrc = join(root, 'src', 'renderer', 'first-run-mode-selector.html');
+const modeSelectorHtmlDst = join(root, 'dist', 'renderer', 'first-run-mode-selector.html');
+if (existsSync(modeSelectorHtmlSrc)) {
+  const html = readFileSync(modeSelectorHtmlSrc, 'utf-8')
+    .replace('./first-run-mode-selector.ts', './first-run-mode-selector.js');
+  writeFileSync(modeSelectorHtmlDst, html, 'utf-8');
+  console.log('Copied renderer/first-run-mode-selector.html');
+}
+
 // Copy renderer JS — strip TypeScript-only lines and write as plain JS
 const rendererSrc = join(root, 'src', 'renderer', 'index.ts');
 const rendererDst = join(root, 'dist', 'renderer', 'index.js');
@@ -185,14 +195,24 @@ const panelRendererFiles = [
   'agent-dashboard-v2-base.ts',
   'agent-dashboard-v2-panel.ts',
   'mermaid-renderer.ts',
-  'chat-enhancements.ts',
+  // Task 13.3 (enhanced-chat-ui) retired the following legacy renderer helpers.
+  // Markdown, code, copy, streaming, scroll, empty-state, and action-bar behaviour
+  // now flow through the canonical structured-response surfaces mounted by
+  // `panels/chat/index.ts` via `createProjectionChatIntegration`:
+  //   chat-enhancements.ts, chat-streaming.ts, chat-scroll-controller.ts,
+  //   chat-empty-state.ts, chat-message-actions.ts
   'chat-input-enhanced.ts',
-  'chat-streaming.ts',
   'agent-state-bar.ts',
-  'chat-scroll-controller.ts',
-  'chat-empty-state.ts',
-  'chat-message-actions.ts',
   'chat-theming.ts',
+  'first-run-mode-selector.ts',
+  'launch-mode-settings-control.ts',
+  'legacy-provider-key-panel.ts',
+  // Advanced-only Inspector factory. Owns the previously-static
+  // `<aside id="inspector">` markup and the `#drag-inspector` handle so
+  // Classic mode can omit both without any CSS-based hiding. Must be
+  // loaded before `index.js` so `window.InspectorFactory` is available
+  // to the DOMContentLoaded initializer.
+  'inspector-factory.ts',
   'diff-viewer-component.ts',
   'terminal-output-component.ts',
   'channels-view.ts',
@@ -255,6 +275,17 @@ if (existsSync(chatUiCssSrc)) {
   console.log('Copied chat-ui.css');
 } else {
   console.warn('chat-ui.css not found, skipping');
+}
+
+// Copy semantic-tokens.css (loaded before chat-ui.css in index.html and
+// referenced by every rendered-content stylesheet via `var(--nn-color-*)`).
+const semanticTokensCssSrc = join(root, 'src', 'renderer', 'semantic-tokens.css');
+const semanticTokensCssDst = join(root, 'dist', 'renderer', 'semantic-tokens.css');
+if (existsSync(semanticTokensCssSrc)) {
+  cpSync(semanticTokensCssSrc, semanticTokensCssDst);
+  console.log('Copied semantic-tokens.css');
+} else {
+  console.warn('semantic-tokens.css not found, skipping');
 }
 if (existsSync(dataSrc)) {
   mkdirSync(dataDst, { recursive: true });

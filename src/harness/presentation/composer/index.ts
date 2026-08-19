@@ -54,3 +54,23 @@ export {
   DEFAULT_RETENTION_POLICY,
   DEFAULT_SELECTION,
 } from './types';
+
+export { ComposerWorkbenchAdapter } from './composer-workbench-adapter';
+
+export type {
+  MessageMode,
+  ModeControlState,
+  CapabilityVisibility,
+  CapabilityControlState,
+  VoiceAvailability,
+  VoiceControlState,
+  PrimaryActionKind,
+  PrimaryActionState,
+  KeyboardAlternateAction,
+  RouteModelSummary,
+  ComposerWorkbenchState,
+  ComposerWorkbenchAdapterConfig,
+  ComposerCapabilitySettings,
+  LegacySubmissionPayload,
+  SubmissionRoute,
+} from './composer-workbench-adapter';

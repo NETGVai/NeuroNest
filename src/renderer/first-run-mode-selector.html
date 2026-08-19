@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self' data:; connect-src 'self'" />
+  <title>Choose a NeuroNest mode</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body, #first-run-mode-selector-root { width: 100%; min-height: 100%; margin: 0; }
+    button:focus-visible, input:focus-visible { outline: 3px solid var(--accent, #60a5fa); outline-offset: 3px; }
+    button:disabled { cursor: wait; opacity: .7; }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; } }
+  </style>
+</head>
+<body>
+  <div id="first-run-mode-selector-root"></div>
+  <script type="module" src="./first-run-mode-selector.ts"></script>
+</body>
+</html>

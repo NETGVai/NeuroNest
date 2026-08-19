@@ -1,6 +1,13 @@
 /* ══════════════════════════════════════════════════════════════
-   chat-ui.css — Enhanced Chat UI styles
-   Typography, code blocks, syntax tokens, and theme integration
+   chat-ui.css — Enhanced Chat UI styles.
+   Typography, code blocks, syntax tokens, and theme integration.
+
+   Every color literal used by rendered chat content lives in
+   semantic-tokens.css (loaded before this file). Selectors below
+   reference tokens via `var(--nn-color-*)` without inline hex/rgb
+   fallbacks. Layout/motion values remain inline.
+
+   Requirements: 14.1–14.3, 15.9
    ══════════════════════════════════════════════════════════════ */
 
 /* ── Input Bar: sticky at bottom ── */
@@ -14,7 +21,7 @@
 /* ── Message Body Typography ── */
 .message-body {
   line-height: 1.6;
-  color: var(--text-secondary);
+  color: var(--nn-color-content-fg-muted);
 }
 
 .message-body > *:not(:last-child) {
@@ -58,7 +65,7 @@
 .message-body h4,
 .message-body h5,
 .message-body h6 {
-  color: var(--text-primary);
+  color: var(--nn-color-content-fg);
   font-weight: 600;
   margin-bottom: 8px;
   margin-top: 16px;
@@ -78,16 +85,16 @@
 .message-body h3 { font-size: 1.2em; }
 .message-body h4 { font-size: 1.1em; }
 .message-body h5 { font-size: 1.0em; }
-.message-body h6 { font-size: 0.95em; color: var(--text-secondary); }
+.message-body h6 { font-size: 0.95em; color: var(--nn-color-content-fg-muted); }
 
 /* ── Inline Code ── */
 .message-body code {
-  background: var(--surface-container-high, rgba(128,128,128,0.1));
+  background: var(--nn-color-inline-code-bg);
   padding: 2px 6px;
   border-radius: 4px;
   font-family: 'SF Mono', 'JetBrains Mono', 'Menlo', 'Consolas', monospace;
   font-size: 0.9em;
-  color: var(--text-primary);
+  color: var(--nn-color-content-fg);
 }
 
 /* Reset inline code styles inside code blocks */
@@ -97,14 +104,14 @@
   padding: 0;
   border-radius: 0;
   font-size: 13px;
-  color: var(--text-primary);
+  color: var(--nn-color-content-fg);
 }
 
 /* ── Lists ── */
 .message-body ul,
 .message-body ol {
   padding-left: 24px;
-  color: var(--text-secondary);
+  color: var(--nn-color-content-fg-muted);
 }
 
 .message-body li {
@@ -119,11 +126,11 @@
 
 /* ── Blockquote ── */
 .message-body blockquote {
-  border-left: 3px solid var(--accent);
-  background: var(--surface-container, rgba(128,128,128,0.06));
+  border-left: 3px solid var(--nn-color-content-link);
+  background: var(--nn-color-content-bg);
   padding: 8px 14px;
   border-radius: 0 4px 4px 0;
-  color: var(--text-secondary);
+  color: var(--nn-color-content-fg-muted);
 }
 
 .message-body blockquote p {
@@ -139,7 +146,7 @@
   overflow-x: auto;
   margin-bottom: 12px;
   border-radius: 6px;
-  border: 1px solid var(--border-color);
+  border: 1px solid var(--nn-color-border-subtle);
 }
 
 .message-body table {
@@ -150,18 +157,18 @@
 }
 
 .message-body thead th {
-  background: var(--surface-container-high, rgba(128,128,128,0.1));
-  color: var(--text-primary);
+  background: var(--nn-color-content-bg-inset);
+  color: var(--nn-color-content-fg);
   font-weight: 600;
   text-align: left;
   padding: 8px 12px;
-  border-bottom: 1px solid var(--border-color);
+  border-bottom: 1px solid var(--nn-color-border-subtle);
 }
 
 .message-body tbody td {
   padding: 6px 12px;
-  border-bottom: 1px solid var(--border-color);
-  color: var(--text-secondary);
+  border-bottom: 1px solid var(--nn-color-border-subtle);
+  color: var(--nn-color-content-fg-muted);
 }
 
 .message-body tbody tr:last-child td {
@@ -172,24 +179,24 @@
 .message-body hr {
   border: none;
   height: 1px;
-  background: var(--border-color);
+  background: var(--nn-color-border-subtle);
   margin: 16px 0;
 }
 
 /* ── Links ── */
 .message-body a {
-  color: var(--accent);
+  color: var(--nn-color-content-link);
   text-decoration: none;
 }
 
 .message-body a:hover {
-  color: var(--accent-hover);
+  color: var(--nn-color-content-link-hover);
   text-decoration: underline;
 }
 
 /* ── Strong / Em / Del ── */
 .message-body strong {
-  color: var(--text-primary);
+  color: var(--nn-color-content-fg);
   font-weight: 600;
 }
 
@@ -202,6 +209,15 @@
   opacity: 0.7;
 }
 
+/* ── Focus ring for keyboard-operable rendered content controls ── */
+.message-body a:focus-visible,
+.code-copy-btn:focus-visible,
+.chat-attach-remove:focus-visible {
+  outline: 2px solid var(--nn-color-focus-ring);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px var(--nn-color-focus-ring-inset);
+}
+
 /* ══════════════════════════════════════════════════════════════
    Typing Cursor (streaming indicator)
    ══════════════════════════════════════════════════════════════ */
@@ -210,7 +226,7 @@
   display: inline-block;
   width: 2px;
   height: 1em;
-  background: var(--accent, #007aff);
+  background: var(--nn-color-content-link);
   margin-left: 2px;
   vertical-align: text-bottom;
   animation: blink 0.8s step-end infinite;
@@ -227,10 +243,10 @@
 .stream-error-indicator {
   margin-top: 8px;
   padding: 8px 12px;
-  border: 1px solid var(--error-border, #e5484d);
+  border: 1px solid var(--nn-color-status-error);
   border-radius: 6px;
-  background: var(--error-bg, rgba(229, 72, 77, 0.08));
-  color: var(--error-text, #e5484d);
+  background: var(--nn-color-status-error-bg);
+  color: var(--nn-color-status-error);
   font-size: 13px;
   line-height: 1.4;
 }
@@ -242,7 +258,7 @@
 .thinking-indicator {
   padding: 10px 16px;
   margin: 4px 0;
-  color: var(--text-dim, #888);
+  color: var(--nn-color-content-fg-dim);
   font-size: 13px;
   font-style: italic;
   animation: thinking-pulse 2s ease-in-out infinite;
@@ -260,10 +276,10 @@
 .code-block-wrapper {
   position: relative;
   border-radius: 8px;
-  border: 1px solid var(--code-block-border, var(--border-color));
+  border: 1px solid var(--nn-color-code-border);
   overflow: hidden;
   margin-bottom: 12px;
-  background: var(--code-block-bg, var(--surface-container));
+  background: var(--nn-color-code-bg);
 }
 
 .code-block-header {
@@ -271,15 +287,15 @@
   align-items: center;
   justify-content: space-between;
   padding: 6px 12px;
-  background: var(--code-block-header-bg, var(--surface-container-high));
-  border-bottom: 1px solid var(--code-block-border, var(--border-color));
+  background: var(--nn-color-code-header-bg);
+  border-bottom: 1px solid var(--nn-color-code-border);
   min-height: 32px;
 }
 
 .code-lang-badge {
   font-size: 11px;
   font-weight: 500;
-  color: var(--text-dim);
+  color: var(--nn-color-content-fg-dim);
   font-family: 'SF Mono', 'JetBrains Mono', 'Menlo', 'Consolas', monospace;
   text-transform: lowercase;
 }
@@ -289,9 +305,9 @@
   align-items: center;
   justify-content: center;
   background: none;
-  border: 1px solid var(--border-color);
+  border: 1px solid var(--nn-color-border-subtle);
   border-radius: 4px;
-  color: var(--text-secondary);
+  color: var(--nn-color-content-fg-muted);
   cursor: pointer;
   padding: 2px 8px;
   font-size: 12px;
@@ -300,7 +316,19 @@
 
 .code-copy-btn:hover {
   background: var(--surface-hover);
-  color: var(--text-primary);
+  color: var(--nn-color-content-fg);
+}
+
+/* Feedback (copy success/failure) — token-driven so status remains
+   theme-consistent and communicates via color + text/icon. */
+.code-copy-btn.is-success {
+  color: var(--nn-color-feedback-success);
+  background: var(--nn-color-feedback-success-bg);
+}
+
+.code-copy-btn.is-failure {
+  color: var(--nn-color-feedback-failure);
+  background: var(--nn-color-feedback-failure-bg);
 }
 
 .code-block-wrapper:hover .code-copy-btn {
@@ -322,90 +350,90 @@
   font-family: 'SF Mono', 'JetBrains Mono', 'Menlo', 'Consolas', monospace;
   font-size: 13px;
   line-height: 1.5;
-  color: var(--text-primary);
+  color: var(--nn-color-content-fg);
 }
 
 /* ══════════════════════════════════════════════════════════════
-   Syntax Highlighting Token Selectors (referencing CSS variables)
+   Syntax Highlighting Token Selectors (referencing semantic tokens)
    ══════════════════════════════════════════════════════════════ */
 
 .hljs {
-  color: var(--text-primary);
+  color: var(--nn-color-content-fg);
   background: transparent;
 }
 
 .hljs-keyword,
 .hljs-selector-tag,
 .hljs-deletion {
-  color: var(--hljs-keyword);
+  color: var(--nn-color-syntax-keyword);
 }
 
 .hljs-string,
 .hljs-template-variable,
 .hljs-addition {
-  color: var(--hljs-string);
+  color: var(--nn-color-syntax-string);
 }
 
 .hljs-number,
 .hljs-selector-id {
-  color: var(--hljs-number);
+  color: var(--nn-color-syntax-number);
 }
 
 .hljs-comment,
 .hljs-quote {
-  color: var(--hljs-comment);
+  color: var(--nn-color-syntax-comment);
   font-style: italic;
 }
 
 .hljs-title,
 .hljs-title.function_,
 .hljs-section {
-  color: var(--hljs-function);
+  color: var(--nn-color-syntax-function);
 }
 
 .hljs-type,
 .hljs-selector-class {
-  color: var(--hljs-type);
+  color: var(--nn-color-syntax-type);
 }
 
 .hljs-literal,
 .hljs-symbol,
 .hljs-bullet {
-  color: var(--hljs-literal);
+  color: var(--nn-color-syntax-literal);
 }
 
 .hljs-built_in,
 .hljs-builtin-name {
-  color: var(--hljs-built-in);
+  color: var(--nn-color-syntax-built-in);
 }
 
 .hljs-attr,
 .hljs-attribute {
-  color: var(--hljs-attr);
+  color: var(--nn-color-syntax-attr);
 }
 
 .hljs-tag,
 .hljs-name {
-  color: var(--hljs-tag);
+  color: var(--nn-color-syntax-tag);
 }
 
 .hljs-meta,
 .hljs-doctag {
-  color: var(--hljs-keyword);
+  color: var(--nn-color-syntax-keyword);
   font-weight: 500;
 }
 
 .hljs-variable,
 .hljs-template-tag {
-  color: var(--hljs-attr);
+  color: var(--nn-color-syntax-attr);
 }
 
 .hljs-params {
-  color: var(--text-secondary);
+  color: var(--nn-color-content-fg-muted);
 }
 
 .hljs-regexp {
-  color: var(--hljs-string);
+  color: var(--nn-color-syntax-string);
 }
 
 .hljs-emphasis {
@@ -414,129 +442,6 @@
 
 .hljs-strong {
   font-weight: 700;
-}
-
-/* ══════════════════════════════════════════════════════════════
-   Theme-Specific Syntax Tokens & Code Block Variables
-   ══════════════════════════════════════════════════════════════ */
-
-/* ── Dark (default / :root) ── */
-:root {
-  --hljs-keyword: #c586c0;
-  --hljs-string: #ce9178;
-  --hljs-number: #b5cea8;
-  --hljs-comment: #6a9955;
-  --hljs-function: #dcdcaa;
-  --hljs-type: #4ec9b0;
-  --hljs-literal: #569cd6;
-  --hljs-built-in: #4fc1ff;
-  --hljs-attr: #9cdcfe;
-  --hljs-tag: #569cd6;
-  --code-block-bg: var(--surface-container);
-  --code-block-header-bg: var(--surface-container-high);
-  --code-block-border: var(--border-color);
-}
-
-/* ── Light ── */
-.theme-light {
-  --hljs-keyword: #af00db;
-  --hljs-string: #a31515;
-  --hljs-number: #098658;
-  --hljs-comment: #008000;
-  --hljs-function: #795e26;
-  --hljs-type: #267f99;
-  --hljs-literal: #0000ff;
-  --hljs-built-in: #267f99;
-  --hljs-attr: #001080;
-  --hljs-tag: #800000;
-  --code-block-bg: var(--surface-container);
-  --code-block-header-bg: var(--surface-container-high);
-  --code-block-border: var(--border-color);
-}
-
-/* ── Midnight ── */
-.theme-midnight {
-  --hljs-keyword: #b48ead;
-  --hljs-string: #a3be8c;
-  --hljs-number: #d08770;
-  --hljs-comment: #4c566a;
-  --hljs-function: #88c0d0;
-  --hljs-type: #8fbcbb;
-  --hljs-literal: #81a1c1;
-  --hljs-built-in: #5e81ac;
-  --hljs-attr: #d8dee9;
-  --hljs-tag: #81a1c1;
-  --code-block-bg: var(--surface-container);
-  --code-block-header-bg: var(--surface-container-high);
-  --code-block-border: var(--border-color);
-}
-
-/* ── Sepia ── */
-.theme-sepia {
-  --hljs-keyword: #8b4513;
-  --hljs-string: #6b4226;
-  --hljs-number: #2e7d32;
-  --hljs-comment: #8b7355;
-  --hljs-function: #5d4037;
-  --hljs-type: #00695c;
-  --hljs-literal: #1565c0;
-  --hljs-built-in: #4e342e;
-  --hljs-attr: #3e2723;
-  --hljs-tag: #795548;
-  --code-block-bg: var(--surface-container);
-  --code-block-header-bg: var(--surface-container-high);
-  --code-block-border: var(--border-color);
-}
-
-/* ── Nord ── */
-.theme-nord {
-  --hljs-keyword: #81a1c1;
-  --hljs-string: #a3be8c;
-  --hljs-number: #b48ead;
-  --hljs-comment: #616e88;
-  --hljs-function: #88c0d0;
-  --hljs-type: #8fbcbb;
-  --hljs-literal: #81a1c1;
-  --hljs-built-in: #5e81ac;
-  --hljs-attr: #d8dee9;
-  --hljs-tag: #81a1c1;
-  --code-block-bg: var(--surface-container);
-  --code-block-header-bg: var(--surface-container-high);
-  --code-block-border: var(--border-color);
-}
-
-/* ── Terminal ── */
-.theme-terminal {
-  --hljs-keyword: #00ff41;
-  --hljs-string: #66ff66;
-  --hljs-number: #ffcc00;
-  --hljs-comment: #116611;
-  --hljs-function: #33ff99;
-  --hljs-type: #00cc88;
-  --hljs-literal: #00ffcc;
-  --hljs-built-in: #33ccff;
-  --hljs-attr: #99ff99;
-  --hljs-tag: #00ff41;
-  --code-block-bg: var(--surface-container);
-  --code-block-header-bg: var(--surface-container-high);
-  --code-block-border: var(--border-color);
-}
-
-/* ── Zen ── */
-.theme-zen {
-  --hljs-keyword: #8b6914;
-  --hljs-string: #6b7c3e;
-  --hljs-number: #2e7d32;
-  --hljs-comment: #9c9484;
-  --hljs-function: #5d4e37;
-  --hljs-type: #4e7a6e;
-  --hljs-literal: #5a7093;
-  --hljs-built-in: #6b6456;
-  --hljs-attr: #3d3929;
-  --hljs-tag: #8b7355;
-  --code-block-bg: var(--surface-container);
-  --code-block-header-bg: var(--surface-container-high);
-  --code-block-border: var(--border-color);
 }
 
 /* ── Chat Attachments Strip ──────────────────────────────────────────
@@ -558,8 +463,8 @@
   align-items: center;
   gap: 8px;
   padding: 6px 10px 6px 6px;
-  background: var(--surface-container-high, rgba(128, 128, 128, 0.12));
-  border: 1px solid var(--border-color);
+  background: var(--nn-color-content-bg-inset);
+  border: 1px solid var(--nn-color-border-subtle);
   border-radius: 8px;
   font-size: 11px;
   max-width: 240px;
@@ -585,7 +490,7 @@
 .chat-attach-name {
   font-size: 11px;
   font-weight: 500;
-  color: var(--text-primary);
+  color: var(--nn-color-content-fg);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -594,13 +499,13 @@
 
 .chat-attach-size {
   font-size: 10px;
-  color: var(--text-dim);
+  color: var(--nn-color-content-fg-dim);
 }
 
 .chat-attach-remove {
   background: transparent;
   border: none;
-  color: var(--text-dim);
+  color: var(--nn-color-content-fg-dim);
   cursor: pointer;
   font-size: 14px;
   line-height: 1;
@@ -610,15 +515,15 @@
 }
 
 .chat-attach-remove:hover {
-  color: var(--red);
-  background: rgba(239, 68, 68, 0.12);
+  color: var(--nn-color-status-error);
+  background: var(--nn-color-status-error-bg);
 }
 
 .chat-attach-error {
   font-size: 11px;
-  color: var(--red);
-  background: rgba(239, 68, 68, 0.08);
-  border: 1px solid rgba(239, 68, 68, 0.25);
+  color: var(--nn-color-status-error);
+  background: var(--nn-color-status-error-bg);
+  border: 1px solid var(--nn-color-status-error);
   padding: 4px 8px;
   border-radius: 6px;
   width: 100%;
@@ -627,14 +532,14 @@
 
 #chat-attach-btn:hover {
   background: var(--surface-hover, var(--bg-input)) !important;
-  color: var(--text-primary) !important;
-  border-color: var(--accent, var(--border-color)) !important;
+  color: var(--nn-color-content-fg) !important;
+  border-color: var(--nn-color-content-link) !important;
 }
 
 #input-bar.chat-attach-dragover {
-  outline: 2px dashed var(--accent, #89b4fa);
+  outline: 2px dashed var(--nn-color-content-link);
   outline-offset: -4px;
-  background: color-mix(in srgb, var(--accent, #89b4fa) 8%, transparent);
+  background: var(--nn-color-focus-ring-inset);
 }
 
 /* Chip variant for non-image attachments (text/code/binary). Uses an emoji
@@ -650,5 +555,236 @@
   background: var(--bg-input);
   font-size: 18px;
   flex-shrink: 0;
-  border: 1px solid var(--border-color);
+  border: 1px solid var(--nn-color-border-subtle);
+}
+
+/* ══════════════════════════════════════════════════════════════
+   Reduced-motion overrides (Requirement 14.8)
+
+   When the OS reports `prefers-reduced-motion: reduce`, disable
+   shimmer/pulse/blink animations, message fade-in transitions,
+   hover transforms, and smooth-scroll behaviour. State information
+   remains available through text and shape, so removing motion
+   never removes meaning.
+
+   These overrides sit in the canonical chat stylesheet (loaded
+   before chat-theming.ts injects its runtime style block). The
+   theming block adds a parallel media rule of its own so the
+   `chatMsgFadeIn` animation and any theming-specific transitions
+   are also suppressed.
+   ══════════════════════════════════════════════════════════════ */
+
+@media (prefers-reduced-motion: reduce) {
+  /* Streaming cursor blink — replaced by a static caret. */
+  .typing-cursor {
+    animation: none !important;
+    opacity: 1 !important;
+  }
+
+  /* Thinking indicator pulse — replaced by static muted text. */
+  .thinking-indicator {
+    animation: none !important;
+    opacity: 1 !important;
+  }
+
+  /* Hover/transition affordances on rendered content — snap changes
+     so keyboard users don't wait on motion between focus states. */
+  .code-copy-btn,
+  .message-body a,
+  .chat-attach-remove,
+  #send-btn,
+  #input-wrapper {
+    transition: none !important;
+  }
+
+  /* Smooth scrolling — replaced by instant jumps so users are never
+     asked to sit through a scroll they didn't ask for. */
+  html,
+  body,
+  #chat-area,
+  .nn-timeline,
+  .nn-response-timeline {
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════
+   Mode-aware responsive chat layout (Task 11.3)
+
+   Wraps metadata rows, response-action toolbars, and card chrome
+   on narrow widths without producing page-level horizontal scroll.
+   Uses logical properties so RTL flows and localization expansion
+   (Requirements 9.7, 14.9, 14.10, 15.10) don't shift chrome off-
+   screen or clip actions. Every rule pairs `min-width: 0` with a
+   `max-width` so flex/grid children can shrink instead of
+   overflowing their parent — the classic "flex item overflows its
+   container" trap.
+   ══════════════════════════════════════════════════════════════ */
+
+/* Structured chat shell root and reading column. Inline styles set the
+   authoritative max/min bounds; these rules make sure a stylesheet load
+   still produces a contained shell even before the width observer fires
+   (Requirement 15.9). */
+.nn-structured-chat-shell {
+  box-sizing: border-box;
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: hidden;
+  contain: inline-size;
+}
+
+.nn-structured-chat-shell__timeline,
+.nn-structured-chat-shell__composer {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+  margin-inline: auto;
+  padding-inline: 12px;
+  overflow-x: hidden;
+}
+
+.nn-structured-chat-shell__timeline {
+  overflow-y: auto;
+}
+
+/* Turn group and response group — allow shrinking so nested flex/grid
+   children can wrap instead of pushing the timeline wider. */
+.nn-structured-chat-shell__turn-group,
+.nn-structured-chat-shell__response-group,
+.nn-structured-chat-shell__assistant-composition {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+/* User messages wrap long text and keep attachments contained. */
+.nn-structured-chat-shell__user-message {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+/* Metadata row — agent / provider / model / branch / timestamp. On wide
+   viewports these render inline separated by `·`; on narrow viewports
+   they wrap to as many rows as needed. `min-width: 0` on the row plus
+   every field lets long localized values shrink and break instead of
+   forcing a horizontal overflow (Requirement 14.10). */
+.nn-structured-chat-shell__metadata {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 6px;
+  row-gap: 2px;
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.nn-structured-chat-shell__metadata__field {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+/* Non-semantic middot separator hides once the row wraps — the wrap
+   itself provides the visual grouping cue. */
+.nn-structured-chat-shell__metadata__separator {
+  min-width: 0;
+  flex-shrink: 0;
+}
+
+/* Response actions toolbar (Copy / Retry / feedback). Wraps below 480 px
+   or whenever the reading column shrinks (Requirements 9.7, 14.9). */
+.nn-structured-chat-shell__response-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.nn-structured-chat-shell__response-actions__btn {
+  min-width: 0;
+  max-width: 100%;
+  flex: 0 1 auto;
+}
+
+/* Terminal-state indicator and attempt badge stay on their own row when
+   they can no longer fit next to metadata. */
+.nn-structured-chat-shell__response-terminal,
+.nn-structured-chat-shell__response-attempt {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+/* Block wrapper — everything that fills a response group's body. The
+   overflow-wrapper is the local scroll seam: it must never leak to
+   `document.documentElement`. */
+.nn-structured-chat-shell__block {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.nn-structured-chat-shell__overflow-wrapper {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+/* Code blocks and tables scroll horizontally inside their own containers
+   only. Requirement 14.10 and Requirement 15.10 forbid page-level scroll
+   from ever being required to reach a wide code line or table column. */
+.nn-structured-chat-shell__block .code-block-wrapper,
+.nn-structured-chat-shell__block pre.code-block-pre,
+.nn-structured-chat-shell__block .table-wrapper {
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.nn-structured-chat-shell__block pre.code-block-pre,
+.nn-structured-chat-shell__block .table-wrapper {
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Advanced-mode inline padding leaves room for the Inspector's edge
+   shadow / focus ring; Classic-mode drops the extra inset so the
+   expanded main content really consumes the full remaining width. */
+.nn-structured-chat-shell[data-launch-mode="classic"] .nn-structured-chat-shell__timeline,
+.nn-structured-chat-shell[data-launch-mode="classic"] .nn-structured-chat-shell__composer {
+  padding-inline: 0;
+}
+
+/* Any surface (thinking, reasoning, tool, task, decision, context) that
+   the canonical renderer drops into the shell inherits the same shrink
+   rules so their internal flex rows don't punch through the wrapper. */
+.nn-structured-chat-shell__block > .nn-turn-status-surface,
+.nn-structured-chat-shell__block > .nn-thinking-card,
+.nn-structured-chat-shell__block > .nn-reasoning-disclosure,
+.nn-structured-chat-shell__block > .nn-tool-activity,
+.nn-structured-chat-shell__block > .nn-task-progress,
+.nn-structured-chat-shell__block > .nn-decision-surface,
+.nn-structured-chat-shell__block > .nn-context-surface {
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+/* Ensure toolbar/action rows inside each surface wrap on narrow widths
+   (Requirement 9.7 — timestamps, metadata, action rows). */
+.nn-structured-chat-shell__block .nn-tool-activity__row,
+.nn-structured-chat-shell__block .nn-task-progress__row,
+.nn-structured-chat-shell__block .nn-decision-surface__actions,
+.nn-structured-chat-shell__block .nn-context-card__actions {
+  flex-wrap: wrap;
+  min-width: 0;
+  max-width: 100%;
 }

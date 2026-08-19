@@ -25,13 +25,17 @@ process.stderr?.on?.('error', (err: any) => { if (err?.code === 'EPIPE') return;
   }
 })();
 
-import { app, BrowserWindow } from 'electron';
+import { app, BrowserWindow, safeStorage } from 'electron';
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
 import { initAppSecrets, getAppSecretStore } from './app-secrets';
 import { restoreWindowState, persistWindowState } from './native-shell';
 import { registerIPCHandlers, notifyThemeChange, runtimeManager, activeLlmClient, initDeferredSubsystems } from './ipc';
-import { getLaunchMode } from './launch-mode';
+import { getProcessLaunchKind } from './launch-mode';
+import { LaunchModeService } from './launch-mode-service';
+import { LaunchModeWindowGate } from './launch-mode-window-gate';
+import { InspectorLayoutService } from './inspector-layout-service';
+import { LegacyProviderKeyMigrationService } from './legacy-provider-key-migration-service';
 import { startOllama, stopOllama } from './ollama-manager';
 import { stopOpenMythos } from './openmythos-manager';
 import { shutdownAgentSkillsService } from '../agent-skills/main-process-integration.js';
@@ -40,6 +44,12 @@ import { hardenWindow, installCSP, getSecureWebPreferences, DEFAULT_SECURITY_POL
 import { migrateLegacyData, getDataDirectory } from '../storage/data-directory';
 import { bootstrapGCF, shutdownGCF } from '../context/gcf-bootstrap.js';
 import { initDatabase } from '../storage/database';
+import { OSBackedKeyProvider } from '../storage/encrypted-blob-store';
+import { CredentialService } from '../harness/credentials/credential-service';
+import {
+  ProtectedSecretsV2Provider,
+  ProxyCredentialService,
+} from './proxy-credential-service';
 import { registerStubHandlers } from './stub-ipc';
 
 // Auth system imports
@@ -104,6 +114,170 @@ let deepLinkHandler: DeepLinkHandler | null = null;
 let authServer: AuthServer | null = null;
 let flowController: WebAuthnFlowController | null = null;
 let credentialStore: SQLiteCredentialStore | null = null;
+let proxyCredentialService: ProxyCredentialService | null = null;
+let launchModeWindowGate: LaunchModeWindowGate | null = null;
+let legacyProviderKeyMigrationService: LegacyProviderKeyMigrationService | null =
+  null;
+
+function readBootstrapConfigValue(key: string): unknown {
+  const row = initDatabase()
+    .prepare('SELECT value FROM config WHERE key = ?')
+    .get(key) as { value?: unknown } | undefined;
+  if (typeof row?.value !== 'string') return row?.value;
+  try {
+    return JSON.parse(row.value) as unknown;
+  } catch {
+    return row.value;
+  }
+}
+
+/** Read only allowlisted, non-secret context for the renderer bootstrap. */
+function readRendererBootstrapContext(): {
+  edition: 'community' | 'professional' | 'enterprise';
+  themeRevision: number;
+  activeProjectId?: string;
+} {
+  const storedEdition = readBootstrapConfigValue('edition');
+  const edition = storedEdition === 'professional' || storedEdition === 'enterprise'
+    ? storedEdition
+    : 'community';
+  const storedThemeRevision = readBootstrapConfigValue('themeRevision');
+  const themeRevision = typeof storedThemeRevision === 'number'
+    && Number.isInteger(storedThemeRevision)
+    && storedThemeRevision >= 0
+    ? storedThemeRevision
+    : 0;
+  const storedProjectId = readBootstrapConfigValue('activeProjectId');
+  const activeProjectId = typeof storedProjectId === 'string'
+    && storedProjectId.trim().length > 0
+    ? storedProjectId.trim()
+    : undefined;
+
+  return {
+    edition,
+    themeRevision,
+    ...(activeProjectId ? { activeProjectId } : {}),
+  };
+}
+
+/** Build the main-process graphical launch gate shared by recreated windows. */
+function ensureLaunchModeWindowGate(): LaunchModeWindowGate {
+  if (launchModeWindowGate) return launchModeWindowGate;
+
+  const db = initDatabase();
+  const launchModeService = new LaunchModeService(db, {
+    onRepair: (diagnostic) => {
+      console.warn('[App] Launch mode setting repaired:', diagnostic.reason);
+    },
+  });
+
+  // The Inspector layout service reads `getCurrentLaunchMode()` off the gate
+  // itself so Classic startup — and Classic settings updates — can never
+  // overwrite the persisted Advanced layout (Requirement 2.8). A forward
+  // reference is safe because the gate is only consulted at read/update
+  // time, well after construction.
+  let gateRef: LaunchModeWindowGate | null = null;
+  const inspectorLayoutService = new InspectorLayoutService(db, {
+    getCurrentLaunchMode: () => gateRef?.getCurrentLaunchMode() ?? null,
+    onDiagnostic: (diagnostic) => {
+      if (diagnostic.kind === 'inspector-layout-repaired') {
+        console.warn(
+          '[App] Inspector layout repaired:',
+          diagnostic.reason,
+        );
+      } else {
+        console.warn(
+          '[App] Inspector layout write rejected while not in Advanced mode',
+        );
+      }
+    },
+  });
+
+  launchModeWindowGate = new LaunchModeWindowGate({
+    launchModeService,
+    inspectorLayoutService,
+    selectorFile: path.join(
+      __dirname,
+      '..',
+      'renderer',
+      'first-run-mode-selector.html',
+    ),
+    workspaceFile: path.join(__dirname, '..', 'renderer', 'index.html'),
+    createBootstrapSnapshot: (resolution, context) => {
+      const base = {
+        launchModeSource: resolution.source,
+        ...readRendererBootstrapContext(),
+      };
+      if (resolution.mode === 'advanced') {
+        return {
+          launchMode: 'advanced',
+          ...base,
+          ...(context.inspector ? { inspector: context.inspector } : {}),
+        };
+      }
+      return { launchMode: 'classic', ...base };
+    },
+    onWorkspaceLoaded: () => {
+      initDeferredSubsystems().catch((error) => {
+        console.error('[App] Deferred module initialization error (non-fatal):', error);
+      });
+    },
+    onWorkspaceLoadError: (error) => {
+      console.error('[App] Failed to open workspace after mode selection:', error);
+    },
+  });
+  gateRef = launchModeWindowGate;
+  return launchModeWindowGate;
+}
+
+/** Build the one main-process credential authority shared by every edition. */
+function ensureProxyCredentialService(): ProxyCredentialService {
+  if (proxyCredentialService) return proxyCredentialService;
+
+  const credentialDb = initDatabase();
+  const protectedProvider = new ProtectedSecretsV2Provider(
+    credentialDb,
+    safeStorage,
+    new OSBackedKeyProvider(getDataDirectory()),
+  );
+  proxyCredentialService = new ProxyCredentialService({
+    db: credentialDb,
+    credentialService: new CredentialService(),
+    secretProvider: protectedProvider,
+  });
+  return proxyCredentialService;
+}
+
+/**
+ * Build the main-process legacy provider-key migration authority and run the
+ * inventory once per process. The first invocation marks any saved cloud
+ * provider that still carries an `apiKey` as `legacy-unused` before any cloud
+ * inference can happen (Requirements 7.1, 7.2, 7.7 — enhanced-chat-ui design
+ * Phase A). Repeated runs are no-ops on already-marked records. Failures are
+ * non-fatal: the audit payload records `failed` and the renderer status IPC
+ * continues to serve non-secret aggregate counts.
+ */
+function ensureLegacyProviderKeyMigrationService(): LegacyProviderKeyMigrationService {
+  if (legacyProviderKeyMigrationService) return legacyProviderKeyMigrationService;
+
+  const service = new LegacyProviderKeyMigrationService(initDatabase());
+  try {
+    const result = service.runMigration();
+    console.log(
+      `[App] Legacy provider-key migration ${result.status}: examined=${result.payload.recordsExamined}, disabled=${result.payload.recordsDisabled}, removed=${result.payload.recordsRemoved}, failures=${result.payload.failureCount}`,
+    );
+  } catch (error) {
+    // A migration failure must never block startup or route cloud requests to
+    // a legacy provider endpoint. `getStatus()` will continue to report the
+    // last durable aggregate, which callers can use to surface a repair path.
+    console.error(
+      '[App] Legacy provider-key migration inventory failed (non-fatal, cloud routing remains proxy-only):',
+      error,
+    );
+  }
+  legacyProviderKeyMigrationService = service;
+  return service;
+}
 
 function createMainWindow(): BrowserWindow {
   const saved: WindowState = restoreWindowState();
@@ -132,8 +306,9 @@ function createMainWindow(): BrowserWindow {
   const cspNonce = generateCSPNonce();
   installCSP(undefined, undefined, cspNonce);
 
-  // Inject nonce into renderer via meta tag once content is loaded
-  win.webContents.once('did-finish-load', () => {
+  // Inject nonce into every renderer document loaded in this window. First-run
+  // selection and the production workspace are distinct documents.
+  win.webContents.on('did-finish-load', () => {
     injectCSPNonceMeta(win, cspNonce);
   });
 
@@ -146,13 +321,10 @@ function createMainWindow(): BrowserWindow {
   // otherwise the renderer may invoke handlers that don't exist yet.
   // loadFile() is called explicitly after registerIPCHandlers() in the startup sequence.
 
-  // Show window once content is ready (avoids white flash)
+  // Show window once content is ready (avoids white flash). Workspace-only
+  // deferred subsystems are started by LaunchModeWindowGate after resolution.
   win.once('ready-to-show', () => {
     win.show();
-    // Initialize deferred modules after window is visible (lazy loading)
-    initDeferredSubsystems().catch((err) => {
-      console.error('[App] Deferred module initialization error (non-fatal):', err);
-    });
   });
 
   // Persist window state on move/resize/close
@@ -356,9 +528,9 @@ app.whenReady().then(async () => {
     console.error('[Startup] Legacy data migration threw unexpectedly:', migrationErr);
   }
 
-  const mode = getLaunchMode();
+  const processLaunchKind = getProcessLaunchKind();
 
-  if (mode === 'cli') {
+  if (processLaunchKind === 'cli') {
     const { createCLIRenderer } = await import('../cli/cli-renderer');
     const { runREPL } = await import('../cli/index');
     const renderer = createCLIRenderer();
@@ -430,7 +602,27 @@ app.whenReady().then(async () => {
     console.error('[App] Reconciler startup pass failed (non-fatal):', err);
   }
 
-  registerIPCHandlers({ mainWindow });
+  const launchModeGate = ensureLaunchModeWindowGate();
+  const credentialLifecycle = ensureProxyCredentialService();
+  const legacyKeyMigration = ensureLegacyProviderKeyMigrationService();
+  registerIPCHandlers({
+    mainWindow,
+    appBootstrap: {
+      ...launchModeGate.appBootstrapServices,
+      readProxyCredentialStatus: () => credentialLifecycle.getRendererStatus(),
+      readCloudProviderKeyMigrationStatus: () => legacyKeyMigration.getStatus(),
+      listLegacyProviderKeys: () => legacyKeyMigration.listRecordsV1(),
+      deleteLegacyProviderKey: (request) => {
+        const outcome = legacyKeyMigration.deleteLegacyKey(request.providerId);
+        return {
+          schemaVersion: 1 as const,
+          deleted: outcome.deleted,
+          alreadyRemoved: outcome.alreadyRemoved,
+          payload: outcome.payload,
+        };
+      },
+    },
+  });
 
   // ── Stub IPC Handlers ──
   // Register placeholder handlers for all declared-but-unimplemented IPC channels.
@@ -482,8 +674,11 @@ app.whenReady().then(async () => {
   // It is intentionally retained in scope even if not immediately consumed.
   void gcfSystem;
 
-  // NOW load the renderer — all IPC handlers are registered and ready
-  mainWindow.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
+  // Resolve graphical mode only after fixed IPC handlers exist. New installs
+  // remain on the restricted selector until the revisioned choice is committed.
+  void launchModeGate.resolveAndLoad(mainWindow).catch((error) => {
+    console.error('[App] Failed to load resolved launch surface:', error);
+  });
 
   // Initialize auth system (non-blocking — failures don't prevent app startup)
   if (ensureAuthModules()) {
@@ -498,8 +693,16 @@ app.whenReady().then(async () => {
 
   // Non-blocking startup license validation (Req 7.1, 7.4)
   // Wait for page to load so localStorage is accessible, then validate license
-  mainWindow.webContents.once('did-finish-load', async () => {
+  const initializeLoadedWorkspace = async () => {
     if (!mainWindow || mainWindow.isDestroyed()) return;
+    let isWorkspaceDocument = false;
+    try {
+      isWorkspaceDocument = new URL(mainWindow.webContents.getURL()).pathname.endsWith('/index.html');
+    } catch {}
+    if (!isWorkspaceDocument) {
+      mainWindow.webContents.once('did-finish-load', initializeLoadedWorkspace);
+      return;
+    }
 
     // Initialize auto-updater (electron-updater) — checks GitHub releases / configured publish target
     try {
@@ -593,7 +796,8 @@ app.whenReady().then(async () => {
           }
         }
     });
-  });
+  };
+  mainWindow.webContents.once('did-finish-load', initializeLoadedWorkspace);
 
   // Initialize Agent Skills service
   try {
@@ -638,9 +842,32 @@ app.whenReady().then(async () => {
   app.on('activate', async () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       mainWindow = createMainWindow();
-      registerIPCHandlers({ mainWindow });
-      // Load renderer AFTER handlers are registered
-      mainWindow.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
+      const launchModeGate = ensureLaunchModeWindowGate();
+      const credentialLifecycle = ensureProxyCredentialService();
+      const legacyKeyMigration = ensureLegacyProviderKeyMigrationService();
+      registerIPCHandlers({
+        mainWindow,
+        appBootstrap: {
+          ...launchModeGate.appBootstrapServices,
+          readProxyCredentialStatus: () => credentialLifecycle.getRendererStatus(),
+          readCloudProviderKeyMigrationStatus: () =>
+            legacyKeyMigration.getStatus(),
+          listLegacyProviderKeys: () => legacyKeyMigration.listRecordsV1(),
+          deleteLegacyProviderKey: (request) => {
+            const outcome = legacyKeyMigration.deleteLegacyKey(request.providerId);
+            return {
+              schemaVersion: 1 as const,
+              deleted: outcome.deleted,
+              alreadyRemoved: outcome.alreadyRemoved,
+              payload: outcome.payload,
+            };
+          },
+        },
+      });
+      // Re-resolve mode for every recreated BrowserWindow after IPC is ready.
+      void launchModeGate.resolveAndLoad(mainWindow).catch((error) => {
+        console.error('[App] Failed to load resolved launch surface:', error);
+      });
 
       // Re-register auth IPC for the new window
       registerAuthIPCForWindow(mainWindow);

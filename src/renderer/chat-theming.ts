@@ -1,10 +1,13 @@
 // @ts-nocheck
 /**
  * Chat Theming — NeuroNest Identity
- * Injects CSS overrides that enhance the existing chat UI elements
- * with polished visual design matching the app's identity.
  *
- * Requirements: 24.1-24.9
+ * Injects CSS overrides that enhance the existing chat UI elements with
+ * polished visual design matching the app's identity. All rendered-content
+ * colors reference semantic tokens defined in semantic-tokens.css so a
+ * theme revision applies here through variable resolution alone.
+ *
+ * Requirements: 14.1–14.3 (Theme System), 24.1–24.9 (Chat Identity)
  */
 (function chatThemingInit() {
   var style = document.createElement('style');
@@ -14,34 +17,35 @@
     #chat-area {
       background-color: var(--bg-primary);
       background-image:
-        linear-gradient(rgba(255,255,255,0.02) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(255,255,255,0.02) 1px, transparent 1px);
+        linear-gradient(var(--nn-color-on-accent-muted) 1px, transparent 1px),
+        linear-gradient(90deg, var(--nn-color-on-accent-muted) 1px, transparent 1px);
       background-size: 24px 24px;
+      background-blend-mode: overlay;
     }
 
-    /* ── 24.1: User messages — accent background, white text, rounded corners, shadow ── */
+    /* ── 24.1: User messages — accent background, on-accent text, rounded, drop shadow ── */
     .message.user .message-inner {
       background: var(--accent) !important;
-      color: #ffffff !important;
+      color: var(--nn-color-on-accent) !important;
       border-radius: var(--radius) !important;
       border: none !important;
-      box-shadow: 0 2px 8px rgba(0, 122, 255, 0.25), 0 1px 3px rgba(0,0,0,0.15) !important;
+      box-shadow: var(--shadow-md, var(--shadow-sm)) !important;
     }
     .message.user .message-body,
     .message.user .role-label {
-      color: #ffffff !important;
+      color: var(--nn-color-on-accent) !important;
     }
 
     /* ── 24.2: Agent messages — surface-container-high background, border ── */
     .message.assistant .message-inner {
       background: var(--surface-container-high) !important;
-      color: var(--text-primary) !important;
-      border: 1px solid var(--border-color) !important;
+      color: var(--nn-color-content-fg) !important;
+      border: 1px solid var(--nn-color-border-subtle) !important;
       border-radius: var(--radius) !important;
       box-shadow: none !important;
     }
     .message.assistant .message-body {
-      color: var(--text-primary) !important;
+      color: var(--nn-color-content-fg) !important;
     }
 
     /* ── 24.4: Message transitions — fade-in on new messages ── */
@@ -68,20 +72,20 @@
     .message-timestamp {
       display: block;
       font-size: 10px;
-      color: var(--text-dim);
+      color: var(--nn-color-content-fg-dim);
       margin-top: 4px;
       line-height: 1.4;
     }
     .message.user .message-timestamp {
       text-align: right;
-      color: rgba(255,255,255,0.55);
+      color: var(--nn-color-on-accent-muted);
     }
 
     /* ── 24.7: Avatar indicators ── */
     /* User avatar: initial in accent circle */
     .message.user .message-avatar {
       background: var(--accent) !important;
-      color: #ffffff !important;
+      color: var(--nn-color-on-accent) !important;
       font-size: 12px !important;
       font-weight: 700 !important;
       border-radius: 50% !important;
@@ -90,7 +94,7 @@
       display: flex !important;
       align-items: center !important;
       justify-content: center !important;
-      box-shadow: 0 1px 4px rgba(0, 122, 255, 0.3);
+      box-shadow: var(--shadow-sm);
     }
     /* Agent avatar: brain emoji in surface-container-highest circle */
     .message.assistant .message-avatar {
@@ -102,26 +106,42 @@
       align-items: center !important;
       justify-content: center !important;
       font-size: 16px !important;
-      border: 1px solid var(--border-color);
+      border: 1px solid var(--nn-color-border-subtle);
     }
 
     /* ── 24.8: Input area — top border, padding, accent send button ── */
     #input-bar {
-      border-top: 1px solid var(--border-color);
+      border-top: 1px solid var(--nn-color-border-subtle);
       padding: 8px 16px 12px !important;
     }
     #send-btn {
       background: var(--accent) !important;
-      color: #ffffff !important;
+      color: var(--nn-color-on-accent) !important;
     }
     #send-btn:hover {
       background: var(--accent-hover) !important;
     }
 
-    /* ── 24.9: Focus glow on input — accent box-shadow at 0.15 opacity ── */
+    /* ── 24.9: Focus glow on input — accent-tinted glow via token ── */
     #input-wrapper:focus-within {
-      border-color: var(--accent) !important;
-      box-shadow: 0 0 0 3px rgba(0, 122, 255, 0.15) !important;
+      border-color: var(--nn-color-focus-ring) !important;
+      box-shadow: 0 0 0 3px var(--nn-color-focus-glow) !important;
+    }
+
+    /* ── Reduced-motion overrides (Requirement 14.8) ──
+       Disable message fade-in transitions and hover transforms when
+       the OS reports "prefers-reduced-motion: reduce". State meaning is
+       preserved through the same text and icons; only motion is dropped. */
+    @media (prefers-reduced-motion: reduce) {
+      .message {
+        animation: none !important;
+      }
+
+      #input-wrapper,
+      #send-btn,
+      .message.user .message-avatar {
+        transition: none !important;
+      }
     }
   `;
   document.head.appendChild(style);

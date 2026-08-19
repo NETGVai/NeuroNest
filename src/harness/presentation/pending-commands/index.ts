@@ -36,3 +36,18 @@ export {
   derivePendingCommandPresentation,
   type PendingCommandPresentation,
 } from './pending-command-store';
+
+export {
+  CompatibleConfirmationReconciler,
+  changedCompatibilityFields,
+  type ActionCompatibilitySnapshot,
+  type ProjectedActionOutcome,
+  type TransportReceiptState,
+  type PendingActionSubmission,
+  type ProjectedActionSnapshot,
+  type ProjectedActionResolution,
+  type ActionConfirmationProjection,
+  type PendingActionReconciliationView,
+  type CompatibilityField,
+  type ActionReconciliationResult,
+} from './compatible-confirmation-reconciler';

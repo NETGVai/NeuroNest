@@ -166,7 +166,8 @@ export interface FeatureGateFlags {
   ops_dashboard: boolean;                    // Operations monitoring dashboard panel
   file_tree_panel: boolean;                  // File tree sidebar panel
   spec_viewer_panel: boolean;                // Spec document viewer panel
-  enhanced_chat_renderer: boolean;           // VS Code-style chat formatting
+  enhanced_chat_renderer: boolean;           // VS Code-style chat formatting (legacy compatibility flag)
+  structured_response_renderer: boolean;     // Typed composition surfaces for structured response rendering
   skill_git_import: boolean;                 // Git repository skill import
 }
 
@@ -326,6 +327,7 @@ export const DEFAULT_FEATURE_FLAGS: FeatureGateFlags = {
   file_tree_panel: false,
   spec_viewer_panel: false,
   enhanced_chat_renderer: false,
+  structured_response_renderer: false,
   skill_git_import: false,
 };
 
@@ -505,6 +507,30 @@ export const KNOWLEDGE_TRAINING_DEPENDENCIES: FeatureDependency[] = [
   {
     feature: 'neuronest_training_enterprise',
     requires: ['neuronest_training_pipeline'],
+  },
+];
+
+/**
+ * Structured Response Renderer dependency declarations.
+ *
+ * - structured_response_renderer is incompatible with enhanced_chat_renderer
+ *   because they cannot both select rendering surfaces simultaneously.
+ *   enhanced_chat_renderer is retained only as a legacy compatibility flag
+ *   and cannot silently activate canonical projection ownership.
+ *
+ * - enhanced_chat_renderer is incompatible with structured_response_renderer
+ *   to prevent hidden ownership changes during rollout.
+ *
+ * Requirements: 2.4, 21.1, 21.6, 22.9
+ */
+export const STRUCTURED_RESPONSE_DEPENDENCIES: FeatureDependency[] = [
+  {
+    feature: 'structured_response_renderer',
+    incompatible: ['enhanced_chat_renderer'],
+  },
+  {
+    feature: 'enhanced_chat_renderer',
+    incompatible: ['structured_response_renderer'],
   },
 ];
 

@@ -7,6 +7,17 @@
  * peek overlay methods on window._adv2 for the main panel to consume.
  *
  * Extracted to keep agent-dashboard-v2-panel.ts under the 2000-line ratchet.
+ *
+ * Task 13.2 (enhanced-chat-ui): this dashboard subscribes to the legacy
+ * `chat:stream`, `chat:done`, and `chat:error` IPC channels ONLY for agent
+ * session lifecycle tracking (live streaming badges, completion transitions,
+ * failure transitions). Those channels still emit for main-side subscribers
+ * and orthogonal renderer surfaces even after the canonical chat rendering
+ * cutover; the dashboard's use is an unrelated diagnostic surface, not a
+ * chat rendering fallback. The dashboard never renders chat message content
+ * from these channels — the canonical projection integration
+ * (`src/renderer/panels/chat/projection-chat-integration.ts`) is the sole
+ * production chat rendering input.
  */
 
 (function () {

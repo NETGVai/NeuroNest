@@ -13,6 +13,8 @@
 
 import type Database from 'better-sqlite3';
 
+import { redactForAnalytics } from '../shared/observable-redaction';
+
 // ─── Types ─────────────────────────────────────────────────────────
 
 export interface MetricEvent {
@@ -80,10 +82,23 @@ export class MetricsCollector {
 
   /**
    * Record a metric event.
+   *
+   * Task 5.5 (enhanced-chat-ui): analytics is one of the observable channels
+   * the shared credential/content redaction boundary must cover. Free-form
+   * `metadata` is scrubbed with the shared adapter before it is persisted so
+   * Proxy Credentials, legacy provider keys, prompt/response content,
+   * reasoning, private tool payloads, and private paths cannot enter the
+   * aggregation pipeline even by accident. Aggregate columns (`user_id`,
+   * `team_id`, `org_id`, `agent_id`) are opaque identifiers by contract and
+   * are not passed through the redactor.
    */
   record(event: MetricEvent): void {
     const id = event.id ?? this.generateId();
     const timestamp = event.timestamp ?? new Date().toISOString();
+
+    const safeMetadata = event.metadata
+      ? redactForAnalytics(event.metadata)
+      : undefined;
 
     const stmt = this.db.prepare(`
       INSERT INTO adoption_metrics (id, user_id, team_id, org_id, event_type, agent_id, value, metadata, created_at)
@@ -98,7 +113,7 @@ export class MetricsCollector {
       event.eventType,
       event.agentId ?? null,
       event.value ?? null,
-      event.metadata ? JSON.stringify(event.metadata) : null,
+      safeMetadata ? JSON.stringify(safeMetadata) : null,
       timestamp
     );
   }

@@ -23,6 +23,16 @@
  *
  * Renderer constraint: Plain JavaScript (var declarations, no type annotations).
  *
+ * Task 13.2 (enhanced-chat-ui): the auto-refresh handler subscribes to the
+ * legacy `chat-response` IPC channel ONLY to detect the arrival of a
+ * channel-sourced inbound message so it can refresh the session list. The
+ * subscription is an unrelated diagnostic surface, not a chat rendering
+ * fallback: it never reads the message body and never mutates chat DOM.
+ * Production chat content flows exclusively through the canonical
+ * projection integration; this viewer's `chat-response` listener continues
+ * to work because the compatibility ingress in the main process still
+ * publishes the channel for main-side subscribers.
+ *
  * Requirements: 5.4, 5.5
  */
 
@@ -416,6 +426,10 @@
     var eapi = api();
     if (!eapi) return;
 
+    // Task 13.2: this listener is an unrelated diagnostic — it reads only
+    // the `isChannelMessage` marker and never renders chat content. The
+    // canonical projection integration remains the sole chat rendering
+    // input. See the file header for the retention rationale.
     var handler = function (data) {
       // Refresh session list when a channel-sourced message arrives
       if (data && data.isChannelMessage) {

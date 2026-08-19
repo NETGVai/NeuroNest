@@ -43,6 +43,96 @@ export type ModelRole =
   | 'review'
   | 'summarization';
 
+// ─── Inference Transport Classification ───────────────────────
+
+/**
+ * Closed transport classes available to production inference routes.
+ * Cloud-provider inference is proxy-only; user-hosted providers retain
+ * their configured local or private-network transport.
+ */
+export type TransportClass = 'neuronest-cloud-proxy' | 'local-provider';
+
+/** Invocation paths that can initiate provider inference. */
+export type InferenceInvocationSource =
+  | 'chat'
+  | 'agent'
+  | 'tool-assisted'
+  | 'background'
+  | 'retry';
+
+/** Provider locality used by capability-aware logical selection. */
+export type ProviderLocality = 'local' | 'self-hosted' | 'cloud';
+
+/**
+ * Transport behavior declared by each model role and invocation source.
+ * The classifier must use the selected provider's locality rather than
+ * allowing an invocation path or model role to bypass transport policy.
+ */
+export type TransportBehavior = 'classify-by-provider-locality';
+
+/**
+ * Total locality-to-transport mapping shared by every inference route.
+ * Requirements 5.1 and 5.9: cloud is proxy-only; local/self-hosted stays local.
+ */
+export const TRANSPORT_CLASS_BY_PROVIDER_LOCALITY = Object.freeze({
+  local: 'local-provider',
+  'self-hosted': 'local-provider',
+  cloud: 'neuronest-cloud-proxy',
+} satisfies Readonly<Record<ProviderLocality, TransportClass>>);
+
+/**
+ * Exhaustive declarations keep new ModelRole values from compiling until
+ * their transport behavior is explicitly reviewed and added here.
+ */
+export const MODEL_ROLE_TRANSPORT_BEHAVIOR = Object.freeze({
+  planning: 'classify-by-provider-locality',
+  chat: 'classify-by-provider-locality',
+  autocomplete: 'classify-by-provider-locality',
+  code_editing: 'classify-by-provider-locality',
+  change_application: 'classify-by-provider-locality',
+  embedding: 'classify-by-provider-locality',
+  reranking: 'classify-by-provider-locality',
+  review: 'classify-by-provider-locality',
+  summarization: 'classify-by-provider-locality',
+} satisfies Readonly<Record<ModelRole, TransportBehavior>>);
+
+/**
+ * Exhaustive declarations keep new invocation sources from compiling until
+ * their transport behavior is explicitly reviewed and added here.
+ */
+export const INVOCATION_SOURCE_TRANSPORT_BEHAVIOR = Object.freeze({
+  chat: 'classify-by-provider-locality',
+  agent: 'classify-by-provider-locality',
+  'tool-assisted': 'classify-by-provider-locality',
+  background: 'classify-by-provider-locality',
+  retry: 'classify-by-provider-locality',
+} satisfies Readonly<Record<InferenceInvocationSource, TransportBehavior>>);
+
+/**
+ * Mandatory metadata for a fully classified inference route.
+ * This augments, rather than replaces, capability/trust-aware RoutingDecision.
+ */
+export interface InferenceRoute {
+  /** Stable route identifier for tracing and event correlation. */
+  routeId: string;
+  /** Concrete transport selected after logical provider selection. */
+  transportClass: TransportClass;
+  /** Logical provider selected by capability/trust routing. */
+  selectedProvider: string;
+  /** Logical model selected by capability/trust routing. */
+  selectedModel: string;
+  /** Independent model role for this inference request. */
+  modelRole: ModelRole;
+  /** Independent caller category for this inference request. */
+  invocationSource: InferenceInvocationSource;
+  /** Whether the provider response is requested incrementally. */
+  streaming: boolean;
+  /** Active commercial edition used for entitlement evaluation. */
+  edition: 'community' | 'professional' | 'enterprise';
+  /** Entitlement snapshot revision checked for this route. */
+  entitlementRevision: number;
+}
+
 // ─── Provider Capabilities ──────────────────────────────────────
 
 /**
@@ -77,7 +167,7 @@ export interface ProviderCapabilities {
   /** Cost per 1K tokens (input + output average) in USD */
   costPer1kTokens: number;
   /** Locality: where the model runs */
-  locality: 'local' | 'self-hosted' | 'cloud';
+  locality: ProviderLocality;
   /** Trust level for privacy-aware routing */
   trustLevel: TrustLevel;
   /** Supported model roles */

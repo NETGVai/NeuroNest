@@ -14,6 +14,11 @@
 
 import { gzipSync, gunzipSync } from 'node:zlib';
 
+import {
+  redactForSupportExport,
+  redactValue,
+} from '../shared/observable-redaction';
+
 // ─── Types ──────────────────────────────────────────────────────
 
 /** A single message in the exported session */
@@ -286,6 +291,14 @@ export class SessionExporter {
 
   /**
    * Scrub sensitive data from a text string using regex patterns.
+   *
+   * Task 5.5 (enhanced-chat-ui): support export is one of the observable
+   * channels the shared credential/content redaction boundary must cover.
+   * The session-exporter's dedicated {@link SENSITIVE_PATTERNS} list is
+   * retained for its explicit format labels (they double as an audit trail
+   * of what was scrubbed), and the shared boundary runs afterwards as a
+   * defence-in-depth pass covering Proxy Credentials, legacy provider keys,
+   * bearer tokens, PEM blocks, and private paths.
    */
   scrubContent(content: string): string {
     let scrubbed = content;
@@ -294,11 +307,14 @@ export class SessionExporter {
       pattern.lastIndex = 0;
       scrubbed = scrubbed.replace(pattern, replacement);
     }
-    return scrubbed;
+    return redactForSupportExport(scrubbed);
   }
 
   /**
-   * Recursively scrub sensitive data from an object's string values.
+   * Recursively scrub sensitive data from an object's string values. The
+   * shared redaction boundary is invoked after the local per-string pass so
+   * deny-listed keys (Proxy Credential, legacy provider keys, prompt/
+   * response/reasoning/tool payloads) never survive an export archive.
    */
   scrubObject(obj: Record<string, unknown>): Record<string, unknown> {
     const result: Record<string, unknown> = {};
@@ -319,6 +335,6 @@ export class SessionExporter {
         result[key] = value;
       }
     }
-    return result;
+    return redactValue(result, { channel: 'support-export' });
   }
 }

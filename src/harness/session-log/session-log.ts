@@ -32,6 +32,22 @@ import type {
   UpcasterRegistry,
 } from './types.js';
 
+type IdempotentEventRow = {
+  eventId: string;
+  sessionId: string;
+  branchId: string;
+  sequence: number;
+  integrityHash: string;
+  idempotencyKey: string;
+  eventType: string;
+};
+
+type IdempotentEventExpectation = {
+  sessionId: string;
+  eventType: string;
+  eventId?: string;
+};
+
 /**
  * SessionLog — The append-only durable event log for harness sessions.
  *
@@ -61,13 +77,13 @@ export class SessionLog {
     if (command.idempotencyKey) {
       const existing = this.findByIdempotencyKey(command.idempotencyKey);
       if (existing) {
-        return existing;
+        return this.receiptForIdempotentMatch(existing, command, branchId);
       }
     }
 
-    const eventId = crypto.randomUUID();
+    const eventId = command.eventId ?? crypto.randomUUID();
     const payloadJson = JSON.stringify(command.payload);
-    const occurredAt = new Date().toISOString();
+    const occurredAt = command.occurredAt ?? new Date().toISOString();
     const actorJson = JSON.stringify(command.actor);
     const scopeJson = JSON.stringify(command.scope);
 
@@ -75,21 +91,13 @@ export class SessionLog {
       // Double-check idempotency inside the transaction
       if (command.idempotencyKey) {
         const existingRow = exec(
-          `SELECT eventId, sessionId, branchId, sequence, integrityHash, idempotencyKey
+          `SELECT eventId, sessionId, branchId, sequence, integrityHash, idempotencyKey, eventType
            FROM harness_events WHERE idempotencyKey = ?`,
           command.idempotencyKey
-        ).get() as { eventId: string; sessionId: string; branchId: string; sequence: number; integrityHash: string; idempotencyKey: string } | undefined;
+        ).get() as IdempotentEventRow | undefined;
 
         if (existingRow) {
-          return {
-            eventId: existingRow.eventId,
-            sessionId: existingRow.sessionId,
-            branchId: existingRow.branchId,
-            sequence: existingRow.sequence,
-            integrityHash: existingRow.integrityHash,
-            idempotencyKey: existingRow.idempotencyKey,
-            alreadyExists: true,
-          };
+          return this.receiptForIdempotentMatch(existingRow, command, branchId);
         }
       }
 
@@ -172,28 +180,26 @@ export class SessionLog {
         // Check idempotency
         if (event.idempotencyKey) {
           const existingRow = exec(
-            `SELECT eventId, sessionId, branchId, sequence, integrityHash, idempotencyKey
+            `SELECT eventId, sessionId, branchId, sequence, integrityHash, idempotencyKey, eventType
              FROM harness_events WHERE idempotencyKey = ?`,
             event.idempotencyKey
-          ).get() as { eventId: string; sessionId: string; branchId: string; sequence: number; integrityHash: string; idempotencyKey: string } | undefined;
+          ).get() as IdempotentEventRow | undefined;
 
           if (existingRow) {
-            receipts.push({
-              eventId: existingRow.eventId,
-              sessionId: existingRow.sessionId,
-              branchId: existingRow.branchId,
-              sequence: existingRow.sequence,
-              integrityHash: existingRow.integrityHash,
-              idempotencyKey: existingRow.idempotencyKey,
-              alreadyExists: true,
-            });
+            receipts.push(
+              this.receiptForIdempotentMatch(
+                existingRow,
+                { ...event, sessionId: command.sessionId },
+                branchId,
+              ),
+            );
             continue;
           }
         }
 
-        const eventId = crypto.randomUUID();
+        const eventId = event.eventId ?? crypto.randomUUID();
         const payloadJson = JSON.stringify(event.payload);
-        const occurredAt = new Date().toISOString();
+        const occurredAt = event.occurredAt ?? new Date().toISOString();
         const actorJson = JSON.stringify(event.actor);
         const scopeJson = JSON.stringify(event.scope);
 
@@ -484,17 +490,33 @@ export class SessionLog {
     return events;
   }
 
-  /**
-   * Look up an existing event by idempotency key.
-   * Returns an AppendReceipt if found, undefined otherwise.
-   */
-  private findByIdempotencyKey(key: string): AppendReceipt | undefined {
-    const row = this.db.raw.prepare(
-      `SELECT eventId, sessionId, branchId, sequence, integrityHash, idempotencyKey
+  /** Look up an existing durable event by its globally unique idempotency key. */
+  private findByIdempotencyKey(key: string): IdempotentEventRow | undefined {
+    return this.db.raw.prepare(
+      `SELECT eventId, sessionId, branchId, sequence, integrityHash, idempotencyKey, eventType
        FROM harness_events WHERE idempotencyKey = ?`
-    ).get(key) as { eventId: string; sessionId: string; branchId: string; sequence: number; integrityHash: string; idempotencyKey: string } | undefined;
+    ).get(key) as IdempotentEventRow | undefined;
+  }
 
-    if (!row) return undefined;
+  /**
+   * A repeated key is idempotent only for the same durable authority target.
+   * Reusing a key across a session, branch, event type, or explicit event ID
+   * is a correlation violation rather than permission to return another
+   * response's receipt.
+   */
+  private receiptForIdempotentMatch(
+    row: IdempotentEventRow,
+    expected: IdempotentEventExpectation,
+    branchId: string,
+  ): AppendReceipt {
+    if (
+      row.sessionId !== expected.sessionId ||
+      row.branchId !== branchId ||
+      row.eventType !== expected.eventType ||
+      (expected.eventId !== undefined && row.eventId !== expected.eventId)
+    ) {
+      throw new Error('Idempotency key was already used by a different event authority');
+    }
 
     return {
       eventId: row.eventId,

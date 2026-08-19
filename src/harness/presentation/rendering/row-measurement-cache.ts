@@ -117,6 +117,31 @@ export class RowMeasurementCache {
   }
 
   /**
+   * Invalidate every cached measurement because the active theme changed.
+   *
+   * Theme changes affect font metrics, letter spacing, and boxed content
+   * padding driven by CSS custom properties, so previously-measured row
+   * heights are no longer trustworthy. Only the measurement entries and
+   * their reverse index are cleared; the caller's identity/stable-key
+   * structures (`WindowedTimelineEngine`, `BoundedMountController`, mount
+   * tracking) are untouched and continue to reference the same stable keys.
+   *
+   * Requirements: 15.9 (theme revision invalidates theme-dependent caches
+   * only; identity/stable-key structures do not invalidate).
+   */
+  invalidateByThemeRevision(): void {
+    if (this.cache.size === 0 && this.stableKeyIndex.size === 0) return;
+
+    const affectedKeys = Array.from(this.stableKeyIndex.keys());
+    this.cache.clear();
+    this.stableKeyIndex.clear();
+
+    if (affectedKeys.length > 0 && this.anchorCorrectionCallback) {
+      this.anchorCorrectionCallback(affectedKeys);
+    }
+  }
+
+  /**
    * Invalidate entries that don't match the current widthClass or textScaleClass.
    * This handles viewport resize or text scaling changes.
    */

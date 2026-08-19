@@ -6,6 +6,10 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'self' blob: data: http://localhost:*; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; worker-src 'self' blob:; font-src 'self' data: blob:; frame-src 'self' http://localhost:*; connect-src 'self' http://localhost:* ws://localhost:* https://llm.neuronest.cc https://*.neuronest.cc" />
   <title>NeuroNest — The AI Coding SuperAgent</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧠</text></svg>" />
+  <!-- Semantic Theme System tokens for rendered chat content. Loaded before
+       chat-ui.css so rendered-content stylesheets can reference `--nn-color-*`
+       tokens without inline color fallbacks. Requirements 14.1–14.3, 15.9. -->
+  <link rel="stylesheet" href="./semantic-tokens.css" />
   <link rel="stylesheet" href="./chat-ui.css" />
   
   <!-- Cytoscape.js for graph visualization -->
@@ -210,6 +214,13 @@
       height: calc(100% - var(--titlebar-height));
       position: relative;
     }
+    /* Classic launch mode drops the Inspector track entirely. The Inspector
+       DOM is never constructed (see inspector-factory.ts), so there is no
+       hidden element to lay out and no track to reserve. Main workspace
+       inherits the remaining width. Requirements 2.1, 2.2, 2.3. */
+    #app[data-launch-mode="classic"] {
+      grid-template-columns: 48px var(--sidebar-width) 1fr;
+    }
 
     /* ── Grid area assignments ── */
     #activity-bar {
@@ -284,6 +295,27 @@
     .tippy-box[data-animation=shift-away][data-state=hidden][data-placement^=right]{transform:translateX(-10px)}
     .activity-btn-spacer {
       flex: 1;
+    }
+    .activity-mode-btn {
+      position: relative;
+    }
+    .activity-mode-btn.active {
+      color: var(--accent, #60a5fa);
+      background: var(--surface-active);
+    }
+    .activity-mode-btn.active::after {
+      content: '';
+      position: absolute;
+      left: 0;
+      top: 8px;
+      bottom: 8px;
+      width: 3px;
+      border-radius: 0 2px 2px 0;
+      background: var(--accent, #60a5fa);
+    }
+    /* Hide advanced-only activity buttons when in Classic mode */
+    [data-launch-mode="classic"] #activity-bar .activity-btn[data-advanced-only] {
+      display: none;
     }
 
     #breadcrumb-bar {
@@ -2279,26 +2311,32 @@
       <button class="activity-btn" data-view="search" title="Search">
         <svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path d="M15.25 13.836l-3.964-3.964a5.5 5.5 0 1 0-1.414 1.414l3.964 3.964a1 1 0 0 0 1.414-1.414zM2 6.5a4.5 4.5 0 1 1 9 0 4.5 4.5 0 0 1-9 0z"/></svg>
       </button>
-      <button class="activity-btn" data-view="agents" title="Agents">
+      <button class="activity-btn" data-view="agents" title="Agents" data-advanced-only>
         <svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path d="M8 1a3 3 0 0 0-3 3v1H4a1 1 0 0 0-1 1v6a3 3 0 0 0 3 3h4a3 3 0 0 0 3-3V6a1 1 0 0 0-1-1h-1V4a3 3 0 0 0-3-3zM6 4a2 2 0 1 1 4 0v1H6V4zm-2 3h8v5a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7zm2.5 2a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5zm3 0a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5z"/></svg>
       </button>
-      <button class="activity-btn" data-view="channels" title="Channels">
+      <button class="activity-btn" data-view="channels" title="Channels" data-advanced-only>
         <svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path d="M1 2.5A1.5 1.5 0 0 1 2.5 1h8A1.5 1.5 0 0 1 12 2.5V8h1.5A1.5 1.5 0 0 1 15 9.5v4a1.5 1.5 0 0 1-1.5 1.5h-8A1.5 1.5 0 0 1 4 13.5V12H2.5A1.5 1.5 0 0 1 1 10.5v-8zM2.5 2a.5.5 0 0 0-.5.5v8a.5.5 0 0 0 .5.5H5V9.5A1.5 1.5 0 0 1 6.5 8H11V2.5a.5.5 0 0 0-.5-.5h-8zM6 9.5a.5.5 0 0 1 .5-.5h7a.5.5 0 0 1 .5.5v4a.5.5 0 0 1-.5.5h-7a.5.5 0 0 1-.5-.5v-4z"/></svg>
       </button>
-      <button class="activity-btn" data-view="skills" title="Skills">
+      <button class="activity-btn" data-view="skills" title="Skills" data-advanced-only>
         <svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path d="M6 0L1 3v5l5 3 5-3V3L6 0zm0 1.13l3.64 2.18L6 5.5 2.36 3.31 6 1.13zM1.5 3.84L5.5 6.2v4.67l-4-2.4V3.84zm9 4.63l-4 2.4V6.2l4-2.36v4.63zM13 7h3v1h-3V7zm0 2h3v1h-3V9zm0 2h3v1h-3v-1zm0-6h3v1h-3V5z"/></svg>
       </button>
-      <button class="activity-btn" data-view="design" title="Design Templates">
+      <button class="activity-btn" data-view="design" title="Design Templates" data-advanced-only>
         <svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path d="M14.5 1h-13L1 1.5v13l.5.5h13l.5-.5v-13l-.5-.5zM14 14H2V2h12v12zM4 4h8v2H4V4zm0 3h8v1H4V7zm0 2h5v1H4V9z"/></svg>
       </button>
       <div class="activity-btn-spacer"></div>
-      <button class="activity-btn" data-view="dashboard" title="Dashboard">
+      <button class="activity-btn" data-view="dashboard" title="Dashboard" data-advanced-only>
         <svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path d="M9 1h2.5L13 2.5V5h2.5l.5.5v4l-.5.5H13v2.5l-1.5 1.5H9v-2H7v2H4.5L3 12.5V10H.5L0 9.5v-4L.5 5H3V2.5L4.5 1H7v2h2V1zM4 2.5V6H1v3h3v3.5l.5.5H7v-2h2v2h2.5l.5-.5V9h3V6h-3V2.5L11.5 2H9v2H7V2H4.5l-.5.5z"/></svg>
       </button>
       <button class="activity-btn" data-view="workspaces" title="Workspaces">
         <svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path d="M1 2.5A1.5 1.5 0 0 1 2.5 1h4A1.5 1.5 0 0 1 8 2.5v4A1.5 1.5 0 0 1 6.5 8h-4A1.5 1.5 0 0 1 1 6.5v-4zm1.5-.5a.5.5 0 0 0-.5.5v4a.5.5 0 0 0 .5.5h4a.5.5 0 0 0 .5-.5v-4a.5.5 0 0 0-.5-.5h-4zm7-1A1.5 1.5 0 0 0 8 2.5v4A1.5 1.5 0 0 0 9.5 8h4A1.5 1.5 0 0 0 15 6.5v-4A1.5 1.5 0 0 0 13.5 1h-4zm-.5 1.5a.5.5 0 0 1 .5-.5h4a.5.5 0 0 1 .5.5v4a.5.5 0 0 1-.5.5h-4a.5.5 0 0 1-.5-.5v-4zM2.5 9A1.5 1.5 0 0 0 1 10.5v3A1.5 1.5 0 0 0 2.5 15h4A1.5 1.5 0 0 0 8 13.5v-3A1.5 1.5 0 0 0 6.5 9h-4zm-.5 1.5a.5.5 0 0 1 .5-.5h4a.5.5 0 0 1 .5.5v3a.5.5 0 0 1-.5.5h-4a.5.5 0 0 1-.5-.5v-3zm8-1A1.5 1.5 0 0 0 8 10.5v3A1.5 1.5 0 0 0 9.5 15h4a1.5 1.5 0 0 0 1.5-1.5v-3A1.5 1.5 0 0 0 13.5 9h-4zm-.5 1.5a.5.5 0 0 1 .5-.5h4a.5.5 0 0 1 .5.5v3a.5.5 0 0 1-.5.5h-4a.5.5 0 0 1-.5-.5v-3z"/></svg>
       </button>
-      <button class="activity-btn" data-view="settings" title="Settings">
+      <button class="activity-btn activity-mode-btn" id="mode-classic-btn" data-mode="classic" title="Classic Mode">
+        <svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path d="M2 2.5A1.5 1.5 0 0 1 3.5 1h9A1.5 1.5 0 0 1 14 2.5v11a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 13.5v-11zM3.5 2a.5.5 0 0 0-.5.5v11a.5.5 0 0 0 .5.5h9a.5.5 0 0 0 .5-.5v-11a.5.5 0 0 0-.5-.5h-9zM5 4h6v1H5V4zm0 2.5h6v1H5v-1zm0 2.5h4v1H5V9z"/></svg>
+      </button>
+      <button class="activity-btn activity-mode-btn" id="mode-advanced-btn" data-mode="advanced" title="Advanced Mode">
+        <svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path d="M2 2.5A1.5 1.5 0 0 1 3.5 1h9A1.5 1.5 0 0 1 14 2.5v11a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 13.5v-11zM3.5 2a.5.5 0 0 0-.5.5v11a.5.5 0 0 0 .5.5h9a.5.5 0 0 0 .5-.5v-11a.5.5 0 0 0-.5-.5h-9zM10 3v10h.5a.5.5 0 0 0 .5-.5v-9a.5.5 0 0 0-.5-.5H10zM5 4h4v1H5V4zm0 2.5h4v1H5v-1zm0 2.5h3v1H5V9z"/></svg>
+      </button>
+      <button class="activity-btn" data-view="settings" title="Settings" data-advanced-only>
         <svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path d="M9.1 4.4L8.6 2H7.4l-.5 2.4-.7.3-2-1.3-.9.8 1.3 2-.3.7-2.4.5v1.2l2.4.5.3.7-1.3 2 .8.8 2-1.3.7.3.5 2.4h1.2l.5-2.4.7-.3 2 1.3.8-.8-1.3-2 .3-.7 2.4-.5V6.8l-2.4-.5-.3-.7 1.3-2-.8-.8-2 1.3-.7-.3zM8 10a2 2 0 1 1 0-4 2 2 0 0 1 0 4z"/></svg>
       </button>
     </nav>
@@ -2389,165 +2427,20 @@
       </div>
     </main>
 
-    <aside id="inspector">
-      <div class="inspector-section">
-        <h3>Departments</h3>
-        <ul id="dept-list">
-          <li><span class="icon">⏳</span> Loading...</li>
-        </ul>
-      </div>
-      <div class="inspector-section" id="inspector-headroom-section" style="margin:6px 8px;padding:0;border-bottom:none;background:transparent;">
-        <div class="hr-card" style="position:relative;border-radius:12px;padding:12px 14px;overflow:hidden;background:linear-gradient(135deg,rgba(99,102,241,0.10),rgba(34,197,94,0.10),rgba(99,102,241,0.10));border:1px solid rgba(99,102,241,0.28);box-shadow:0 4px 14px rgba(99,102,241,0.18),inset 0 1px 0 rgba(255,255,255,0.05);">
-          <div class="hr-card-glow" aria-hidden="true" style="position:absolute;inset:-1px;border-radius:12px;padding:1px;background:linear-gradient(135deg,#6366f1 0%,#22c55e 50%,#6366f1 100%);background-size:200% 200%;-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude;opacity:0.55;animation:hrCardFlow 6s ease-in-out infinite;pointer-events:none;"></div>
-          <div style="position:relative;display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;">
-            <div style="display:flex;align-items:center;gap:8px;min-width:0;">
-              <div style="width:28px;height:28px;border-radius:8px;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,rgba(99,102,241,0.25),rgba(34,197,94,0.20));border:1px solid rgba(99,102,241,0.35);box-shadow:0 0 12px rgba(99,102,241,0.35);font-size:14px;flex-shrink:0;">🪶</div>
-              <div style="min-width:0;">
-                <div style="display:flex;align-items:center;gap:6px;">
-                  <h3 style="margin:0;font-size:10px;font-weight:800;color:var(--text-primary);text-transform:uppercase;letter-spacing:1.2px;">Compression</h3>
-                  <span id="headroom-status-pill" title="Compression status" style="font-size:8px;font-weight:700;padding:1px 6px;border-radius:10px;background:rgba(148,163,184,0.20);color:var(--text-dim);border:1px solid rgba(148,163,184,0.30);text-transform:uppercase;letter-spacing:0.6px;">Off</span>
-                </div>
-                <div style="font-size:9px;color:var(--text-dim);margin-top:1px;letter-spacing:0.3px;">Prompt compression · saves tokens</div>
-              </div>
-            </div>
-            <button id="headroom-toggle" role="switch" aria-checked="false" aria-label="Toggle Headroom prompt compression" data-tippy-content="Compress outgoing prompts via local Headroom proxy. Requires `headroom proxy --port 8787`." data-tippy-placement="left" style="position:relative;width:36px;height:20px;border-radius:11px;border:none;cursor:pointer;background:rgba(148,163,184,0.25);transition:background 0.18s ease;flex-shrink:0;padding:0;">
-              <span id="headroom-toggle-knob" style="position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;transition:left 0.18s ease,background 0.18s ease;box-shadow:0 1px 3px rgba(0,0,0,0.4);"></span>
-            </button>
-          </div>
-          <div style="position:relative;display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px;">
-            <div style="background:rgba(15,23,42,0.45);border:1px solid rgba(99,102,241,0.18);border-radius:6px;padding:6px 8px;">
-              <div style="font-size:9px;font-weight:700;color:rgba(226,232,240,0.85);text-transform:uppercase;letter-spacing:0.5px;">Saved</div>
-              <div id="headroom-saved" style="font-size:14px;font-weight:800;color:#a6e3a1;font-variant-numeric:tabular-nums;line-height:1.2;">0</div>
-              <div style="font-size:9px;color:rgba(203,213,225,0.75);">tokens · session</div>
-            </div>
-            <div style="background:rgba(15,23,42,0.45);border:1px solid rgba(99,102,241,0.18);border-radius:6px;padding:6px 8px;">
-              <div style="font-size:9px;font-weight:700;color:rgba(226,232,240,0.85);text-transform:uppercase;letter-spacing:0.5px;">Ratio</div>
-              <div id="headroom-ratio" style="font-size:14px;font-weight:800;color:#89b4fa;font-variant-numeric:tabular-nums;line-height:1.2;">—</div>
-              <div style="font-size:9px;color:rgba(203,213,225,0.75);"><span id="headroom-runs">0</span> compressions</div>
-            </div>
-          </div>
-          <div id="headroom-foot" style="position:relative;font-size:9px;color:var(--text-dim);display:flex;align-items:center;justify-content:space-between;gap:6px;">
-            <span id="headroom-foot-msg" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">Tap to enable · proxy at <code style="font-size:9px;color:var(--text-dim);background:rgba(15,23,42,0.4);padding:1px 4px;border-radius:3px;" id="headroom-proxy-url">localhost:8787</code></span>
-            <button id="headroom-reset" style="background:transparent;border:1px solid rgba(148,163,184,0.25);color:var(--text-dim);font-size:9px;padding:1px 6px;border-radius:4px;cursor:pointer;flex-shrink:0;" data-tippy-content="Reset session counters" data-tippy-placement="left">↻</button>
-          </div>
-        </div>
-      </div>
-      <div class="inspector-section" style="padding:8px 8px 6px;">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
-          <div style="display:flex;align-items:center;gap:5px;">
-            <div style="width:6px;height:6px;border-radius:50%;background:#a6e3a1;box-shadow:0 0 4px #a6e3a1;"></div>
-            <h3 style="margin:0;font-size:9px;font-weight:700;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px;">Live Map</h3>
-          </div>
-          <div style="display:flex;align-items:center;gap:6px;">
-            <span id="treemap-file-count" style="font-size:8px;color:var(--text-dim);background:rgba(99,102,241,0.1);padding:1px 5px;border-radius:3px;">0 files</span>
-            <button id="treemap-expand-btn" data-tippy-content="Click to view live activity map in fullscreen mode" data-tippy-placement="left" style="background:rgba(99,102,241,0.1);border:1px solid rgba(99,102,241,0.2);cursor:pointer;font-size:12px;padding:2px 5px;border-radius:4px;line-height:1;color:var(--text-dim);transition:all 0.12s;">🔎</button>
-          </div>
-        </div>
-        <div id="sidebar-treemap" style="background:linear-gradient(135deg,#08080f,#0c0c1a);border-radius:8px;height:110px;overflow:hidden;border:1px solid rgba(99,102,241,0.15);box-shadow:inset 0 1px 3px rgba(0,0,0,0.3);cursor:pointer;" onclick="if(typeof openTreemapPopup==='function')openTreemapPopup()"></div>
-      </div>
-      <div class="inspector-section">
-        <h3 style="display:flex;justify-content:space-between;align-items:center;">Active Agents <span id="clear-agents-btn" style="cursor:pointer;font-size:11px;color:var(--text-dim);padding:2px 6px;border-radius:4px;border:1px solid var(--border-color);display:none;" title="Clear agent list">✕ Clear</span></h3>
-        <div id="active-agents" style="font-size:12px;color:var(--text-dim);font-style:italic;">Idle</div>
-      </div>
-      <!-- Response Schemas (project-specific activation) -->
-      <div id="inspector-schemas-section" class="inspector-section" style="display:none;background:linear-gradient(135deg,rgba(250,179,135,0.04),rgba(249,226,175,0.04));border-radius:10px;margin:4px 8px;padding:12px 14px;border:1px solid rgba(250,179,135,0.15);box-shadow:0 2px 8px rgba(0,0,0,0.15);">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
-          <div style="display:flex;align-items:center;gap:6px;">
-            <div style="width:24px;height:24px;border-radius:6px;background:linear-gradient(135deg,#fab387,#f9e2af);display:flex;align-items:center;justify-content:center;font-size:12px;">📐</div>
-            <span style="font-size:11px;font-weight:700;color:var(--text-primary);">Response Schema</span>
-          </div>
-          <div style="display:flex;gap:4px;">
-            <button id="inspector-schema-create" style="padding:3px 8px;font-size:10px;font-weight:600;border-radius:5px;border:none;background:linear-gradient(135deg,#fab387,#f9e2af);color:#1e1e2e;cursor:pointer;">+ New</button>
-            <button id="inspector-schema-help" style="width:22px;height:22px;border-radius:50%;border:none;background:var(--bg-input);display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:11px;color:var(--text-dim);" title="What are schemas?">?</button>
-          </div>
-        </div>
-        <div id="inspector-schema-active" style="font-size:10px;color:var(--text-dim);margin-bottom:6px;padding:4px 8px;background:var(--bg-input);border-radius:4px;border:1px solid var(--border-color);">No schema active</div>
-        <div id="inspector-schema-list" style="display:flex;flex-direction:column;gap:3px;max-height:120px;overflow-y:auto;"></div>
-      </div>
-      <div id="inspector-quality-gate-html" class="inspector-section" style="display:none;background:linear-gradient(135deg,rgba(46,204,113,0.06),rgba(39,174,96,0.06));border-radius:10px;margin:4px 8px;padding:10px 12px;border:1px solid rgba(46,204,113,0.2);">
-        <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;">
-          <span style="font-size:14px;">🚦</span>
-          <span style="font-size:11px;font-weight:700;color:var(--text-primary);">Quality Gate</span>
-          <span id="inspector-gate-info" style="font-size:12px;cursor:pointer;opacity:0.6;margin-left:auto;" title="What is this?">ℹ️</span>
-        </div>
-        <div style="display:flex;gap:6px;margin-bottom:6px;">
-          <button id="inspector-gate-run-html" style="flex:1;padding:7px 0;font-size:10px;font-weight:600;border-radius:6px;border:none;background:linear-gradient(135deg,var(--accent),#6366f1);color:#fff;cursor:pointer;transition:all 0.15s;box-shadow:0 2px 6px rgba(99,102,241,0.25);display:flex;align-items:center;justify-content:center;gap:4px;">🔍 Run Scan</button>
-        </div>
-        <div id="inspector-gate-status-html" style="font-size:10px;color:var(--text-dim);"></div>
-        <div id="inspector-gate-history-html" style="margin-top:4px;"></div>
-      </div>
-      <!-- AI Readiness Score -->
-      <div id="inspector-readiness-section" class="inspector-section" style="display:none;background:linear-gradient(135deg,rgba(99,102,241,0.06),rgba(137,180,250,0.06));border-radius:10px;margin:4px 8px;padding:10px 12px;border:1px solid rgba(99,102,241,0.15);">
-        <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;">
-          <span style="font-size:13px;">📊</span>
-          <span style="font-size:11px;font-weight:700;color:var(--text-primary);">AI Readiness</span>
-          <span id="inspector-readiness-info" style="font-size:12px;cursor:pointer;opacity:0.6;margin-left:auto;" title="What is this?">ℹ️</span>
-        </div>
-        <button id="inspector-readiness-run" style="width:100%;padding:6px 0;font-size:10px;font-weight:600;border-radius:6px;border:none;background:var(--accent);color:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:4px;">📊 Scan Readiness</button>
-        <div id="inspector-readiness-result" style="font-size:10px;color:var(--text-dim);margin-top:6px;"></div>
-      </div>
-      <!-- Test Gap Analysis -->
-      <div id="inspector-testgap-section" class="inspector-section" style="display:none;background:linear-gradient(135deg,rgba(243,139,168,0.06),rgba(235,111,146,0.06));border-radius:10px;margin:4px 8px;padding:10px 12px;border:1px solid rgba(243,139,168,0.15);">
-        <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;">
-          <span style="font-size:13px;">🧪</span>
-          <span style="font-size:11px;font-weight:700;color:var(--text-primary);">Test Gaps</span>
-          <span id="inspector-testgap-info" style="font-size:12px;cursor:pointer;opacity:0.6;margin-left:auto;" title="What is this?">ℹ️</span>
-        </div>
-        <button id="inspector-testgap-run" style="width:100%;padding:6px 0;font-size:10px;font-weight:600;border-radius:6px;border:none;background:var(--accent);color:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:4px;">🧪 Find Gaps</button>
-        <div id="inspector-testgap-result" style="font-size:10px;color:var(--text-dim);margin-top:6px;"></div>
-      </div>
-      <!-- Adversary Reviewer -->
-      <div id="inspector-adversary-section" class="inspector-section" style="display:none;background:linear-gradient(135deg,rgba(250,179,135,0.06),rgba(249,226,175,0.06));border-radius:10px;margin:4px 8px;padding:10px 12px;border:1px solid rgba(250,179,135,0.15);">
-        <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;">
-          <span style="font-size:13px;">🛡️</span>
-          <span style="font-size:11px;font-weight:700;color:var(--text-primary);">Adversary Monitor</span>
-        </div>
-        <div id="inspector-adversary-status" style="font-size:10px;color:var(--green,#a6e3a1);">● Watching — 0 threats detected</div>
-      </div>
-      <!-- Smart Alerts -->
-      <div id="inspector-alerts-section" class="inspector-section" style="display:none;background:linear-gradient(135deg,rgba(249,226,175,0.06),rgba(245,194,131,0.06));border-radius:10px;margin:4px 8px;padding:10px 12px;border:1px solid rgba(249,226,175,0.15);">
-        <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;">
-          <span style="font-size:13px;">⚡</span>
-          <span style="font-size:11px;font-weight:700;color:var(--text-primary);">Smart Alerts</span>
-        </div>
-        <div id="inspector-alerts-list" style="font-size:10px;color:var(--text-dim);">No active alerts</div>
-      </div>
-      <!-- Persistent Memory -->
-      <div id="inspector-memory-section" class="inspector-section" style="display:none;background:linear-gradient(135deg,rgba(180,190,254,0.06),rgba(137,180,250,0.06));border-radius:10px;margin:4px 8px;padding:10px 12px;border:1px solid rgba(180,190,254,0.2);">
-        <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;">
-          <span style="font-size:13px;">🧠</span>
-          <span style="font-size:11px;font-weight:700;color:var(--text-primary);">Memory</span>
-          <span id="inspector-memory-status" style="font-size:8px;margin-left:auto;padding:2px 6px;border-radius:8px;background:var(--border-color);color:var(--text-dim);">offline</span>
-        </div>
-        <div id="inspector-memory-stats" style="font-size:9px;color:var(--text-dim);margin-bottom:6px;"></div>
-        <div id="inspector-memory-recent" style="font-size:9px;color:var(--text-dim);margin-bottom:6px;max-height:80px;overflow-y:auto;"></div>
-        <div style="display:flex;gap:4px;">
-          <button id="inspector-memory-search-btn" style="flex:1;padding:5px 0;font-size:9px;font-weight:600;border-radius:5px;border:1px solid var(--border-color);background:var(--bg-input);color:var(--text-secondary);cursor:pointer;">🔍 Search</button>
-          <button id="inspector-memory-clear-btn" style="flex:1;padding:5px 0;font-size:9px;font-weight:600;border-radius:5px;border:1px solid var(--border-color);background:var(--bg-input);color:var(--text-secondary);cursor:pointer;">🗑️ Clear</button>
-        </div>
-      </div>
-      <div class="inspector-section" style="background:linear-gradient(135deg, rgba(99,102,241,0.05), rgba(139,92,246,0.05));border-radius:8px;margin:4px 8px;border:1px solid rgba(99,102,241,0.15);">
-        <h3><span style="font-size:12px;">📊</span> Session</h3>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
-          <div style="background:var(--bg-input);border-radius:6px;padding:6px 8px;text-align:center;"><div style="font-size:13px;font-weight:700;color:var(--text-primary);" id="stat-status">Ready</div><div style="font-size:8px;color:var(--text-dim);text-transform:uppercase;">Status</div></div>
-          <div style="background:var(--bg-input);border-radius:6px;padding:6px 8px;text-align:center;"><div style="font-size:13px;font-weight:700;color:var(--text-primary);" id="stat-messages">0</div><div style="font-size:8px;color:var(--text-dim);text-transform:uppercase;">Messages</div></div>
-          <div style="background:var(--bg-input);border-radius:6px;padding:6px 8px;text-align:center;"><div style="font-size:13px;font-weight:700;color:var(--text-primary);" id="stat-tokens">0</div><div style="font-size:8px;color:var(--text-dim);text-transform:uppercase;">Tokens</div></div>
-          <div style="background:var(--bg-input);border-radius:6px;padding:6px 8px;text-align:center;"><div style="font-size:13px;font-weight:700;color:var(--green,#a6e3a1);" id="stat-cost">$0.00</div><div style="font-size:8px;color:var(--text-dim);text-transform:uppercase;">Cost</div></div>
-        </div>
-        <div style="display:flex;justify-content:space-between;margin-top:6px;font-size:10px;color:var(--text-dim);"><span id="inspector-connection">● Connected</span><span id="inspector-branch">no branch</span></div>
-      </div>
-      <div class="inspector-section" style="background:linear-gradient(135deg, rgba(34,197,94,0.05), rgba(16,185,129,0.05));border-radius:8px;margin:4px 8px;border:1px solid rgba(34,197,94,0.12);">
-        <h3><span style="font-size:12px;">🔐</span> Profile</h3>
-        <div id="prod-auth-status" style="font-size:11px;color:var(--text-dim);">Loading...</div>
-      </div>
-      <div class="inspector-section" id="inspector-tools-section">
-        <h3>Tools</h3>
-        <div id="inspector-tools" style="display:flex;flex-direction:column;gap:4px;"></div>
-      </div>
-    </aside>
+    <!--
+      Inspector panel (Advanced launch mode only).
+
+      The previously-static Inspector aside markup and its resize handle are
+      constructed at runtime by inspector-factory.js through
+      InspectorFactory.mountInspector(#app, mode). Classic mode never creates
+      the aside, the drag handle, or any Inspector-owned DOM ids or keyboard
+      focus targets. The #app grid also drops its Inspector track through the
+      classic launch-mode data attribute selector.
+
+      Requirements: 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 3.1, 3.2, 3.3
+    -->
 
     <div class="drag-handle drag-handle-vertical" id="drag-sidebar"></div>
-    <div class="drag-handle drag-handle-vertical" id="drag-inspector"></div>
     <div class="drag-handle drag-handle-horizontal" id="drag-bottom"></div>
     <div id="bottom-panel">
       <div id="terminal-container">
@@ -2736,33 +2629,25 @@
        authoritative load path per Requirement 3.7. -->
   <script src="./metrics-panel.js"></script>
 
-  <!-- Chat Enhancements — rich message rendering (tool cards, diffs, mermaid, truncation).
-       Requirements: 17.1-17.8 -->
-  <script src="./chat-enhancements.js"></script>
-
   <!-- Chat Input Enhanced — file attachments, slash commands, auto-resize, char counter.
        Requirements: 18.1-18.9 -->
   <script src="./chat-input-enhanced.js"></script>
-
-  <!-- Chat Streaming — token-by-token streaming, cursor animation, WebSocket reconnect.
-       Requirements: 20.1-20.6 -->
-  <script src="./chat-streaming.js"></script>
 
   <!-- Agent State Bar — status bar with stop/retry controls above chat input.
        Requirements: 19.1-19.6 -->
   <script src="./agent-state-bar.js"></script>
 
-  <!-- Chat Scroll Controller — smart scroll + jump-to-bottom behavior.
-       Requirements: 21.1-21.5 -->
-  <script src="./chat-scroll-controller.js"></script>
-
-  <!-- Chat Empty State — welcome screen with suggestion cards and capabilities.
-       Requirements: 22.1-22.5 -->
-  <script src="./chat-empty-state.js"></script>
-
-  <!-- Chat Message Actions — hover action bar, code copy, expand, edit, retry.
-       Requirements: 23.1-23.6 -->
-  <script src="./chat-message-actions.js"></script>
+  <!--
+    Task 13.3 (enhanced-chat-ui) — the following legacy chat renderer helpers
+    were retired in favor of the canonical structured-response surfaces
+    (see `src/renderer/structured-response/`):
+      chat-enhancements.js, chat-streaming.js, chat-scroll-controller.js,
+      chat-empty-state.js, chat-message-actions.js
+    All Markdown, code, copy, streaming, scroll, empty-state, and action-bar
+    behaviour now flows through the canonical projection surface mounted by
+    `panels/chat/index.ts` via `createProjectionChatIntegration`.
+    See Requirements 5.1–5.9, 7.1–7.8, 9.6, 10.7–10.10, 15.1–15.9.
+  -->
 
   <!-- Chat Theming — polished visual design matching NeuroNest identity.
        Requirements: 24.1-24.9 -->
@@ -2799,6 +2684,27 @@
        for the channels panel in index.js. Must load before index.js.
        Requirements: REQ 30.5, REQ 31.1, REQ 31.7 -->
   <script src="./channels-view.js"></script>
+
+  <!-- Launch-mode application setting — loads before index.js so the
+       edition-neutral Settings surface can mount the fixed-API controller. -->
+  <script src="./launch-mode-settings-control.js"></script>
+
+  <!-- Legacy provider-key cleanup surface (task 5.4). Renders masked
+       entries for pre-migration cloud provider records with a delete
+       control backed by the fixed IPC channels
+       `legacy-provider-keys:list-records-v1` and
+       `legacy-provider-keys:delete-record-v1`. Loaded before index.js so
+       the Settings surface can mount it via `window.mountLegacyProviderKeyPanel`.
+       Requirements: 6.3-6.6, 7.2-7.5 -->
+  <script src="./legacy-provider-key-panel.js"></script>
+
+  <!-- Advanced-only Inspector factory. Constructs the Inspector aside markup
+       and its resize handle at runtime for Advanced launch mode only. Must
+       load before index.js so window.InspectorFactory is available to the
+       DOMContentLoaded initializer. Classic mode never invokes the factory —
+       the aside, drag handle, and Inspector-only focus targets never exist.
+       Requirements: 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 3.1, 3.2, 3.3 -->
+  <script src="./inspector-factory.js"></script>
 
   <script src="./index.js"></script>
 

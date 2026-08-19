@@ -609,13 +609,17 @@ function initFormatEngine() {
     return '<div class="code-block-wrapper">' + header + '<pre class="code-block-pre">' + codeTag + '</pre></div>\n';
   };
 
-  // Make links open externally
+  // Rendered model links no longer opt into `target="_blank"`. Task 10.6
+  // moved external navigation to the fixed `shell:open-external-v1` IPC
+  // route (with the click-delegation fallback in `initExternalLinkHandler`
+  // still preventDefault-ing and dispatching to `shell:open-external` for
+  // the legacy renderer). The window-hardener denies BrowserWindow
+  // navigation and window-open events without side effects.
   var defaultLinkOpen = md.renderer.rules.link_open || function(tokens, idx, options, env, self) {
     return self.renderToken(tokens, idx, options);
   };
   md.renderer.rules.link_open = function(tokens, idx, options, env, self) {
-    tokens[idx].attrSet('target', '_blank');
-    tokens[idx].attrSet('rel', 'noopener');
+    tokens[idx].attrSet('rel', 'noopener noreferrer');
     return defaultLinkOpen(tokens, idx, options, env, self);
   };
 
@@ -1145,124 +1149,35 @@ function removeThinkingIndicator() {
   if (el) el.remove();
 }
 
-// ── Stream Listeners (IPC: chat:stream, chat:done, chat:error) ──
-
-var _streamListenerCount = 0; // Track registration count for debugging
+// ── Stream Listeners (retired by task 13.3, enhanced-chat-ui) ──
+//
+// The legacy `chat:stream`, `chat:done`, and `chat:error` IPC channels are
+// still emitted by producers that have not yet migrated, but no renderer
+// code may subscribe to them. The main-process compatibility ingress
+// (`src/main/chat/legacy-canonical-ingestion.ts`, invoked from
+// `src/main/chat/*-legacy-bridge.ts`) parses those payloads into canonical
+// SessionLog events; the renderer only ever sees canonical projection
+// deltas (see `panels/chat/projection-chat-integration.ts`).
+//
+// `setupStreamListeners`/`cleanupStreamListeners` remain as inert stubs
+// with the same signatures so the god-file's call sites do not need
+// invasive edits during migration. They perform no work and register no
+// listeners. Requirements: 5.7, 9.1, 9.6, 10.1–10.7, 15.3–15.5.
 
 function cleanupStreamListeners() {
-  var api = eapi();
-  if (_streamListener) { try { api.removeListener('chat:stream', _streamListener); } catch(e) {} }
-  if (_doneListener) { try { api.removeListener('chat:done', _doneListener); } catch(e) {} }
-  if (_errorListener) { try { api.removeListener('chat:error', _errorListener); } catch(e) {} }
+  // No-op: task 13.3 retired the legacy chat stream subscriptions. The
+  // renderer's sole rendering input is the canonical projection surface.
   _streamListener = null;
   _doneListener = null;
   _errorListener = null;
 }
 
 function setupStreamListeners() {
-  cleanupStreamListeners(); // Prevent duplicate registration
-  _streamListenerCount++;
-
-  var api = eapi();
-  var myGeneration = _streamListenerCount; // Capture generation to detect stale listeners
-
-  _streamListener = function(data) {
-    // Stale listener guard — if a newer generation was registered, ignore
-    if (myGeneration !== _streamListenerCount) return;
-
-    if (data.start) {
-      // Dedup: don't create a new bubble if one already exists for this msgId
-      if (activeStreamId === data.msgId) return;
-
-      removeThinkingIndicator();
-      // Track agent for live map
-      if (data.agent) window._currentStreamAgent = data.agent;
-      // Create new empty assistant message bubble
-      var msgObj = { id: data.msgId, role: 'assistant', content: '', isStreaming: true, meta: { label: data.agent, provider: data.provider, model: data.model } };
-      chatMessageStore.push(msgObj);
-      var el = appendMsgEl('assistant', '', { label: data.agent, provider: data.provider, model: data.model });
-      activeStreamId = data.msgId;
-      activeStreamSession = _nnStartStream(el);
-      addTypingCursor(el);
-      return;
-    }
-    // Stale token protection
-    if (data.msgId !== activeStreamId) return;
-    if (!activeStreamSession) return;
-    // Append token to MessageObject and stream session
-    var msgObj = null;
-    for (var i = chatMessageStore.length - 1; i >= 0; i--) {
-      if (chatMessageStore[i].id === data.msgId) { msgObj = chatMessageStore[i]; break; }
-    }
-    if (msgObj) msgObj.content += data.token;
-    _nnAppendChunk(activeStreamSession, data.token);
-    // Live map: buffer tokens and scan for file paths periodically
-    if (!window._streamBuf) window._streamBuf = '';
-    window._streamBuf += data.token;
-    if (window._streamBuf.length > 150) {
-      var buf = window._streamBuf; window._streamBuf = '';
-      if (typeof window.markFileModified === 'function') {
-        var bPaths = buf.match(/[`"']?([a-zA-Z0-9_\-./]+\/[a-zA-Z0-9_\-./]+)[`"']?/g);
-        if (!bPaths) bPaths = buf.match(/[`"']?([a-zA-Z0-9_\-./]+\.(?:ts|js|py|rs|go|java|rb|css|html|json|md|yaml|toml))[`"']?/g);
-        if (bPaths) { for (var bpi = 0; bpi < Math.min(bPaths.length, 5); bpi++) { var bfp = bPaths[bpi].replace(/^[`"'(\[]+|[`"')\]]+$/g, '').trim(); if (bfp && bfp.length > 2 && bfp.length < 100 && bfp.indexOf('http') !== 0 && bfp.indexOf('//') !== 0) window.markFileModified(bfp, window._currentStreamAgent || ''); } }
-      }
-    }
-  };
-
-  _doneListener = function(data) {
-    if (myGeneration !== _streamListenerCount) return;
-    if (data.msgId !== activeStreamId) return;
-    var msgObj = null;
-    for (var i = chatMessageStore.length - 1; i >= 0; i--) {
-      if (chatMessageStore[i].id === data.msgId) { msgObj = chatMessageStore[i]; break; }
-    }
-    if (msgObj) {
-      msgObj.isStreaming = false;
-      // Live map: scan completed message for file paths
-      if (msgObj.content && typeof window.markFileModified === 'function') {
-        var dPaths = msgObj.content.match(/[`"']?([a-zA-Z0-9_\-./]+\/[a-zA-Z0-9_\-./]+)[`"']?/g);
-        if (!dPaths) dPaths = msgObj.content.match(/[`"']?([a-zA-Z0-9_\-./]+\.(?:ts|js|py|rs|go|java|rb|css|html|json|md|yaml|toml))[`"']?/g);
-        if (dPaths) {
-          for (var dpi = 0; dpi < Math.min(dPaths.length, 15); dpi++) {
-            var dfp = dPaths[dpi].replace(/^[`"'(\[]+|[`"')\]]+$/g, '').trim();
-            if (dfp && dfp.length > 2 && dfp.length < 100 && dfp.indexOf('http') !== 0 && dfp.indexOf('//') !== 0) window.markFileModified(dfp, window._currentStreamAgent || '');
-          }
-        }
-      }
-    }
-    if (activeStreamSession) _nnFinalizeStream(activeStreamSession);
-    removeTypingCursor(activeStreamSession ? activeStreamSession.messageEl : null);
-    activeStreamId = null;
-    activeStreamSession = null;
-    // ── Professional Mode: refresh proxy credit balance after a successful
-    // completion (task 17.2 / Requirements 8.3, 8.4). The fetch is
-    // fire-and-forget — failures never block subsequent chat requests and
-    // are surfaced via a small "balance unavailable" indicator.
-    try { _refreshProxyBalance(); } catch (e) { /* never block chat:done */ }
-  };
-
-  _errorListener = function(data) {
-    if (myGeneration !== _streamListenerCount) return;
-    if (data.msgId !== activeStreamId) return;
-    var msgObj = null;
-    for (var i = chatMessageStore.length - 1; i >= 0; i--) {
-      if (chatMessageStore[i].id === data.msgId) { msgObj = chatMessageStore[i]; break; }
-    }
-    if (msgObj) {
-      msgObj.isStreaming = false;
-      msgObj.error = true;
-      msgObj.content = data.partial;
-    }
-    if (activeStreamSession) _nnFinalizeStream(activeStreamSession);
-    removeTypingCursor(activeStreamSession ? activeStreamSession.messageEl : null);
-    showErrorIndicator(activeStreamSession ? activeStreamSession.messageEl : null, data.error);
-    activeStreamId = null;
-    activeStreamSession = null;
-  };
-
-  api.on('chat:stream', _streamListener);
-  api.on('chat:done', _doneListener);
-  api.on('chat:error', _errorListener);
+  // No-op: task 13.3 retired the legacy chat stream subscriptions. Callers
+  // may still invoke this function to signal "chat view is active"; the
+  // canonical projection integration is wired independently in
+  // `panels/chat/index.ts` via `createProjectionChatIntegration`.
+  cleanupStreamListeners();
 }
 
 // ── Plan gating helpers ──
@@ -2758,10 +2673,123 @@ function setBrainActive(active) {
   }
 }
 
+// ── Launch-mode shell (Advanced Inspector lifecycle gate) ──
+//
+// Resolves the persisted graphical launch mode via the fixed
+// `getAppBootstrap` IPC method and, only for the Advanced mode, mounts
+// the Inspector aside and its resize handle through
+// `window.InspectorFactory.mountInspector`. Classic mode never
+// constructs the aside, the handle, or any Inspector-only DOM ids or
+// keyboard focus targets.
+//
+// The default when the bootstrap is unavailable is `'advanced'`, which
+// matches Requirement 1.4's compatibility fallback for existing
+// installations. The resolved mode is published on
+// `document#app[data-launch-mode]` so mode-aware CSS (Classic drops the
+// Inspector grid track) and downstream startup guards can pick it up
+// without threading the value through every init helper.
+//
+// Requirements: 1.4, 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 3.1, 3.2, 3.3
+async function initLaunchModeShell() {
+  var api = eapi();
+  var mode = 'advanced';
+  try {
+    if (api && typeof api.getAppBootstrap === 'function') {
+      var snapshot = await api.getAppBootstrap();
+      if (snapshot && (snapshot.launchMode === 'classic' || snapshot.launchMode === 'advanced')) {
+        mode = snapshot.launchMode;
+      }
+    }
+  } catch (err) {
+    // Bootstrap unavailable — keep Advanced-mode fallback so the user
+    // never sees a partially-mounted shell (Requirement 1.4).
+    console.warn('[LaunchMode] getAppBootstrap failed; defaulting to advanced:', err);
+  }
+  window.__neuronestLaunchMode = mode;
+  var appEl = document.getElementById('app');
+  if (window.InspectorFactory && typeof window.InspectorFactory.mountInspector === 'function') {
+    try {
+      window.InspectorFactory.mountInspector(appEl, mode);
+    } catch (mountErr) {
+      // A mount failure must not prevent the rest of the application
+      // from starting. Log for diagnostics and continue.
+      console.error('[LaunchMode] Inspector mount failed:', mountErr);
+    }
+  } else if (appEl && appEl.setAttribute) {
+    // Factory not loaded — still publish the mode so mode-aware CSS
+    // (grid template) applies correctly.
+    try { appEl.setAttribute('data-launch-mode', mode); } catch (attrErr) { /* noop */ }
+  }
+  return mode;
+}
+
+/**
+ * Predicate for the module-scope "is Inspector present?" question. Delegates
+ * to `InspectorFactory.isAdvancedLaunchMode` when available and falls back
+ * to the module cache; defaulting to Advanced keeps the compatibility path
+ * for legacy installs where the factory or bootstrap is absent.
+ */
+function isAdvancedLaunchModeActive() {
+  if (window.InspectorFactory && typeof window.InspectorFactory.isAdvancedLaunchMode === 'function') {
+    try { return window.InspectorFactory.isAdvancedLaunchMode(document) === true; }
+    catch (e) { /* fall through */ }
+  }
+  if (window.__neuronestLaunchMode === 'classic') return false;
+  return true;
+}
+
 // ── IPC setup ──
 
 function setupIPC() {
   var api = eapi();
+
+  // Agent Catalog updated — re-fetch departments so counts reflect imported agents
+  api.on('agents:catalog-updated', function() {
+    api.invoke('get-departments').then(function(depts) {
+      renderDepartments(depts || []);
+      // Refresh agent emoji cache with updated data
+      for (var di = 0; di < (depts || []).length; di++) {
+        var dept = depts[di];
+        var agents = dept.agents || [];
+        for (var ai = 0; ai < agents.length; ai++) {
+          if (agents[ai].name && agents[ai].emoji) {
+            agentEmojiCache[agents[ai].name] = agents[ai].emoji;
+          }
+        }
+      }
+    }).catch(function() {});
+  });
+
+  // Launch Mode hot-swap — apply mode change immediately without restart
+  api.on('launch-mode:changed', function(newMode) {
+    if (!newMode || (newMode !== 'classic' && newMode !== 'advanced')) return;
+    var appEl = document.getElementById('app');
+    window.__neuronestLaunchMode = newMode;
+
+    if (window.InspectorFactory && typeof window.InspectorFactory.switchLaunchMode === 'function') {
+      window.InspectorFactory.switchLaunchMode(appEl, newMode);
+    } else if (appEl) {
+      appEl.setAttribute('data-launch-mode', newMode);
+    }
+
+    // If switching to advanced, initialize Inspector-gated features
+    if (newMode === 'advanced') {
+      loadProdAuthStatus();
+      populateInspectorTools();
+      api.invoke('get-departments').then(function(depts) {
+        renderDepartments(depts || []);
+        for (var di = 0; di < (depts || []).length; di++) {
+          var dept = depts[di];
+          var agents = dept.agents || [];
+          for (var ai = 0; ai < agents.length; ai++) {
+            if (agents[ai].name && agents[ai].emoji) {
+              agentEmojiCache[agents[ai].name] = agents[ai].emoji;
+            }
+          }
+        }
+      }).catch(function() {});
+    }
+  });
 
   // Agent Loop progress — turn off brain on completion
   api.on('agent-progress', function(data) {
@@ -2912,99 +2940,41 @@ function setupIPC() {
     if (data.agent === 'ZERA') addActiveAgent('ZERA Optimizer');
     if (data.agent === 'Orchestrator') { removeActiveAgent('ZERA Optimizer'); addActiveAgent('Orchestrator'); }
     if (data.agent === 'Swarm' && text && text.indexOf('Phase') !== -1) { removeActiveAgent('Orchestrator'); }
+    // ── Legacy ad hoc renderer retired (task 13.3, enhanced-chat-ui) ──
+    //
+    // The previous body of this branch created message-local stream
+    // sessions (`_nnStartStream`/`_nnAppendChunk`/`_nnFinalizeStream`),
+    // appended assistant bubbles directly with `addMsg`, and animated
+    // text-only responses via `_animateMessage`. All rendering is now
+    // performed by the canonical projection surface mounted in
+    // `panels/chat/index.ts` via `createProjectionChatIntegration`. The
+    // main-process compatibility ingress
+    // (`src/main/chat/legacy-canonical-ingestion.ts`) translates the
+    // legacy `chat-response` payload into canonical SessionLog events,
+    // and the projection publisher re-emits them as canonical projection
+    // deltas.
+    //
+    // The retained side effects below preserve god-file behaviour that
+    // has no canonical replacement yet: the persistent chat-message
+    // store used by other views, the message-count status readout, and
+    // the unread-message badge on the sidebar.
+    // Requirements: 5.7, 9.1, 9.6, 10.1–10.7, 15.3–15.5.
     if (text) {
-      // Only append to DOM if chat area is currently visible.
-      // Messages are always stored in chatMessageStore (via addMsg) regardless.
-      // If user is on another view, just increment the unread badge.
-      var chatArea = $$('#chat-area');
-      if (!chatArea) {
-        // Chat area doesn't exist (user is on another view) — store message only
-        chatMessageStore.push({ role: data.role || 'assistant', text: text, meta: meta });
-        msgCount++;
-        var elStat = $$('#stat-messages');
-        if (elStat) elStat.textContent = String(msgCount);
+      chatMessageStore.push({ role: data.role || 'assistant', text: text, meta: meta });
+      msgCount++;
+      var elStat = $$('#stat-messages');
+      if (elStat) elStat.textContent = String(msgCount);
+      // Show unread badge if user is on another view. The canonical
+      // projection surface handles the visible message rendering when
+      // the chat view is active; the badge is a global sidebar hint.
+      if (!$$('#chat-area')) {
         chatUnreadCount++;
         updateChatUnreadBadge();
-        return;
       }
-      // Streaming support: if data.streaming is set, use StreamRenderer for incremental updates
-      if (data.streaming && !data.done) {
-        // Start or continue a streaming session
-        if (!_nnStreamSession || _nnStreamSession._agentKey !== (data.agent || 'assistant')) {
-          // Finalize any previous stream
-          if (_nnStreamSession) {
-            _nnFinalizeStream(_nnStreamSession);
-            // Store the finalized message
-            chatMessageStore.push({ role: _nnStreamSession._role || 'assistant', text: _nnStreamSession.buffer, meta: _nnStreamSession._meta || null });
-          }
-          // Create a new message element for streaming
-          var streamRole = data.role || 'assistant';
-          var streamMeta = meta;
-          var streamArea = $('#chat-area');
-          if (streamArea) {
-            var streamDiv = document.createElement('div');
-            var streamCls = streamRole === 'user' ? 'user' : 'assistant';
-            if (streamMeta && streamMeta.type === 'command') streamCls = 'assistant command-result';
-            streamDiv.className = 'message ' + streamCls;
-            var streamLabel = streamRole === 'user' ? 'You' : 'NeuroNest';
-            if (streamMeta && streamMeta.label) streamLabel = streamMeta.label;
-            // Provider:model badge for streaming messages
-            var streamProvBadge = '';
-            if (streamMeta && streamMeta.provider && streamMeta.model) {
-              streamProvBadge = ' <span style="font-size:10px;font-style:italic;color:var(--text-dim);font-weight:400;">(' + escHtml(streamMeta.provider) + ':' + escHtml(streamMeta.model) + ')</span>';
-            } else if (streamMeta && streamMeta.model) {
-              streamProvBadge = ' <span style="font-size:10px;font-style:italic;color:var(--text-dim);font-weight:400;">(' + escHtml(streamMeta.model) + ')</span>';
-            }
-            streamDiv.innerHTML = '<div class="message-inner">' +
-              '<div class="message-avatar">\ud83e\udd16</div>' +
-              '<div class="message-content">' +
-              '<div class="role-label">' + escHtml(streamLabel) + streamProvBadge + '</div>' +
-              '<div class="message-body"></div>' +
-              '</div></div>';
-            streamArea.appendChild(streamDiv);
-            var session = _nnStartStream(streamDiv);
-            session._agentKey = data.agent || 'assistant';
-            session._role = streamRole;
-            session._meta = streamMeta;
-          }
-        }
-        if (_nnStreamSession) {
-          _nnAppendChunk(_nnStreamSession, text);
-        }
-      } else {
-        // Non-streaming or final message: finalize any active stream first
-        if (_nnStreamSession) {
-          if (data.done && data.streaming) {
-            // Final chunk of a stream
-            _nnAppendChunk(_nnStreamSession, text);
-            _nnFinalizeStream(_nnStreamSession);
-            chatMessageStore.push({ role: _nnStreamSession._role || 'assistant', text: _nnStreamSession.buffer, meta: _nnStreamSession._meta || null });
-            msgCount++;
-            var statEl = $('#stat-messages');
-            if (statEl) statEl.textContent = String(msgCount);
-            _nnStreamSession = null;
-          } else {
-            _nnFinalizeStream(_nnStreamSession);
-            chatMessageStore.push({ role: _nnStreamSession._role || 'assistant', text: _nnStreamSession.buffer, meta: _nnStreamSession._meta || null });
-            msgCount++;
-            var statEl2 = $('#stat-messages');
-            if (statEl2) statEl2.textContent = String(msgCount);
-            _nnStreamSession = null;
-            // Add the new non-streaming message normally
-            addMsg(data.role || 'assistant', text, meta);
-          }
-        } else {
-          // Animate text-only responses; render code-containing responses instantly
-          var hasCode = text && (text.indexOf('```') !== -1 || text.indexOf('<code') !== -1);
-          if (data.streamAnimate && text && text.length > 0 && !hasCode) {
-            _animateMessage(data.role || 'assistant', text, meta);
-          } else {
-            addMsg(data.role || 'assistant', text, meta);
-          }
-        }
-      }
-      // Show thinking indicator after "starting..." messages
-      if (text && text.indexOf('starting...') !== -1 && data.isCommand) {
+      // Show thinking indicator after "starting..." messages — this is a
+      // small non-rendering global affordance surfaced by the god-file
+      // outside the chat message stream.
+      if (text.indexOf('starting...') !== -1 && data.isCommand) {
         showThinkingIndicator();
       }
     }
@@ -3678,25 +3648,35 @@ function setupIPC() {
     if (theme === 'light') document.body.classList.add('theme-light');
   }).catch(function() {});
 
-  // Load production auth status into inspector panel
-  loadProdAuthStatus();
+  // Advanced-only Inspector initialization.
+  //
+  // In Classic mode the Inspector aside does not exist (see
+  // `inspector-factory.ts`), so any startup fetch or DOM build that
+  // targets Inspector-only element ids either wastes an IPC round-trip
+  // or does nothing useful. Requirement 2.6 explicitly forbids the
+  // eager `get-departments` request when the panel is not being
+  // rendered, so we gate the entire block on Advanced mode.
+  if (isAdvancedLaunchModeActive()) {
+    // Load production auth status into inspector panel
+    loadProdAuthStatus();
 
-  // Populate inspector tools section
-  populateInspectorTools();
+    // Populate inspector tools section
+    populateInspectorTools();
 
-  api.invoke('get-departments').then(function(depts) {
-    renderDepartments(depts || []);
-    // Populate agent emoji cache
-    for (var di = 0; di < (depts || []).length; di++) {
-      var dept = depts[di];
-      var agents = dept.agents || [];
-      for (var ai = 0; ai < agents.length; ai++) {
-        if (agents[ai].name && agents[ai].emoji) {
-          agentEmojiCache[agents[ai].name] = agents[ai].emoji;
+    api.invoke('get-departments').then(function(depts) {
+      renderDepartments(depts || []);
+      // Populate agent emoji cache
+      for (var di = 0; di < (depts || []).length; di++) {
+        var dept = depts[di];
+        var agents = dept.agents || [];
+        for (var ai = 0; ai < agents.length; ai++) {
+          if (agents[ai].name && agents[ai].emoji) {
+            agentEmojiCache[agents[ai].name] = agents[ai].emoji;
+          }
         }
       }
-    }
-  }).catch(function() {});
+    }).catch(function() {});
+  }
 
   api.invoke('get-active-project').then(function(activeProject) {
     if (activeProject && activeProject.id) {
@@ -6593,8 +6573,8 @@ function renderDepartments(depts) {
     var d = depts[i];
     var name = d.name || d;
     var icon = d.icon || '🏢';
-    // FIXED: Use backend-provided d.count when available, fall back to d.agents.length for compatibility
-    var count = d.count || (d.agents ? d.agents.length : 0);
+    // Use backend-provided d.count when available (typeof check avoids falsy-zero issue), fall back to d.agents.length
+    var count = (typeof d.count === 'number') ? d.count : (d.agents ? d.agents.length : 0);
     html += '<li data-dept="' + escHtml(name) + '"><span class="icon">' + icon + '</span><span class="agent-name-text">' + escHtml(name) + '</span><span class="dept-count">' + count + '</span></li>';
   }
   list.innerHTML = html;
@@ -7159,20 +7139,18 @@ function loadModelsForProvider(provName, selectEl, currentModel, providers) {
   }
   var isLocal = provCfg && (provCfg.type === 'ollama' || provCfg.type === 'llamacpp' || provCfg.type === 'openmythos');
   var isOpenMythos = provCfg && provCfg.type === 'openmythos';
+  // Cloud model discovery is always resolved from the NeuroNest LLM
+  // service catalog — no per-provider API key is forwarded from the
+  // renderer. Local providers keep their configured baseUrl endpoint.
+  // Requirements: 5.1, 6.4, 7.3
   var invokeData = { provider: provName };
   if (provCfg) {
     invokeData.type = provCfg.type;
-    invokeData.apiKey = provCfg.apiKey;
-    invokeData.baseUrl = provCfg.baseUrl;
-  }
-  // Professional mode: cloud providers don't have a per-user API key, so the
-  // upstream /v1/models call (which the IPC handler does directly, not via
-  // the LLM proxy worker) would fail. Tell the handler to return the static
-  // catalog from src/data/model-prices.json for non-local providers.
-  // Local providers (ollama/llamacpp/openmythos) ignore this flag — their
-  // model lists come from their own running daemons regardless of plan.
-  if (typeof getProfessionalMode === 'function') {
-    try { invokeData.professionalMode = getProfessionalMode(); } catch (e) {}
+    if (isLocal) {
+      invokeData.baseUrl = provCfg.baseUrl;
+    } else {
+      invokeData.professionalMode = true;
+    }
   }
 
   // For OpenMythos, try fetching from /v1/models first, fall back to static variants
@@ -9691,18 +9669,16 @@ function _getChannelFields(channelId) {
  * the pure refactor).
  */
 function renderDashboardProviderGrid(providers, proMode, openMythosInstalled) {
-  // Local predicate: is this provider's effective routing the NeuroNest LLM proxy?
-  // Mirrors the contract used by the settings UI via effectiveProviderEntry
-  // (defined ~line 12192, unchanged) — local providers are never
-  // proxy-routed; non-local providers in Pro/Enterprise mode are routed
-  // through the NeuroNest LLM proxy (license-key-bearer), making per-provider
-  // apiKey irrelevant for badge display purposes.
+  // Local predicate: is this provider's effective routing the NeuroNest LLM
+  // proxy? Cloud routing is now unconditional (task 5.4 / Requirement 7.3),
+  // so every non-local provider is routed through the NeuroNest LLM service
+  // regardless of edition. Local providers keep their configured endpoints.
   // The user-visible label is derived from branding (getBranding().appName)
   // rather than a hardcoded product name.
-  function proxyRouted(prov, mode) {
+  function proxyRouted(prov, _mode) {
     if (prov.isLocal) return false;
-    var entry = effectiveProviderEntry(prov.type, mode);
-    return mode && !entry.isLocal && entry.requiresApiKey === false;
+    var entry = effectiveProviderEntry(prov.type, false);
+    return !entry.isLocal && entry.requiresApiKey === false;
   }
 
   // Suppress synthetic placeholder entries from the dashboard grid only
@@ -9749,16 +9725,12 @@ function renderDashboardProviderGrid(providers, proMode, openMythosInstalled) {
       html += '<div class="dash-label" style="margin:0;display:flex;align-items:center;gap:6px;">' + getProviderIcon(provType) + escHtml(provName) + '</div>';
       html += '<span class="prov-type-tag ' + (isLocal ? 'prov-tag-local' : 'prov-tag-remote') + '" style="position:static;">' + (isLocal ? 'LOCAL' : 'REMOTE') + '</span>';
       html += '</div>';
-      // Three-state badge (Property 1, design.md):
-      //   isLocal              → no badge (preserved exactly)
-      //   proxyRouted          → green "🔌 Routed via <appName> LLM"
-      //   else (Community)     → existing green ✅ / red ❌ binary
+      // Non-local providers always route through the NeuroNest LLM service
+      // (Requirement 5.1, 7.3). Local providers use their configured
+      // endpoints and therefore need no proxy badge.
       if (!isLocal) {
         if (proxyRouted(prov, proMode)) {
           html += '<div style="font-size:11px;margin-bottom:6px;"><span style="color:var(--green);">\ud83d\udd0c Routed via ' + getBranding().appName + ' LLM</span></div>';
-        } else {
-          var hasKey = !!(prov.apiKey && prov.apiKey.length > 5);
-          html += '<div style="font-size:11px;margin-bottom:6px;"><span style="color:' + (hasKey ? 'var(--green)' : 'var(--red)') + ';">' + (hasKey ? '\u2705 API Key' : '\u274c No API key') + '</span></div>';
         }
       }
       if (defModel) html += '<div style="font-size:11px;color:var(--text-dim);margin-bottom:6px;">Default: <code style="background:var(--bg-input);padding:1px 4px;border-radius:3px;">' + escHtml(defModel) + '</code></div>';
@@ -11217,12 +11189,19 @@ function showDashboardView() {
   }).catch(function() {});
 
   // ── Async 2: Model lists per provider (medium) ──
+  // Cloud requests always route through the NeuroNest LLM service, so the
+  // dashboard list call never forwards a per-provider API key. Local
+  // providers still use their configured baseUrl. Requirements: 6.4, 7.3
   for (var pIdx = 0; pIdx < providers.length; pIdx++) {
     (function(idx) {
       var pr = providers[idx];
       var el = panel.querySelector('.dash-ml[data-pidx="' + idx + '"]');
       if (!el) return;
-      eapi().invoke('list-provider-models', { provider: pr.type || pr.name, type: pr.type, apiKey: pr.apiKey, baseUrl: pr.baseUrl, professionalMode: getProfessionalMode() }).then(function(models) {
+      var __prIsLocal = pr.type === 'ollama' || pr.type === 'llamacpp' || pr.type === 'openmythos';
+      var __prListArgs = __prIsLocal
+        ? { provider: pr.type || pr.name, type: pr.type, baseUrl: pr.baseUrl }
+        : { provider: pr.type || pr.name, type: pr.type, professionalMode: true };
+      eapi().invoke('list-provider-models', __prListArgs).then(function(models) {
         if (!models || models.length === 0) { el.innerHTML = '<span style="color:var(--text-dim);">No models found</span>'; return; }
         var h = '<div style="max-height:180px;overflow-y:auto;border:1px solid var(--border-color);border-radius:6px;padding:2px;">';
         for (var mi = 0; mi < models.length; mi++) {
@@ -13435,26 +13414,27 @@ function _refreshProxyBalance() {
 /**
  * Renderer-side mirror of `effectiveCatalogEntry(type, professionalMode)`
  * (see src/pipeline/provider-catalog.ts). The renderer cannot import that
- * module directly, so the same contract is replicated here:
+ * module directly, so the equivalent contract is replicated here.
  *
- *   - For local providers (ollama, llamacpp, openmythos), the entry is
- *     unchanged in both modes.
- *   - For non-local providers in professional mode, `requiresApiKey` is
- *     overridden to `false`.
- *   - Otherwise the base entry is returned as-is.
+ * Cloud routing is now unconditional (task 5.4 / Requirement 7.3): every
+ * Community, Professional, and Enterprise cloud request flows through the
+ * NeuroNest LLM service. Non-local providers therefore always report
+ * `requiresApiKey: false` regardless of the previous professional-mode
+ * toggle. Local providers (ollama, llamacpp, openmythos) keep their
+ * configured local endpoints and are outside the proxy boundary.
  *
- * The renderer only needs the `requiresApiKey` and `isLocal` fields for the
- * task 17.1 UI predicate, so this returns a minimal shape.
+ * The `professionalMode` parameter is retained for callers that still pass
+ * it, but no longer influences the returned shape.
  *
- * Requirements: 2.1, 2.7
+ * Requirements: 2.1, 2.7, 5.1, 5.9, 7.3
  */
-function effectiveProviderEntry(providerType, professionalMode) {
+function effectiveProviderEntry(providerType, _professionalMode) {
   var t = (providerType || '').toLowerCase();
   var isLocal = (t === 'ollama' || t === 'llamacpp' || t === 'openmythos');
-  // All non-local providers in this codebase require an API key in direct mode.
-  var baseRequiresApiKey = !isLocal;
-  var requiresApiKey = baseRequiresApiKey;
-  if (professionalMode && !isLocal) {
+  // Non-local providers always route through the NeuroNest LLM service;
+  // therefore no per-provider API key is required in any edition.
+  var requiresApiKey = false;
+  if (isLocal) {
     requiresApiKey = false;
   }
   return { type: t, isLocal: isLocal, requiresApiKey: requiresApiKey };
@@ -13494,6 +13474,12 @@ function renderSettings() {
       '</div>';
   }
   html += '</div></div>';
+
+  // Graphical launch mode — available to every edition and intentionally
+  // outside all plan/entitlement gates. The controller only uses the fixed
+  // launch-settings preload methods and stages topology changes for restart.
+  html += '<div class="settings-group" id="launch-mode-settings-group"><h3>Launch Mode</h3>' +
+    '<div id="launch-mode-settings-control"></div></div>';
 
   // Local AI providers
   html += '<div class="settings-group"><h3>Local AI Providers</h3>' +
@@ -13588,6 +13574,17 @@ function renderSettings() {
     '<div id="provider-list"></div>' +
     '<button class="setting-btn" id="add-prov-btn" style="margin-top:10px;padding:10px 20px;font-size:13px;font-weight:600;background:linear-gradient(135deg,var(--accent),#6366f1);color:#fff;border:none;border-radius:8px;cursor:pointer;box-shadow:0 2px 8px rgba(99,102,241,0.3);transition:all 0.2s;display:flex;align-items:center;gap:8px;" onmouseover="this.style.transform=\'translateY(-1px)\';this.style.boxShadow=\'0 4px 12px rgba(99,102,241,0.4)\'" onmouseout="this.style.transform=\'translateY(0)\';this.style.boxShadow=\'0 2px 8px rgba(99,102,241,0.3)\'">+ Add Provider</button>' +
     '<div id="prov-form-area"></div></div>';
+
+  // Legacy provider-key cleanup (task 5.4). Renders masked entries for any
+  // pre-migration cloud provider records still carrying a stored `apiKey`
+  // value with an explicit "unused for NeuroNest cloud routing" label and
+  // a Delete control backed by the transactional main-process migration
+  // service. The container starts empty; `mountLegacyProviderKeyPanel` is
+  // called after the settings HTML is inserted (see wireProviderSettings).
+  // Requirements: 7.2, 7.3, 7.4, 7.5
+  html += '<div class="settings-group" id="legacy-provider-keys-group">' +
+    '<div id="legacy-provider-keys-panel"></div>' +
+    '</div>';
 
   // ── Integration Validation ──
   html += '<div class="settings-group" style="background:linear-gradient(135deg,rgba(99,102,241,0.04),rgba(137,180,250,0.04));border:1px solid rgba(99,102,241,0.15);border-radius:12px;padding:18px;">' +
@@ -13868,6 +13865,17 @@ function renderSettings() {
 
 
   panel.innerHTML = html;
+
+  // Mount the edition-neutral launch-mode setting through its fixed preload
+  // methods. Changing this setting never mutates the running shell topology.
+  var launchModeSettingsContainer = document.getElementById('launch-mode-settings-control');
+  if (launchModeSettingsContainer && window.LaunchModeSettingsControl) {
+    var launchModeSettingsControl = new window.LaunchModeSettingsControl(
+      launchModeSettingsContainer,
+      eapi(),
+    );
+    launchModeSettingsControl.render();
+  }
 
   // ── Wire Hardware Fit Cookbook (Feature 8) ──
   // Vanilla-DOM wiring mirroring the rest of this panel. Holds local state for
@@ -14307,13 +14315,19 @@ function renderSettings() {
       var containerIds = ['router-route-background-container', 'router-route-reasoning-container', 'router-route-longcontext-container'];
       var routeKeys = ['background', 'reasoning', 'longContext'];
 
-      // Collect all models from all providers in parallel
+      // Collect all models from all providers in parallel. Router config
+      // never depends on user-held cloud API keys — cloud discovery is
+      // resolved by the NeuroNest LLM service catalog. Local endpoints keep
+      // their configured baseUrl. Requirements: 5.1, 6.4, 7.3
       var allModelsList = [];
       var fetchPromises = [];
       for (var pi = 0; pi < providers.length; pi++) {
         (function(prov) {
           var provName = prov.name || prov.type;
-          var invokeData = { provider: prov.type || prov.name, type: prov.type, apiKey: prov.apiKey, baseUrl: prov.baseUrl, professionalMode: getProfessionalMode() };
+          var __rrIsLocal = prov.type === 'ollama' || prov.type === 'llamacpp' || prov.type === 'openmythos';
+          var invokeData = __rrIsLocal
+            ? { provider: prov.type || prov.name, type: prov.type, baseUrl: prov.baseUrl }
+            : { provider: prov.type || prov.name, type: prov.type, professionalMode: true };
           var p = eapi().invoke('list-provider-models', invokeData).then(function(models) {
             for (var m = 0; m < (models || []).length; m++) {
               var mid = models[m].id || models[m];
@@ -15496,6 +15510,13 @@ function renderSettings() {
 
   // Load provider list
   loadProviderList();
+
+  // Mount the legacy provider-key cleanup panel (task 5.4). The panel
+  // renders masked entries with the "unused for NeuroNest cloud routing"
+  // label and a Delete control backed by the fixed
+  // `legacy-provider-keys:delete-record-v1` IPC channel. Requirements:
+  // 7.2, 7.3, 7.4, 7.5
+  mountLegacyProviderKeyCleanupPanel();
 
   // ── Wire Factory Features ──
   if (activeProjectId && eapi()) {
@@ -17706,6 +17727,66 @@ function makeLocalAIHandler(fn) {
   };
 }
 
+// Cached instance for the legacy provider-key cleanup panel. Reused across
+// renderSettings invocations so the DOM stays owned by a single controller.
+// The panel's `dispose()` is called when the settings surface is torn down.
+var _legacyProviderKeyPanel = null;
+
+/**
+ * Mount (or refresh) the Legacy provider-key cleanup panel described by task
+ * 5.4. The panel is a separate small module that uses the fixed non-secret
+ * IPC channels `legacy-provider-keys:list-records-v1` and
+ * `legacy-provider-keys:delete-record-v1`. It never observes credential
+ * values — only masked presence, non-secret metadata, and an aggregate
+ * migration audit record cross the boundary.
+ *
+ * If the preload bridge does not expose the two legacy-key methods (older
+ * builds, restricted first-run selector, etc.), the container is left
+ * intentionally empty so nothing renders. Local providers (Ollama,
+ * llama.cpp, OpenMythos) are outside the migration boundary and never
+ * appear in the panel.
+ *
+ * Requirements: 6.3, 6.4, 6.5, 6.6, 7.2, 7.3, 7.4, 7.5
+ */
+function mountLegacyProviderKeyCleanupPanel() {
+  var container = document.getElementById('legacy-provider-keys-panel');
+  if (!container) return;
+  if (_legacyProviderKeyPanel && typeof _legacyProviderKeyPanel.dispose === 'function') {
+    try { _legacyProviderKeyPanel.dispose(); } catch (_disposeErr) { /* best effort */ }
+    _legacyProviderKeyPanel = null;
+  }
+  var bridge = eapi();
+  if (
+    !bridge ||
+    typeof bridge.listLegacyProviderKeys !== 'function' ||
+    typeof bridge.deleteLegacyProviderKey !== 'function'
+  ) {
+    container.replaceChildren();
+    return;
+  }
+  var factory = (typeof window !== 'undefined') ? window.mountLegacyProviderKeyPanel : null;
+  if (typeof factory !== 'function') {
+    container.replaceChildren();
+    return;
+  }
+  try {
+    _legacyProviderKeyPanel = factory(container, bridge, {
+      logger: function(message, error) {
+        // Redacted diagnostic only — the IPC layer strips credential values
+        // before rejection reaches the renderer.
+        if (typeof console !== 'undefined' && console.warn) {
+          console.warn('[Settings]', message, error && error.message);
+        }
+      },
+    });
+  } catch (loadErr) {
+    if (typeof console !== 'undefined' && console.warn) {
+      console.warn('[Settings] legacy-provider-key-panel load failed:', loadErr && loadErr.message);
+    }
+    container.replaceChildren();
+  }
+}
+
 function loadProviderList() {
   var container = $$('#provider-list');
   if (!container) return;
@@ -17775,9 +17856,13 @@ function renderProviderCards(container, providers, defaultProv) {
       // baseUrl override exposed) and deleting would just regenerate the
       // entry on the next render. Saved entries (including pre-pro real
       // ones) keep both buttons.
+      // Cloud entries no longer require an API-key placeholder, so deletion
+      // is always available. Any stored legacy `apiKey` value is removed
+      // through the dedicated "Legacy provider keys (cleanup)" section that
+      // uses the transactional main-process migration service.
       (p.__synthetic === true ? '' :
         '<button class="prov-btn" data-edit-idx="' + i + '">Edit</button>' +
-        '<button class="prov-btn prov-del" data-del-idx="' + i + '"' + (__proxyRouted ? ' disabled title="Disable Professional Mode to remove API keys" style="opacity:0.5;cursor:not-allowed;"' : '') + '>Delete</button>'
+        '<button class="prov-btn prov-del" data-del-idx="' + i + '">Delete</button>'
       ) +
       '</div></div>';
   }
@@ -17823,7 +17908,14 @@ function renderProviderCards(container, providers, defaultProv) {
       
       var isLocal = prov.type === 'ollama' || prov.type === 'llamacpp';
       
-      eapi().invoke('list-provider-models', { provider: prov.type || prov.name, type: prov.type, apiKey: prov.apiKey, baseUrl: prov.baseUrl, professionalMode: getProfessionalMode() }).then(function(models) {
+      // Cloud providers now route unconditionally through the NeuroNest LLM
+      // service, so the settings surface never sends a per-provider API key
+      // when listing models. Local providers keep sending baseUrl only.
+      // Requirements: 6.4, 7.3
+      var __listArgs = isLocal
+        ? { provider: prov.type || prov.name, type: prov.type, baseUrl: prov.baseUrl }
+        : { provider: prov.type || prov.name, type: prov.type, professionalMode: true };
+      eapi().invoke('list-provider-models', __listArgs).then(function(models) {
         var h = '<option value="">-- Select default model --</option>';
         for (var m = 0; m < (models || []).length; m++) {
           var model = models[m];
@@ -17905,17 +17997,11 @@ function renderProviderCards(container, providers, defaultProv) {
       var idx = parseInt(e.currentTarget.getAttribute('data-del-idx'));
       var provs = getProviders();
       if (idx < 0 || idx >= provs.length) return;
-      // SettingsManager.removeProvider throws when professional mode is
-      // enabled. The renderer mirrors that guard: a non-local provider
-      // cannot be removed while professional mode is on, since doing so
-      // would clear an API key reference the user must be able to restore
-      // when they later disable professional mode (Requirement 2.6).
-      var prov = provs[idx];
-      var isLocalProv = prov && (prov.type === 'ollama' || prov.type === 'llamacpp' || prov.type === 'openmythos');
-      if (getProfessionalMode() && !isLocalProv) {
-        console.warn('[ProMode] cannot remove API key while professional mode is enabled');
-        return;
-      }
+      // Cloud routing is now unconditional through the NeuroNest LLM service,
+      // so removing a provider entry never breaks credentials. Legacy stored
+      // API-key values are handled by the dedicated cleanup panel that uses
+      // the transactional main-process migration service.
+      // Requirements: 6.6, 7.5, 5.7
       provs.splice(idx, 1);
       saveProviders(provs);
       loadProviderList();
@@ -17953,17 +18039,13 @@ function showProvForm(existing) {
   }
 
   var typeOptions = '';
-  // Professional mode: cloud providers are auto-virtualized via getProviders;
-  // hide them from the Add Provider type dropdown so the user only sees
-  // local types they can meaningfully add (Ollama, llama.cpp, OpenMythos).
-  // Cloud types remain selectable when EDITING an existing pre-pro saved
-  // entry — that's a real entry the user already has API-key state for.
-  var __addCloudHiddenInProMode = getProfessionalMode();
-  var __cloudTypeSet = { openai: 1, anthropic: 1, deepseek: 1, gemini: 1, mistral: 1, groq: 1, grok: 1, nvidia: 1 };
+  // Every cloud provider now routes through the NeuroNest LLM service, so
+  // cloud types remain selectable in every edition without exposing an API
+  // key input. Only local providers still gate on runtime installation.
+  // Requirements: 4.2, 5.1, 7.3
   for (var t = 0; t < allTypes.length; t++) {
     var at = allTypes[t];
     if (!isEdit && configuredTypes[at.value]) continue;
-    if (!isEdit && __addCloudHiddenInProMode && __cloudTypeSet[at.value]) continue;
     // Only show local providers if they're installed
     if (at.value === 'ollama' && !_ollamaInstalledCache && !(isEdit && existing && existing.type === 'ollama')) continue;
     if (at.value === 'llamacpp' && !_llamaCppInstalledCache && !(isEdit && existing && existing.type === 'llamacpp')) continue;
@@ -17981,24 +18063,20 @@ function showProvForm(existing) {
   var selectedType = (existing && existing.type) || (typeOptions.match(/value="([^"]+)"/) || [])[1] || 'openai';
   var isLocal = selectedType === 'ollama' || selectedType === 'llamacpp' || selectedType === 'openmythos';
 
-  // Professional Mode: when enabled, non-local providers do not require an
-  // API key on the client (requests are routed through the NeuroNest LLM service).
-  // We hide the API-key input row and the "Verify Key" button, and render
-  // the proxy-routing notice in their place. Local providers (`isLocal`)
-  // are unaffected. Requirements: 2.3, 2.4, 2.7
-  var __proMode = getProfessionalMode();
-  var __effEntry = effectiveProviderEntry(selectedType, __proMode);
-  var __proxyRouted = (__effEntry.requiresApiKey === false && !__effEntry.isLocal);
-  var __hideKeyRow = isLocal || __proxyRouted;
+  // Cloud providers route unconditionally through the NeuroNest LLM service.
+  // The settings surface therefore never requests a per-provider API key or
+  // exposes a "Verify Key" affordance. Local providers keep their existing
+  // baseUrl entry (managed via the hidden #pf-url used by the save handler
+  // to persist http://localhost:… defaults).
+  // Requirements: 4.5, 5.1, 5.9, 6.3, 7.3
+  var __proxyRouted = !isLocal;
 
   var html = '<div class="provider-form"><h4>' + (isEdit ? 'Edit' : 'Add') + ' Provider</h4>' +
     '<div class="form-row"><label>Provider</label><select id="pf-type">' + typeOptions + '</select></div>' +
-    '<div class="form-row" id="pf-proxy-notice"' + (__proxyRouted ? '' : ' style="display:none;"') + '><label></label><div style="font-size:12px;color:var(--accent);background:rgba(99,102,241,0.08);border:1px solid rgba(99,102,241,0.18);border-radius:6px;padding:8px 10px;flex:1;">Requests are routed through the NeuroNest LLM service.</div></div>' +
-    '<div class="form-row" id="pf-key-row"' + (__hideKeyRow ? ' style="display:none;"' : '') + '><label>API Key</label><input id="pf-key" type="password" value="' + escHtml((existing && existing.apiKey) || '') + '" /></div>' +
+    '<div class="form-row" id="pf-proxy-notice"' + (__proxyRouted ? '' : ' style="display:none;"') + '><label></label><div style="font-size:12px;color:var(--accent);background:rgba(99,102,241,0.08);border:1px solid rgba(99,102,241,0.18);border-radius:6px;padding:8px 10px;flex:1;">Requests are routed through the NeuroNest LLM service. No provider API key is required.</div></div>' +
     '<input type="hidden" id="pf-url" value="' + escHtml((existing && (existing.baseUrl || existing.url)) || '') + '" />' +
     '<input type="hidden" id="pf-model" value="" />' +
     '<div class="form-actions">' +
-    '<button class="setting-btn" id="pf-verify"' + (__hideKeyRow ? ' style="display:none;"' : '') + '>Verify Key</button>' +
     '<button class="setting-btn" id="pf-save">' + (isEdit ? 'Update' : 'Add') + '</button>' +
     '<button class="prov-btn" id="pf-cancel">Cancel</button>' +
     '</div><div id="pf-status" style="margin-top:8px;font-size:12px;"></div></div>';
@@ -18016,23 +18094,17 @@ function showProvForm(existing) {
     area.innerHTML = '';
   });
 
-  // Toggle API key visibility based on provider type
+  // Show/hide the proxy notice and prefill the local baseUrl when the user
+  // switches provider type. The API-key input and verify-key affordance no
+  // longer exist — cloud providers route through the NeuroNest LLM service
+  // and never expose a per-provider key from the settings surface.
+  // Requirements: 5.1, 5.9, 6.3, 7.3
   $$('#pf-type').addEventListener('change', function() {
     var t = $$('#pf-type').value;
     var isLocalProv = (t === 'ollama' || t === 'llamacpp' || t === 'openmythos');
-    var keyRow = $$('#pf-key-row');
-    var verifyBtn = $$('#pf-verify');
     var urlInput = $$('#pf-url');
     var proxyNotice = $$('#pf-proxy-notice');
-    // Recompute the proxy-routed predicate for the newly-selected provider.
-    // In professional mode, non-local providers route through the proxy and
-    // the API-key row is hidden in favor of the proxy notice.
-    // Requirements: 2.3, 2.4, 2.7
-    var effEntry = effectiveProviderEntry(t, getProfessionalMode());
-    var proxyRouted = (effEntry.requiresApiKey === false && !effEntry.isLocal);
-    var hideKeyRow = isLocalProv || proxyRouted;
-    if (keyRow) keyRow.style.display = hideKeyRow ? 'none' : '';
-    if (verifyBtn) verifyBtn.style.display = hideKeyRow ? 'none' : '';
+    var proxyRouted = !isLocalProv;
     if (proxyNotice) proxyNotice.style.display = proxyRouted ? '' : 'none';
     if (urlInput) {
       if (t === 'ollama') urlInput.value = 'http://localhost:11434';
@@ -18042,53 +18114,26 @@ function showProvForm(existing) {
     }
   });
 
-  $$('#pf-verify').addEventListener('click', function() {
-    var key = $$('#pf-key').value;
-    var type = $$('#pf-type').value;
-    var url = $$('#pf-url').value;
-    var status = $$('#pf-status');
-    status.textContent = 'Verifying...';
-    status.style.color = 'var(--text-secondary)';
-    eapi().invoke('validate-api-key', { type: type, apiKey: key, baseUrl: url }).then(function(result) {
-      if (result && result.valid) {
-        status.textContent = '✓ Valid';
-        status.style.color = 'var(--green)';
-      } else {
-        status.textContent = '✗ Invalid: ' + ((result && result.error) || 'unknown error');
-        status.style.color = 'var(--red)';
-      }
-    }).catch(function(err) {
-      status.textContent = '✗ Error: ' + (err.message || err);
-      status.style.color = 'var(--red)';
-    });
-  });
-
   $$('#pf-save').addEventListener('click', function() {
     var provs = getProviders();
     var typeVal = $$('#pf-type').value;
     if (typeVal === 'openmythos' && !requirePlan(['professional', 'enterprise'], 'OpenMythos')) return;
     var nameMap = { openai: 'OpenAI', anthropic: 'Anthropic', deepseek: 'DeepSeek', gemini: 'Google Gemini', grok: 'Grok (xAI)', mistral: 'Mistral', nvidia: 'NVIDIA', groq: 'Groq', ollama: 'Ollama', llamacpp: 'llama.cpp', openmythos: 'OpenMythos' };
     var isLocalProv = (typeVal === 'ollama' || typeVal === 'llamacpp' || typeVal === 'openmythos');
-    // Mirrors SettingsManager.addProvider: in professional mode, do not
-    // pre-allocate an API-key slot for newly-added non-local providers.
-    // The key field is stripped (left empty) so the user is not prompted
-    // for one and so toggling professional mode off later does not
-    // resurrect a placeholder. Requirements: 2.6
-    var __proMode = getProfessionalMode();
-    var __proxyRouted = (__proMode && !isLocalProv);
-    var keyEl = $$('#pf-key');
+    // Cloud providers route unconditionally through the NeuroNest LLM
+    // service, so a newly saved cloud entry never carries an API key. Any
+    // pre-migration `apiKey` value on the existing record is intentionally
+    // NOT copied over — the dedicated "Legacy provider keys (cleanup)"
+    // section is the sole authority for removing stored keys through the
+    // transactional main-process migration service.
+    // Local providers retain their configured localhost baseUrl endpoints.
+    // Requirements: 5.1, 5.9, 6.3, 7.3, 7.5
     var newProv = {
       name: nameMap[typeVal] || typeVal,
       type: typeVal,
-      apiKey: (isLocalProv || __proxyRouted) ? '' : (keyEl ? keyEl.value : ''),
+      apiKey: '',
       baseUrl: isLocalProv ? (typeVal === 'ollama' ? 'http://localhost:11434' : typeVal === 'llamacpp' ? 'http://localhost:8080' : typeVal === 'openmythos' ? 'http://localhost:8200' : '') : '',
     };
-    // When editing in professional mode, preserve any existing apiKey on
-    // the stored provider (Requirement 2.6: previously stored API keys
-    // must be preserved across toggles).
-    if (isEdit && __proxyRouted && existing && existing.apiKey) {
-      newProv.apiKey = existing.apiKey;
-    }
     if (isEdit && existing) {
       for (var i = 0; i < provs.length; i++) {
         if (provs[i].type === existing.type || provs[i].name === existing.name) {
@@ -22082,6 +22127,7 @@ function initActivityBar() {
   for (var i = 0; i < btns.length; i++) {
     btns[i].addEventListener('click', function() {
       var viewName = this.dataset.view;
+      if (!viewName) return; // Skip mode toggle buttons (they use data-mode)
       setActiveView(viewName);
       // Navigate to the corresponding view in the middle panel
       if (viewName === 'settings' || viewName === 'dashboard' || viewName === 'search' || viewName === 'agents' || viewName === 'channels' || viewName === 'skills' || viewName === 'design' || viewName === 'workspaces') {
@@ -22096,6 +22142,65 @@ function initActivityBar() {
   if (initialView) {
     setActiveView(initialView);
   }
+
+  // ── Mode toggle buttons in activity bar ──
+  (function() {
+    var classicBtn = document.getElementById('mode-classic-btn');
+    var advancedBtn = document.getElementById('mode-advanced-btn');
+    if (!classicBtn || !advancedBtn) return;
+
+    function updateModeButtons(mode) {
+      classicBtn.classList.toggle('active', mode === 'classic');
+      advancedBtn.classList.toggle('active', mode === 'advanced');
+    }
+
+    // Set initial state
+    var currentMode = window.__neuronestLaunchMode || 'advanced';
+    updateModeButtons(currentMode);
+
+    function switchMode(newMode) {
+      if (newMode === (window.__neuronestLaunchMode || 'advanced')) return;
+      var api = eapi();
+      if (!api) return;
+
+      // Use the typed preload methods (not raw invoke — channels are restricted)
+      if (typeof api.getLaunchModeSettings !== 'function' || typeof api.updateLaunchMode !== 'function') return;
+
+      api.getLaunchModeSettings().then(function(settings) {
+        if (!settings) return;
+        return api.updateLaunchMode({
+          schemaVersion: 1,
+          mode: newMode,
+          expectedRevision: settings.revision,
+        });
+      }).then(function(result) {
+        if (result && result.mode) {
+          updateModeButtons(result.mode);
+        }
+      }).catch(function(err) {
+        console.warn('[ModeToggle] Failed to switch mode:', err);
+      });
+    }
+
+    classicBtn.addEventListener('click', function(e) {
+      e.stopPropagation();
+      switchMode('classic');
+    });
+    advancedBtn.addEventListener('click', function(e) {
+      e.stopPropagation();
+      switchMode('advanced');
+    });
+
+    // Listen for hot-swap events to keep buttons in sync
+    var api = eapi();
+    if (api && typeof api.on === 'function') {
+      api.on('launch-mode:changed', function(newMode) {
+        if (newMode === 'classic' || newMode === 'advanced') {
+          updateModeButtons(newMode);
+        }
+      });
+    }
+  })();
 
   // Initialize tippy.js tooltips on activity bar buttons
   if (typeof tippy === 'function') {
@@ -24798,7 +24903,17 @@ function initPhase3() {
 
 // ── Init ──
 
-document.addEventListener('DOMContentLoaded', function() {
+document.addEventListener('DOMContentLoaded', async function() {
+  // Resolve the graphical launch mode and construct the Advanced-only
+  // Inspector aside/handle BEFORE any downstream init reads Inspector
+  // element ids. In Classic mode this leaves the DOM completely free of
+  // Inspector nodes, focus targets, and grid tracks. In Advanced mode
+  // the Inspector is mounted into `#app` and `data-launch-mode` is set
+  // so mode-aware CSS applies immediately.
+  //
+  // Requirements: 1.4, 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 3.1, 3.2, 3.3
+  await initLaunchModeShell();
+
   // Restore saved theme
   var savedTheme = localStorage.getItem('neuronest-theme');
   if (savedTheme && savedTheme !== 'dark') {
@@ -25183,7 +25298,11 @@ document.addEventListener('DOMContentLoaded', function() {
   setupInput();
   setupIPC();
   setupSidebar();
-  setupHeadroomCard();
+  // Headroom compression card is Inspector-only; skip its wiring entirely in
+  // Classic mode so no Inspector-only observers are attached (Req 2.4, 2.6).
+  if (isAdvancedLaunchModeActive()) {
+    setupHeadroomCard();
+  }
   // Wire clear agents button
   var clearAgentsBtn = $$('#clear-agents-btn');
   if (clearAgentsBtn) {

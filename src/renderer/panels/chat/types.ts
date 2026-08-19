@@ -115,7 +115,15 @@ export interface LoadMessagesResponse {
   hasMore: boolean;
 }
 
-/** Events emitted by the chat service layer. */
+/**
+ * Events emitted by the chat service layer.
+ *
+ * Task 13.2 (enhanced-chat-ui): after the canonical projection cutover,
+ * ChatService only emits `message-received` for command-side send
+ * acknowledgements. The other variants are retained on the union for
+ * backward-compatible consumers; task 13.3 removes them along with the
+ * transitional ChatList surface.
+ */
 export type ChatServiceEvent =
   | { type: 'message-received'; message: ChatMessage }
   | { type: 'message-status-changed'; messageId: MessageId; status: MessageStatus; reasoning?: string }

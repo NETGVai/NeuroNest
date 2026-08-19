@@ -544,7 +544,7 @@ function registerAllPanels() {
     label: 'Channel Sessions',
     icon: '\uD83D\uDCAC',  // 💬
     featureGate: null,
-    group: 'channels',
+    group: 'extensions',
     commandPaletteAction: 'Open Channel Sessions',
     load: createWindowPanelLoader('./session-context-viewer.js', 'SessionContextViewer', function (container) {
       return [container, {}];
