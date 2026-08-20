@@ -8,6 +8,14 @@
  */
 
 import { ipcMain, type BrowserWindow } from 'electron';
+import type { ToolSystem } from '../tools/tool-system.js';
+
+export interface DeerFlowExecutionDependencies {
+  toolSystem: ToolSystem;
+  resolveProjectDir: (sessionId: string) => string;
+}
+
+let _executionDependencies: DeerFlowExecutionDependencies | null = null;
 
 // ─── IPCErrorResponse type ──────────────────────────────────────
 
@@ -54,7 +62,7 @@ async function getExecutionModeRouter() {
   if (!_executionModeRouter) {
     const { ExecutionModeRouter } = await import('../pipeline/execution-mode-router.js');
     const { AGENT_REGISTRY } = await import('../agents/agent-registry.js');
-    const { SwarmCoordinator, SwarmMemoryPool } = await import('../pipeline/swarm-coordinator.js');
+    const { createDeerFlowSwarmAdapter } = await import('../pipeline/deerflow-swarm-adapter.js');
     const { createLLMClient } = await import('../pipeline/llm-client.js');
     const { getDefaultDbPath } = await import('../storage/database.js');
 
@@ -116,32 +124,23 @@ async function getExecutionModeRouter() {
     // and returns a SwarmResult. The ExecutionModeRouter uses SwarmCoordinatorLike
     // which expects a simpler { task, sessionId, mode, agents: string[] } shape
     // and returns { output, agentsUsed, tokensUsed }. This adapter bridges them.
-    const realSwarm = new SwarmCoordinator(new SwarmMemoryPool(), llmClient, null, null, skillDb);
-    const swarmAdapter = {
-      execute: async (plan: { task: string; sessionId: string; mode: string; agents: string[] }) => {
-        const topology = (plan.mode === 'parallel' ? 'star' : 'sequential') as import('../pipeline/orchestrator-planner.js').Topology;
-        const executionPlan = {
-          plan: plan.task,
-          agents: plan.agents.map((id: string) => ({ id, task: plan.task, dependsOn: [] })),
-          topology,
-        };
-        const result = await realSwarm.execute(executionPlan);
-        // Collapse SwarmResult.outputs map into a single output string
-        const outputParts: string[] = [];
-        if (result.outputs) {
-          for (const [, value] of result.outputs) {
-            if (value) outputParts.push(value);
-          }
-        }
-        return {
-          output: outputParts.join('\n'),
-          agentsUsed: plan.agents,
-          tokensUsed: 0,
-        };
-      },
-    };
-
-    _executionModeRouter = new ExecutionModeRouter(swarmAdapter, safeLLM, AGENT_REGISTRY || []);
+    if (!_executionDependencies || !llmClient) {
+      const missingDependencyMessage = !llmClient
+        ? 'No LLM provider configured — cannot execute swarm'
+        : 'DeerFlow swarm execution dependencies are not configured';
+      const swarmAdapter = {
+        execute: async () => { throw new Error(missingDependencyMessage); },
+      };
+      _executionModeRouter = new ExecutionModeRouter(swarmAdapter, safeLLM, AGENT_REGISTRY || []);
+    } else {
+      const swarmAdapter = createDeerFlowSwarmAdapter({
+        llmClient,
+        skillDb,
+        toolSystem: _executionDependencies.toolSystem,
+        resolveProjectDir: _executionDependencies.resolveProjectDir,
+      });
+      _executionModeRouter = new ExecutionModeRouter(swarmAdapter, safeLLM, AGENT_REGISTRY || []);
+    }
   }
   return _executionModeRouter!;
 }
@@ -235,7 +234,11 @@ async function getToolCallRecoveryHandler() {
 
 // ─── Register DeerFlow IPC handlers ─────────────────────────────
 
-export function registerDeerFlowIPC(mainWindow: BrowserWindow): void {
+export function registerDeerFlowIPC(
+  mainWindow: BrowserWindow,
+  executionDependencies?: DeerFlowExecutionDependencies,
+): void {
+  if (executionDependencies) _executionDependencies = executionDependencies;
   // ── INVOKE CHANNELS (renderer → main) ──────────────────────────
 
   ipcMain.handle('get-suggestions', async (_ev, taskOutput: string, agentDomain: string, userId: string) => {

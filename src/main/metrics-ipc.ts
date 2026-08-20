@@ -48,10 +48,12 @@ export function registerMetricsIPC(deps: MetricsIPCDeps): void {
 
   ipcMain.handle(
     'get-cumulative-metrics',
-    async (_ev: any) => {
+    async (_ev: any, args?: { projectId?: string }) => {
       try {
-        const metrics = metricsStore.getCumulativeMetrics();
-        return metrics;
+        if (args?.projectId) {
+          return metricsStore.getProjectCumulativeMetrics(args.projectId);
+        }
+        return metricsStore.getCumulativeMetrics();
       } catch (e: any) {
         return { error: e.message || 'Failed to retrieve cumulative metrics' };
       }

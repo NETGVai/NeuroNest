@@ -197,6 +197,34 @@ export interface SwarmResult {
   skillsUsed?: string[];
 }
 
+/** Immutable execution input used to create one isolated worker delegate. */
+export interface SwarmWorkerRequest {
+  agentId: string;
+  agentName: string;
+  task: string;
+  systemPrompt: string;
+  llmClient: LLMClient;
+  sessionId?: string;
+  signal?: AbortSignal;
+}
+
+export interface SwarmWorkerResult {
+  response: string;
+  reasoning?: string;
+}
+
+export interface SwarmWorkerDelegate {
+  execute(): Promise<SwarmWorkerResult>;
+}
+
+export type SwarmWorkerDelegateFactory = (
+  request: SwarmWorkerRequest,
+) => SwarmWorkerDelegate | null | undefined;
+
+export interface SwarmCoordinatorOptions {
+  workerDelegateFactory?: SwarmWorkerDelegateFactory;
+}
+
 // ── SwarmMemoryPool ─────────────────────────────────────────────────────
 
 export class SwarmMemoryPool {
@@ -450,6 +478,8 @@ function produceConsensusFromEnvelopes(
 export class SwarmCoordinator {
   private llmClient: LLMClient | null;
   private _aborted = false;
+  private _failed = false;
+  private runAbortController: AbortController | null = null;
   private _activeClients: LLMClient[] = [];
   private metricsSink: MetricsSink | null;
   private featureGate: FeatureGateSystem | null;
@@ -466,6 +496,7 @@ export class SwarmCoordinator {
     metricsSink?: MetricsSink | null,
     featureGate?: FeatureGateSystem | null,
     db?: Database.Database | null,
+    private options: SwarmCoordinatorOptions = {},
   ) {
     this.llmClient = llmClient || null;
     this.metricsSink = metricsSink || null;
@@ -482,9 +513,21 @@ export class SwarmCoordinator {
     return this.featureGate !== null && this.featureGate.isEnabled('context_scoped_delegation');
   }
 
+  protected beginExecution(): void {
+    this._aborted = false;
+    this._failed = false;
+    this.runAbortController = new AbortController();
+    this._activeClients = [];
+  }
+
+  protected get executionSignal(): AbortSignal | undefined {
+    return this.runAbortController?.signal;
+  }
+
   /** Abort the current swarm execution and all in-flight LLM requests */
   abort(): void {
     this._aborted = true;
+    this.runAbortController?.abort();
     console.log('[Swarm] Abort signal received — killing', this._activeClients.length, 'active LLM requests');
     for (const client of this._activeClients) {
       try { client.abort(); } catch {}
@@ -493,6 +536,7 @@ export class SwarmCoordinator {
   }
 
   get aborted(): boolean { return this._aborted; }
+  get failed(): boolean { return this._failed; }
 
   /**
    * Execute an orchestrator plan: assign agents to phases, run each phase
@@ -500,10 +544,11 @@ export class SwarmCoordinator {
    * return the complete swarm result.
    */
   async execute(plan: ExecutionPlan, onEvent?: SwarmEventCallback, agentLLMConfigs?: Map<string, LLMClient>): Promise<SwarmResult> {
-    this._aborted = false;
+    this.beginExecution();
     this.baseAppliedSkillIds = new Set();
     const outputs = new Map<string, string>();
     const phases = assignPhases(plan.agents);
+    const usesWorkerDelegates = Boolean(this.options.workerDelegateFactory);
 
     for (const { phase, agents } of phases) {
       // ── Check abort before each phase ──
@@ -522,11 +567,11 @@ export class SwarmCoordinator {
       onEvent?.({
         type: 'phase_start',
         phase,
-        content: `Phase ${phase}: executing ${agents.length} agent(s) in parallel`,
+        content: `Phase ${phase}: executing ${agents.length} agent(s)${usesWorkerDelegates ? ' sequentially with tools' : ' in parallel'}`,
       });
 
       // ── Execute all agents in this phase with concurrency limit ──
-      const MAX_CONCURRENT_AGENTS = 3; // Limit to prevent Ollama crashes
+      const MAX_CONCURRENT_AGENTS = usesWorkerDelegates ? 1 : 3; // Tool-capable workers share one checkout and must not race writes
       const promises: Promise<{ id: string; response: string }>[] = [];
       
       // Process agents in batches to limit concurrency
@@ -627,6 +672,7 @@ export class SwarmCoordinator {
         let response: string;
         let agentReasoning: string | undefined;
         let streamMsgId: string | undefined;
+        let streamTerminated = false;
         // Check abort before expensive LLM call
         if (this._aborted) {
           return { id: agentTask.id, response: '' };
@@ -680,6 +726,59 @@ export class SwarmCoordinator {
               agentSystemPrompt = GCF_PRIMER + '\n\n' + agentSystemPrompt;
             }
             
+            const workerDelegate = this.options.workerDelegateFactory?.({
+              agentId: agentTask.id,
+              agentName,
+              task: fullTask,
+              systemPrompt: agentSystemPrompt,
+              llmClient: agentLLM,
+              signal: this.executionSignal,
+            });
+
+            if (workerDelegate) {
+              const crypto = require('node:crypto');
+              streamMsgId = crypto.randomUUID();
+              onEvent?.({
+                type: 'agent_token',
+                agentId: agentTask.id,
+                agentName,
+                msgId: streamMsgId,
+                token: '',
+                done: false,
+              });
+              const workerResult = await workerDelegate.execute();
+              if (this._aborted) {
+                onEvent?.({
+                  type: 'agent_token',
+                  agentId: agentTask.id,
+                  agentName,
+                  msgId: streamMsgId,
+                  done: true,
+                  error: true,
+                  content: 'Execution aborted by user',
+                });
+                streamTerminated = true;
+                return { id: agentTask.id, response: '' };
+              }
+              response = workerResult.response;
+              agentReasoning = workerResult.reasoning;
+              onEvent?.({
+                type: 'agent_token',
+                agentId: agentTask.id,
+                agentName,
+                msgId: streamMsgId,
+                token: response,
+              });
+              onEvent?.({
+                type: 'agent_token',
+                agentId: agentTask.id,
+                agentName,
+                msgId: streamMsgId,
+                done: true,
+                reasoning: agentReasoning,
+              });
+              streamTerminated = true;
+            } else {
             // Truncate system prompt if it exceeds budget (leave room for task)
             const taskBudget = Math.floor(promptBudgetChars * 0.4);
             const systemBudget = promptBudgetChars - taskBudget;
@@ -731,6 +830,7 @@ export class SwarmCoordinator {
                   done: true,
                   reasoning: result.reasoning,
                 });
+                streamTerminated = true;
               },
               onError: ({ message: errMsg, partialContent }) => {
                 streamedContent = partialContent;
@@ -743,16 +843,32 @@ export class SwarmCoordinator {
                   error: true,
                   content: errMsg,
                 });
+                streamTerminated = true;
               },
             }, { temperature: 0.7, maxTokens, nLoops: (agentLLM as any)._nLoops });
 
             response = streamedContent;
             console.log('[Swarm] LLM streamed response for', agentTask.id, ':', response.length, 'chars,', (response.match(/```/g) || []).length / 2, 'code blocks');
+            }
           } catch (llmErr: any) {
-            console.error('[Swarm] LLM call failed for', agentTask.id, ':', llmErr.message);
+            this._failed = true;
+            const failureMessage = llmErr?.message || String(llmErr);
+            if (streamMsgId && !streamTerminated) {
+              onEvent?.({
+                type: 'agent_token',
+                agentId: agentTask.id,
+                agentName,
+                msgId: streamMsgId,
+                done: true,
+                error: true,
+                content: failureMessage,
+              });
+              streamTerminated = true;
+            }
+            console.error('[Swarm] LLM call failed for', agentTask.id, ':', failureMessage);
             
             // Enhanced error message with debugging info
-            let errorDetails = llmErr.message;
+            let errorDetails = failureMessage;
             let troubleshootingSteps = [
               '- API key is valid and not expired',
               '- Provider is reachable (check internet connection)',
@@ -761,16 +877,16 @@ export class SwarmCoordinator {
             ];
 
             // Add specific troubleshooting based on error type
-            if (llmErr.message.includes('socket hang up')) {
+            if (failureMessage.includes('socket hang up')) {
               troubleshootingSteps.push('- Try again in a few moments (server may be overloaded)');
               troubleshootingSteps.push('- Check if your firewall is blocking the connection');
-            } else if (llmErr.message.includes('ENOTFOUND')) {
+            } else if (failureMessage.includes('ENOTFOUND')) {
               troubleshootingSteps.push('- Verify your internet connection is working');
               troubleshootingSteps.push('- Check DNS settings if using custom base URL');
-            } else if (llmErr.message.includes('timeout')) {
+            } else if (failureMessage.includes('timeout')) {
               troubleshootingSteps.push('- Server may be experiencing high load');
               troubleshootingSteps.push('- Try using a different model or provider');
-            } else if (llmErr.message.includes('401') || llmErr.message.includes('403')) {
+            } else if (failureMessage.includes('401') || failureMessage.includes('403')) {
               troubleshootingSteps = [
                 '- API key is invalid or expired - check Settings',
                 '- Account may be out of credits or suspended',
@@ -800,13 +916,17 @@ ${troubleshootingSteps.join('\n')}
 *If this error persists, the provider may be experiencing temporary issues.*`;
           }
         } else {
+          this._failed = true;
           console.error('[Swarm] No LLM client for', agentTask.id);
           response = '## \u274c No AI Provider: ' + agentName + '\n\nThis agent has no AI provider configured.\n\nTo fix this:\n1. Go to **Settings** and add at least one AI provider\n2. Or go to the **Agent Editor** and assign a provider+model to this agent\n\nAll agents require a configured AI provider to generate code.';
         }
 
+        if (this._aborted) {
+          return { id: agentTask.id, response: '' };
+        }
+
         // Store output
         outputs.set(agentTask.id, response);
-        // Store in shared memory — keep more context for downstream agents
         this.memoryPool.set(`agent:${agentTask.id}`, response.slice(0, 8000));
 
         // Agent complete
@@ -826,9 +946,30 @@ ${troubleshootingSteps.join('\n')}
         // Wait for this batch to complete before starting the next
         const batchResults = await Promise.allSettled(batchPromises);
         promises.push(...batchPromises);
+        if (this._aborted) {
+          onEvent?.({ type: 'swarm_complete', content: 'Swarm aborted by user' });
+          return {
+            outputs,
+            consensusResults: [],
+            totalPhases: phases.length,
+            topology: plan.topology,
+            skillsUsed: [...this.baseAppliedSkillIds],
+          };
+        }
       }
 
       // All batches completed for this phase
+    }
+
+    if (this._aborted) {
+      onEvent?.({ type: 'swarm_complete', content: 'Swarm aborted by user' });
+      return {
+        outputs,
+        consensusResults: [],
+        totalPhases: phases.length,
+        topology: plan.topology,
+        skillsUsed: [...this.baseAppliedSkillIds],
+      };
     }
 
     // ── Consensus detection ──

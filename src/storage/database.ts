@@ -78,6 +78,7 @@ import * as agentSkillBundleEvidence from './migrations/073-agent-skill-bundle-e
 import * as editorChatFoundations from './migrations/074-editor-chat-foundations.js';
 import * as legacyHistoryImport from './migrations/075-legacy-history-import.js';
 import * as enhancedChatUiFoundations from './migrations/076-enhanced-chat-ui-foundations.js';
+import * as driftRunSnapshots from './migrations/077-drift-run-snapshots.js';
 
 export interface Migration {
   version: number;
@@ -85,7 +86,7 @@ export interface Migration {
   up: (db: Database.Database) => void;
 }
 
-const migrations: Migration[] = [initialSchema, skillsSchema, multicaIntegration, agentSkillsIntegration, costRecords, securityScans, longTermMemory, sandboxSessions, mcpServers, memoryFts, diffReview, multiSession, extensions, newFeatures, plandexFeatures, advancedFeatures, remainingFeatures, gooseFeatures, sentruxFeatures, sreFeatures, helmorFeatures, factoryFeatures, coderFeatures, groundingAudit, incrementalIndexing, chatMessagesOverflow, runtimeSandboxGuardrails, errorSizeSamples, pipelineEvents, metricSamples, errorSizeSamplesBackfill, specMessageMode, secretsV2, multiChatSessions, agentLoopMetrics, featureIntegration, traceProvenanceColumns, neuronestEnhanced, productionUxAudit, unifiedIntentGate, loopStorage, accessibilityFriction, semanticIndex, worktreeSessions, codeReviews, backgroundProcesses, networkPolicyLog, sessionExports, pluginSystem, adoptionMetrics, mcpMarketplace, diffTurns, featureGateStore, rememberedGrants, hookDefinitionsV2, crossSessionMemory, dispatchSource, gcfContext, kbTables, trainingPipeline, modelExportGrpo, enterpriseTraining, multiRepoAgentIntegration, gadgets, blueprints, gatekeeper, simulatedApproval, observations, contextLibrary, workflows, costBudgets, codeMode, agentSkillBundleEvidence, editorChatFoundations, legacyHistoryImport, enhancedChatUiFoundations];
+const migrations: Migration[] = [initialSchema, skillsSchema, multicaIntegration, agentSkillsIntegration, costRecords, securityScans, longTermMemory, sandboxSessions, mcpServers, memoryFts, diffReview, multiSession, extensions, newFeatures, plandexFeatures, advancedFeatures, remainingFeatures, gooseFeatures, sentruxFeatures, sreFeatures, helmorFeatures, factoryFeatures, coderFeatures, groundingAudit, incrementalIndexing, chatMessagesOverflow, runtimeSandboxGuardrails, errorSizeSamples, pipelineEvents, metricSamples, errorSizeSamplesBackfill, specMessageMode, secretsV2, multiChatSessions, agentLoopMetrics, featureIntegration, traceProvenanceColumns, neuronestEnhanced, productionUxAudit, unifiedIntentGate, loopStorage, accessibilityFriction, semanticIndex, worktreeSessions, codeReviews, backgroundProcesses, networkPolicyLog, sessionExports, pluginSystem, adoptionMetrics, mcpMarketplace, diffTurns, featureGateStore, rememberedGrants, hookDefinitionsV2, crossSessionMemory, dispatchSource, gcfContext, kbTables, trainingPipeline, modelExportGrpo, enterpriseTraining, multiRepoAgentIntegration, gadgets, blueprints, gatekeeper, simulatedApproval, observations, contextLibrary, workflows, costBudgets, codeMode, agentSkillBundleEvidence, editorChatFoundations, legacyHistoryImport, enhancedChatUiFoundations, driftRunSnapshots];
 
 /**
  * Validates the migration registry is contiguous (versions 1..N) and the

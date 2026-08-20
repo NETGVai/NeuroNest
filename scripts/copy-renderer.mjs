@@ -1,4 +1,4 @@
-import { cpSync, mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -295,14 +295,136 @@ if (existsSync(dataSrc)) {
   console.warn('src/data not found, skipping');
 }
 
-const monacoSrc = join(root, 'node_modules', 'monaco-editor', 'min');
-const monacoDst = join(root, 'dist', 'renderer', 'monaco');
-if (existsSync(monacoSrc)) {
-  mkdirSync(monacoDst, { recursive: true });
-  cpSync(monacoSrc, monacoDst, { recursive: true });
-  console.log('Copied monaco-editor/min to dist/renderer/monaco/');
+const legacyMonacoDst = join(root, 'dist', 'renderer', 'monaco');
+if (existsSync(legacyMonacoDst)) {
+  rmSync(legacyMonacoDst, { recursive: true, force: true });
+  console.log('Removed legacy Monaco AMD assets');
+}
+
+const modernMonacoSrc = join(root, 'node_modules', 'modern-monaco', 'dist');
+const modernMonacoDst = join(root, 'dist', 'renderer', 'modern-monaco');
+const modernMonacoAdapterSrc = join(root, 'src', 'renderer', 'modern-monaco-adapter.mjs');
+const modernMonacoAdapterDst = join(root, 'dist', 'renderer', 'modern-monaco-adapter.mjs');
+const modernMonacoBootstrapSrc = join(root, 'src', 'renderer', 'modern-monaco-bootstrap.js');
+const modernMonacoBootstrapDst = join(root, 'dist', 'renderer', 'modern-monaco-bootstrap.js');
+const modernMonacoOfflineDst = join(root, 'dist', 'renderer', 'modern-monaco-offline.mjs');
+
+if (existsSync(modernMonacoSrc) && existsSync(modernMonacoAdapterSrc) && existsSync(modernMonacoBootstrapSrc)) {
+  mkdirSync(modernMonacoDst, { recursive: true });
+  cpSync(modernMonacoSrc, modernMonacoDst, { recursive: true });
+  cpSync(modernMonacoAdapterSrc, modernMonacoAdapterDst);
+  cpSync(modernMonacoBootstrapSrc, modernMonacoBootstrapDst);
+
+  // modern-monaco defaults to esm.sh unless an inline import map overrides
+  // these URLs. Inline import maps are blocked by NeuroNest's production CSP,
+  // so patch the pinned package copy to resolve editor/LSP modules beside
+  // core.mjs. This makes local loading unconditional and CSP-safe.
+  const modernMonacoCoreDst = join(modernMonacoDst, 'core.mjs');
+  const remoteModuleResolution = `  let cdnUrl = \`https://esm.sh/modern-monaco@\${version}\`;
+  let editorCoreModuleUrl = \`\${cdnUrl}/es2022/editor-core.mjs\`;
+  let lspModuleUrl = \`\${cdnUrl}/es2022/lsp.mjs\`;
+  let importmapEl = null;
+  if (importmapEl = document.querySelector("script[type='importmap']")) {
+    try {
+      const { imports = {} } = JSON.parse(importmapEl.textContent);
+      if (imports["modern-monaco/editor-core"]) {
+        editorCoreModuleUrl = imports["modern-monaco/editor-core"];
+      }
+      if (imports["modern-monaco/lsp"]) {
+        lspModuleUrl = imports["modern-monaco/lsp"];
+      }
+    } catch (error) {
+    }
+  }`;
+  const localModuleResolution = `  const editorCoreModuleUrl = new URL("./editor-core.mjs", import.meta.url).href;
+  const lspModuleUrl = new URL("./lsp/index.mjs", import.meta.url).href;`;
+  const modernMonacoCore = readFileSync(modernMonacoCoreDst, 'utf-8');
+  if (!modernMonacoCore.includes(remoteModuleResolution)) {
+    throw new Error('modern-monaco core module resolution changed; refusing to emit a CDN-dependent renderer');
+  }
+  writeFileSync(
+    modernMonacoCoreDst,
+    modernMonacoCore.replace(remoteModuleResolution, localModuleResolution),
+    'utf-8',
+  );
+
+  // The renderer maps only these language IDs. Their transitive TextMate
+  // dependencies are bundled as direct objects so modern-monaco never calls
+  // its esm.sh grammar fallback, including Markdown fenced-code grammars.
+  const offlineGrammarIds = [
+    'abap', 'bat', 'bibtex', 'c', 'clojure', 'cmake', 'coffee', 'cpp',
+    'cpp-macro', 'csharp', 'dart', 'diff', 'docker', 'dotenv', 'elixir',
+    'erlang', 'fsharp', 'git-commit', 'git-rebase', 'glsl', 'gnuplot', 'go',
+    'graphql', 'groovy', 'haml', 'handlebars', 'haskell', 'html-derivative',
+    'ini', 'java', 'jsonc', 'jsonl', 'julia', 'kotlin', 'latex', 'less',
+    'log', 'lua', 'make', 'markdown', 'objective-c', 'perl', 'php',
+    'powershell', 'proto', 'pug', 'python', 'r', 'raku', 'regexp', 'rst',
+    'ruby', 'rust', 'sass', 'scala', 'scss', 'shellscript', 'sql', 'stylus',
+    'swift', 'tex', 'toml', 'vb', 'xml', 'xsl', 'yaml',
+  ];
+  const grammarDir = join(root, 'node_modules', 'tm-grammars', 'grammars');
+  const themeDir = join(root, 'node_modules', 'tm-themes', 'themes');
+  const readJson = (path) => JSON.parse(readFileSync(path, 'utf-8'));
+  const offlineGrammars = offlineGrammarIds.map((id) => {
+    const path = join(grammarDir, `${id}.json`);
+    if (!existsSync(path)) throw new Error(`Missing offline Monaco grammar: ${id}`);
+    return readJson(path);
+  });
+  const loadEditorTheme = (filename, name, colorOverrides) => {
+    const theme = readJson(join(themeDir, `${filename}.json`));
+    return {
+      ...theme,
+      name,
+      colors: { ...(theme.colors || {}), ...(colorOverrides || {}) },
+    };
+  };
+  const neuronestThemes = [
+    loadEditorTheme('tokyo-night', 'neuronest-dark', {
+      'editor.background': '#161821',
+      'editorGutter.background': '#161821',
+      'editor.lineHighlightBackground': '#1e2233',
+      'editorStickyScroll.background': '#191c29',
+      'editorStickyScroll.border': '#2a3046',
+    }),
+    loadEditorTheme('github-light', 'neuronest-light', {
+      'editor.background': '#f8fafc',
+      'editorGutter.background': '#f1f5f9',
+      'editor.lineHighlightBackground': '#eaf2ff',
+    }),
+    loadEditorTheme('poimandres', 'neuronest-midnight', {
+      'editor.background': '#10131c',
+      'editorGutter.background': '#10131c',
+      'editor.lineHighlightBackground': '#171c28',
+    }),
+    loadEditorTheme('gruvbox-light-medium', 'neuronest-sepia', {
+      'editor.background': '#f5edda',
+      'editorGutter.background': '#eee3ca',
+      'editor.lineHighlightBackground': '#eadfc5',
+    }),
+    loadEditorTheme('vitesse-black', 'neuronest-terminal', {
+      'editor.background': '#050806',
+      'editorGutter.background': '#050806',
+      'editor.foreground': '#b7f7c2',
+      'editorCursor.foreground': '#58f07f',
+      'editor.lineHighlightBackground': '#0b160f',
+      'editorLineNumber.activeForeground': '#58f07f',
+    }),
+    loadEditorTheme('rose-pine-dawn', 'neuronest-zen', {
+      'editor.background': '#faf4ed',
+      'editorGutter.background': '#f4ede8',
+      'editor.lineHighlightBackground': '#f0e7e2',
+    }),
+  ];
+  const offlineModule = [
+    '// Generated by scripts/copy-renderer.mjs from pinned local packages.',
+    `export const offlineGrammars = ${JSON.stringify(offlineGrammars)};`,
+    `export const neuronestThemes = ${JSON.stringify(neuronestThemes)};`,
+    '',
+  ].join('\n');
+  writeFileSync(modernMonacoOfflineDst, offlineModule, 'utf-8');
+  console.log(`Copied modern-monaco with ${offlineGrammars.length} offline grammars and ${neuronestThemes.length} themes`);
 } else {
-  console.warn('monaco-editor not found, skipping');
+  console.warn('modern-monaco runtime or adapter not found, skipping');
 }
 
 // Copy Cytoscape.js libraries for graph visualization

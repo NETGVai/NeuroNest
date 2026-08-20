@@ -34,6 +34,9 @@ const DEFAULT_BASH_TIMEOUT = 60_000; // 60 seconds
 
 async function fileReadExecute(input: unknown, context: ToolContext): Promise<ToolResult> {
   const { path: filePath, maxBytes } = input as { path?: string; maxBytes?: number };
+  if (context.signal?.aborted) {
+    return { success: false, output: null, error: 'File read aborted by user' };
+  }
 
   // Validate input
   if (!filePath || typeof filePath !== 'string') {
@@ -66,6 +69,9 @@ async function fileReadExecute(input: unknown, context: ToolContext): Promise<To
 
   try {
     const stat = await fs.stat(resolvedPath);
+    if (context.signal?.aborted) {
+      return { success: false, output: null, error: 'File read aborted by user' };
+    }
 
     if (!stat.isFile()) {
       return { success: false, output: null, error: `Not a file: ${filePath}` };
@@ -176,6 +182,9 @@ async function globExecute(input: unknown, context: ToolContext): Promise<ToolRe
 
 async function bashExecute(input: unknown, context: ToolContext): Promise<ToolResult> {
   const { command, timeout, cwd, background } = input as { command?: string; timeout?: number; cwd?: string; background?: boolean };
+  if (context.signal?.aborted) {
+    return { success: false, output: null, error: 'Command aborted by user' };
+  }
 
   // Validate input
   if (!command || typeof command !== 'string') {
@@ -210,6 +219,9 @@ async function bashExecute(input: unknown, context: ToolContext): Promise<ToolRe
   if (!isAutoApprove) {
     if (context.approvalHandler) {
       const approved = await context.approvalHandler(command);
+      if (context.signal?.aborted) {
+        return { success: false, output: null, error: 'Command aborted by user' };
+      }
       if (!approved) {
         return {
           success: false,
@@ -225,6 +237,10 @@ async function bashExecute(input: unknown, context: ToolContext): Promise<ToolRe
         error: 'Command rejected by user',
       };
     }
+  }
+
+  if (context.signal?.aborted) {
+    return { success: false, output: null, error: 'Command aborted by user' };
   }
 
   // ─── Background mode: delegate to BackgroundTaskRegistry (Req 15.2, 15.4) ───
@@ -263,6 +279,7 @@ async function bashExecute(input: unknown, context: ToolContext): Promise<ToolRe
     let stdout = '';
     let stderr = '';
     let timedOut = false;
+    let aborted = false;
     let settled = false;
 
     const proc = spawn(command, [], {
@@ -270,6 +287,9 @@ async function bashExecute(input: unknown, context: ToolContext): Promise<ToolRe
       cwd: workingDir,
       env: { ...process.env },
       stdio: ['ignore', 'pipe', 'pipe'],
+      // On POSIX, make the shell a process-group leader so cancellation can
+      // terminate pipelines and nested descendants, not only the wrapper shell.
+      detached: process.platform !== 'win32',
     });
 
     proc.stdout.on('data', (data: Buffer) => {
@@ -280,41 +300,85 @@ async function bashExecute(input: unknown, context: ToolContext): Promise<ToolRe
       stderr += data.toString();
     });
 
+    const terminateProcessTree = (signal: NodeJS.Signals): void => {
+      const pid = proc.pid;
+      if (!pid) return;
+      if (process.platform === 'win32') {
+        try {
+          const taskkill = spawn('taskkill', ['/pid', String(pid), '/t', '/f'], {
+            stdio: 'ignore',
+            windowsHide: true,
+          });
+          taskkill.unref();
+          return;
+        } catch {
+          // Fall through to direct child termination if taskkill cannot start.
+        }
+      } else {
+        try {
+          process.kill(-pid, signal);
+          return;
+        } catch {
+          // The group may already be gone; fall back to the direct child.
+        }
+      }
+      try { proc.kill(signal); } catch {}
+    };
+
+    const onAbort = () => {
+      if (!settled) {
+        aborted = true;
+        terminateProcessTree('SIGTERM');
+      }
+    };
+    context.signal?.addEventListener('abort', onAbort, { once: true });
+
     const timer = setTimeout(() => {
       if (!settled) {
         timedOut = true;
-        proc.kill('SIGTERM');
+        terminateProcessTree('SIGTERM');
       }
     }, timeoutMs);
+
+    const cleanup = () => {
+      clearTimeout(timer);
+      context.signal?.removeEventListener('abort', onAbort);
+    };
 
     proc.on('close', (code: number | null) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      // A descendant may ignore SIGTERM even after the wrapper shell exits.
+      // Escalate the process group before reporting cancellation complete.
+      if (timedOut || aborted) terminateProcessTree('SIGKILL');
+      cleanup();
 
-      const exitCode = code ?? (timedOut ? 137 : 1);
+      const exitCode = code ?? (timedOut || aborted ? 137 : 1);
 
       resolve({
-        success: !timedOut && exitCode === 0,
+        success: !timedOut && !aborted && exitCode === 0,
         output: {
           stdout,
           stderr,
           exitCode,
           timedOut,
+          aborted,
         },
-        error: timedOut ? `Command timed out after ${timeoutMs / 1000}s` : undefined,
+        error: aborted
+          ? 'Command aborted by user'
+          : timedOut ? `Command timed out after ${timeoutMs / 1000}s` : undefined,
       });
     });
 
     proc.on('error', (err: Error) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      cleanup();
 
       resolve({
         success: false,
-        output: { stdout, stderr, exitCode: 1, timedOut: false },
-        error: `Failed to execute command: ${err.message}`,
+        output: { stdout, stderr, exitCode: 1, timedOut: false, aborted },
+        error: aborted ? 'Command aborted by user' : `Failed to execute command: ${err.message}`,
       });
     });
   });
@@ -364,6 +428,9 @@ export const FileWriteTool: ExecutableToolDefinition = {
   riskLevel: 'write',
   async execute(input: unknown, context: ToolContext): Promise<ToolResult> {
     const { path: filePath, content } = input as { path: string; content: string };
+    if (context.signal?.aborted) {
+      return { success: false, output: null, error: 'File write aborted by user' };
+    }
     if (!filePath || content === undefined) {
       return { success: false, output: null, error: 'Missing required fields: path and content' };
     }
@@ -378,6 +445,9 @@ export const FileWriteTool: ExecutableToolDefinition = {
         return { success: false, output: null, error: 'Path traversal blocked — cannot write outside project directory' };
       }
       fs.mkdirSync(pathMod.dirname(fullPath), { recursive: true });
+      if (context.signal?.aborted) {
+        return { success: false, output: null, error: 'File write aborted by user' };
+      }
       fs.writeFileSync(fullPath, content, 'utf-8');
       return { success: true, output: `Written ${content.length} bytes to ${filePath}` };
     } catch (err: any) {
@@ -394,6 +464,9 @@ export const FileEditTool: ExecutableToolDefinition = {
   riskLevel: 'write',
   async execute(input: unknown, context: ToolContext): Promise<ToolResult> {
     const { path: filePath, edits } = input as { path: string; edits: Array<{ oldText: string; newText: string }> };
+    if (context.signal?.aborted) {
+      return { success: false, output: null, error: 'File edit aborted by user' };
+    }
     if (!filePath || !Array.isArray(edits)) {
       return { success: false, output: null, error: 'Missing required fields: path and edits array' };
     }
@@ -417,6 +490,9 @@ export const FileEditTool: ExecutableToolDefinition = {
           content = content.replace(edit.oldText, edit.newText ?? '');
           appliedCount++;
         }
+      }
+      if (context.signal?.aborted) {
+        return { success: false, output: null, error: 'File edit aborted by user' };
       }
       fs.writeFileSync(fullPath, content, 'utf-8');
       return { success: true, output: `Applied ${appliedCount}/${edits.length} edits to ${filePath}` };

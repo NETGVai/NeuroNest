@@ -624,6 +624,15 @@
       background: var(--bg-chat);
       overflow-y: auto;
     }
+    #main-content.editor-active {
+      overflow: hidden;
+    }
+    #main-content.editor-active .editor-shell,
+    #main-content.editor-active #monaco-container {
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+    }
 
     /* ── Editor Breadcrumb Bar (Phase 2) ── */
     #editor-breadcrumb-bar {
@@ -2070,15 +2079,133 @@
     }
 
     /* ── Editor styles ── */
-    .editor-toolbar { padding: 8px 16px; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--border-color); background: var(--bg-sidebar); flex-shrink: 0; }
-    .editor-file-icon { font-size: 16px; flex-shrink: 0; }
-    .editor-file-path { font-size: 13px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .editor-lang-badge { font-size: 10px; background: var(--border-color); color: var(--text-dim); padding: 2px 8px; border-radius: 4px; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; flex-shrink: 0; }
+    .editor-shell {
+      position: relative;
+      isolation: isolate;
+      background: #161821;
+      border: 1px solid color-mix(in srgb, var(--border-color) 74%, var(--accent) 26%);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.035), 0 14px 40px rgba(0,0,0,0.18);
+    }
+    .editor-shell::before {
+      content: '';
+      position: absolute;
+      z-index: 3;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 2px;
+      pointer-events: none;
+      background: linear-gradient(90deg, transparent 0%, var(--accent) 28%, var(--purple, #c099ff) 68%, transparent 100%);
+      opacity: 0.9;
+    }
+    .editor-toolbar {
+      min-height: 50px;
+      padding: 7px 14px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      border-bottom: 1px solid color-mix(in srgb, var(--border-color) 76%, var(--accent) 24%);
+      background: linear-gradient(180deg, color-mix(in srgb, var(--bg-sidebar) 92%, var(--accent) 8%), var(--bg-sidebar));
+      box-shadow: 0 8px 24px rgba(0,0,0,0.12);
+      flex-shrink: 0;
+    }
+    .editor-toolbar .back-btn {
+      width: 30px;
+      height: 30px;
+      padding: 0;
+      display: inline-grid;
+      place-items: center;
+      border-radius: 8px;
+      border: 1px solid var(--border-color);
+      background: color-mix(in srgb, var(--bg-input) 86%, transparent);
+      color: var(--text-secondary);
+      font-size: 0;
+    }
+    .editor-toolbar .back-btn::before { content: '←'; font-size: 16px; }
+    .editor-toolbar .back-btn:hover { color: var(--text-primary); border-color: var(--accent); background: var(--surface-hover); }
+    .editor-file-icon {
+      width: 30px;
+      height: 30px;
+      display: inline-grid;
+      place-items: center;
+      border-radius: 8px;
+      background: color-mix(in srgb, var(--accent) 14%, transparent);
+      border: 1px solid color-mix(in srgb, var(--accent) 32%, transparent);
+      font-size: 16px;
+      flex-shrink: 0;
+    }
+    .editor-file-path {
+      min-width: 0;
+      font-family: 'SF Mono', Menlo, Consolas, monospace;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-primary);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .editor-lang-badge,
+    .editor-runtime-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      height: 24px;
+      padding: 0 9px;
+      border-radius: 999px;
+      border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border-color));
+      background: color-mix(in srgb, var(--accent) 11%, transparent);
+      color: var(--accent);
+      font-size: 10px;
+      line-height: 1;
+      font-weight: 700;
+      letter-spacing: 0.55px;
+      text-transform: uppercase;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .editor-runtime-badge { color: var(--green); border-color: color-mix(in srgb, var(--green) 38%, var(--border-color)); background: color-mix(in srgb, var(--green) 10%, transparent); }
+    .editor-runtime-badge::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; box-shadow: 0 0 8px currentColor; }
+    .editor-runtime-badge.is-fallback { color: var(--orange, #f5a97f); }
+    .editor-runtime-badge.is-loading::before { animation: editorRuntimePulse 1.2s ease-in-out infinite; }
+    @keyframes editorRuntimePulse { 50% { opacity: 0.35; transform: scale(0.72); } }
+    .editor-toolbar #editor-save-btn {
+      min-width: 74px;
+      height: 30px;
+      border-radius: 8px;
+      border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border-color));
+      background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 22%, var(--bg-input)), color-mix(in srgb, var(--accent) 10%, var(--bg-input)));
+      color: var(--text-primary);
+      font-weight: 650;
+    }
+    .editor-toolbar #editor-save-btn:hover { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent); }
+    #editor-save-status { min-width: 58px; font-size: 11px; color: var(--green); }
+    .editor-stage { position: relative; flex: 1; min-width: 0; min-height: 0; overflow: hidden; background: #161821; }
+    #monaco-container { position: absolute; inset: 0; }
+    .editor-statusbar {
+      min-height: 25px;
+      padding: 0 12px;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      flex-shrink: 0;
+      border-top: 1px solid color-mix(in srgb, var(--border-color) 78%, var(--accent) 22%);
+      background: color-mix(in srgb, var(--bg-sidebar) 94%, var(--accent) 6%);
+      color: var(--text-dim);
+      font-family: 'SF Mono', Menlo, Consolas, monospace;
+      font-size: 10px;
+      letter-spacing: 0.15px;
+      user-select: none;
+    }
+    .editor-statusbar .editor-status-spacer { flex: 1; }
+    .editor-statusbar .editor-tokenizer-status { color: var(--green); }
+    .editor-statusbar .editor-tokenizer-status::before { content: '◆'; margin-right: 6px; font-size: 7px; }
+    .editor-statusbar .editor-tokenizer-status.is-fallback { color: var(--orange, #f5a97f); }
     .editor-line-numbers { width: 48px; flex-shrink: 0; background: var(--bg-sidebar); color: var(--text-dim); font-family: 'SF Mono', Menlo, Consolas, monospace; font-size: 13px; line-height: 1.6; padding: 12px 8px 12px 0; text-align: right; overflow: hidden; white-space: pre; border-right: 1px solid var(--border-color); user-select: none; -webkit-user-select: none; }
-    .editor-textarea { flex: 1; background: var(--bg-input); color: var(--text-primary); border: none; padding: 12px 14px; font-family: 'SF Mono', Menlo, Consolas, monospace; font-size: 13px; line-height: 1.6; resize: none; outline: none; overflow-y: auto; white-space: pre; tab-size: 2; -moz-tab-size: 2; }
-    .editor-textarea::-webkit-scrollbar { width: 6px; }
+    .editor-textarea { flex: 1; min-width: 0; min-height: 0; background: var(--bg-input); color: var(--text-primary); border: none; padding: 12px 14px; font-family: 'SF Mono', Menlo, Consolas, monospace; font-size: 13px; line-height: 1.6; resize: none; outline: none; overflow: auto; white-space: pre; overflow-wrap: normal; tab-size: 2; -moz-tab-size: 2; }
+    .editor-textarea::-webkit-scrollbar { width: 10px; height: 10px; }
     .editor-textarea::-webkit-scrollbar-track { background: transparent; }
     .editor-textarea::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 3px; }
+    body.theme-light .editor-stage, body.theme-sepia .editor-stage, body.theme-zen .editor-stage { background: #f8fafc; }
 
     /* ── Thinking animation ── */
     .thinking-scene { position: relative; width: 100%; height: 120px; overflow: hidden; margin: 20px 0; }
@@ -2550,152 +2677,9 @@
     </footer>
   </div>
 
-  <script>
-    // ── Monaco Editor: Robust Electron initialization ──
-    // Step 1: Load the AMD loader synchronously via inline script
-    // This avoids issues with Electron's contextIsolation interfering with script loading
-    (function() {
-      var script = document.createElement('script');
-      script.src = './monaco/vs/loader.js';
-      script.onload = function() {
-        console.log('[Monaco] loader.js loaded, window.require:', typeof window.require);
-        
-        // The AMD loader should have created window.require
-        var amdRequire = window.require;
-        if (!amdRequire || typeof amdRequire.config !== 'function') {
-          console.error('[Monaco] AMD require not available after loader.js');
-          // Try AMDLoader global
-          if (window.AMDLoader && window.AMDLoader.global && window.AMDLoader.global.require) {
-            amdRequire = window.AMDLoader.global.require;
-            console.log('[Monaco] Found AMDLoader.global.require');
-          } else {
-            console.error('[Monaco] No AMD loader found at all');
-            return;
-          }
-        }
-
-        // Step 2: Configure paths
-        amdRequire.config({
-          paths: { vs: './monaco/vs' },
-          'vs/nls': { availableLanguages: { '*': '' } }
-        });
-
-        // Step 3: Configure workers with blob URLs for Electron
-        window.MonacoEnvironment = {
-          getWorker: function(workerId, label) {
-            var workerMap = {
-              json: './monaco/vs/assets/json.worker-DKiEKt88.js',
-              css: './monaco/vs/assets/css.worker-HnVq6Ewq.js',
-              scss: './monaco/vs/assets/css.worker-HnVq6Ewq.js',
-              less: './monaco/vs/assets/css.worker-HnVq6Ewq.js',
-              html: './monaco/vs/assets/html.worker-B51mlPHg.js',
-              typescript: './monaco/vs/assets/ts.worker-CMbG-7ft.js',
-              javascript: './monaco/vs/assets/ts.worker-CMbG-7ft.js',
-            };
-            var url = workerMap[label] || './monaco/vs/assets/editor.worker-Be8ye1pW.js';
-            try {
-              var fullUrl = new URL(url, window.location.href).href;
-              var blob = new Blob(['importScripts("' + fullUrl + '");'], { type: 'application/javascript' });
-              return new Worker(URL.createObjectURL(blob));
-            } catch (e) {
-              console.error('[Monaco] Worker creation failed for', label, e);
-              return null;
-            }
-          }
-        };
-
-        // Step 4: Load Monaco editor main
-        amdRequire(['vs/editor/editor.main'], function() {
-          window.monaco = monaco;
-          console.log('[Monaco] ✅ Editor loaded successfully!');
-
-          // Step 5: Configure TypeScript IntelliSense
-          try {
-            monaco.languages.typescript.typescriptDefaults.setCompilerOptions({
-              target: monaco.languages.typescript.ScriptTarget.ESNext,
-              module: monaco.languages.typescript.ModuleKind.ESNext,
-              allowNonTsExtensions: true, allowJs: true, checkJs: true,
-              strict: true, jsx: monaco.languages.typescript.JsxEmit.React,
-              esModuleInterop: true,
-            });
-            monaco.languages.typescript.typescriptDefaults.setDiagnosticsOptions({ noSemanticValidation: false, noSyntaxValidation: false });
-            monaco.languages.typescript.javascriptDefaults.setDiagnosticsOptions({ noSemanticValidation: false, noSyntaxValidation: false });
-            monaco.languages.json.jsonDefaults.setDiagnosticsOptions({ validate: true, allowComments: true });
-          } catch (e) { console.warn('[Monaco] IntelliSense config:', e); }
-
-          // Step 6: Define themes
-          monaco.editor.defineTheme('neuronest-dark', {
-            base: 'vs-dark', inherit: true,
-            rules: [
-              { token: 'comment', foreground: '6A9955', fontStyle: 'italic' },
-              { token: 'keyword', foreground: 'C586C0' },
-              { token: 'storage', foreground: '569CD6' },
-              { token: 'string', foreground: 'CE9178' },
-              { token: 'number', foreground: 'B5CEA8' },
-              { token: 'type', foreground: '4EC9B0' },
-              { token: 'function', foreground: 'DCDCAA' },
-              { token: 'variable', foreground: '9CDCFE' },
-              { token: 'constant', foreground: '4FC1FF' },
-              { token: 'tag', foreground: '569CD6' },
-              { token: 'attribute.name', foreground: '9CDCFE' },
-              { token: 'attribute.value', foreground: 'CE9178' },
-              { token: 'regexp', foreground: 'D16969' },
-            ],
-            colors: {
-              'editor.background': '#1e1e2e',
-              'editor.foreground': '#cdd6f4',
-              'editor.lineHighlightBackground': '#2a2a3e',
-              'editorCursor.foreground': '#89b4fa',
-              'editorLineNumber.foreground': '#585b70',
-              'editorLineNumber.activeForeground': '#cdd6f4',
-              'editor.selectionBackground': '#44475a',
-              'editorBracketMatch.background': '#44475a',
-              'editorBracketMatch.border': '#89b4fa',
-              'editorBracketHighlight.foreground1': '#FFD700',
-              'editorBracketHighlight.foreground2': '#DA70D6',
-              'editorBracketHighlight.foreground3': '#87CEEB',
-              'editorIndentGuide.background1': '#313244',
-              'editorGutter.background': '#181825',
-              'minimap.background': '#181825',
-              'editorSuggestWidget.background': '#1e1e2e',
-              'editorSuggestWidget.border': '#313244',
-            }
-          });
-          monaco.editor.defineTheme('neuronest-light', {
-            base: 'vs', inherit: true,
-            rules: [
-              { token: 'comment', foreground: '008000', fontStyle: 'italic' },
-              { token: 'keyword', foreground: 'AF00DB' },
-              { token: 'string', foreground: 'A31515' },
-              { token: 'number', foreground: '098658' },
-              { token: 'type', foreground: '267F99' },
-              { token: 'function', foreground: '795E26' },
-              { token: 'variable', foreground: '001080' },
-            ],
-            colors: {
-              'editor.background': '#ffffff',
-              'editor.foreground': '#1a1a1a',
-              'editorLineNumber.foreground': '#999999',
-              'editorGutter.background': '#f5f5f5',
-              'minimap.background': '#f5f5f5',
-            }
-          });
-          console.log('[Monaco] Themes registered');
-          // Set default theme based on saved preference
-          var savedTheme = localStorage.getItem('neuronest-theme') || 'dark';
-          var defaultMonacoTheme = (savedTheme === 'light' || savedTheme === 'sepia') ? 'neuronest-light' : 'neuronest-dark';
-          monaco.editor.setTheme(defaultMonacoTheme);
-          console.log('[Monaco] Default theme set to:', defaultMonacoTheme);
-        }, function(err) {
-          console.error('[Monaco] ❌ Failed to load editor.main:', err);
-        });
-      };
-      script.onerror = function() {
-        console.error('[Monaco] ❌ Failed to load loader.js');
-      };
-      document.head.appendChild(script);
-    })();
-  </script>
+  <!-- CSP-safe external bootstrap publishes window.monacoReady immediately and
+       loads every modern-monaco/Shiki module from packaged renderer assets. -->
+  <script src="./modern-monaco-bootstrap.js"></script>
   
   <!-- Markdown rendering dependencies -->
   <script src="./markdown-it.min.js"></script>

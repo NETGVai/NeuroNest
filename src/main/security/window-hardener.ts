@@ -54,8 +54,14 @@ export function generateCSPNonce(): string {
 export function buildCSPHeader(config: CSPConfig): string {
   const { nonce, additionalScriptHashes = [], connectSrc = [] } = config;
 
-  // Build script-src with nonce (no 'unsafe-inline')
-  const scriptSources = ["'self'", `'nonce-${nonce}'`, ...additionalScriptHashes.map(h => `'${h}'`)];
+  // Keep JavaScript eval disabled while allowing Shiki's packaged Oniguruma
+  // WebAssembly engine to compile under Chromium's CSP enforcement.
+  const scriptSources = [
+    "'self'",
+    "'wasm-unsafe-eval'",
+    `'nonce-${nonce}'`,
+    ...additionalScriptHashes.map(h => `'${h}'`),
+  ];
 
   const directives: Record<string, string[]> = {
     'default-src': ["'self'"],
@@ -97,7 +103,7 @@ export const DEFAULT_SECURITY_POLICY: WindowSecurityPolicy = {
   allowedNavigationOrigins: ['file://'],
   cspDirectives: {
     'default-src': ["'self'"],
-    'script-src': ["'self'"],
+    'script-src': ["'self'", "'wasm-unsafe-eval'"],
     'style-src': ["'self'", "'unsafe-inline'"],
     'img-src': ["'self'", 'data:', 'https:'],
     'font-src': ["'self'", 'data:'],

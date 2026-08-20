@@ -753,12 +753,47 @@ function _nnFinalizeStream(session) {
 
 var _nnActionButtonsActive = []; // Track active button group containers
 
-function _nnDetectAndRenderActionButtons(messageEl, text) {
+function _nnBuildActionContext(action, text, messageEl, pendingAction) {
+  if (pendingAction && pendingAction.kind === 'scope-divergence') {
+    return {
+      kind: 'scope-divergence',
+      action: action,
+      confirmationId: pendingAction.confirmationId || '',
+      sourceProjectId: pendingAction.sourceProjectId || '',
+      timestamp: Date.now()
+    };
+  }
+
+  var messageId = '';
+  if (messageEl) {
+    messageId = messageEl.getAttribute('data-message-id') || messageEl.id || '';
+  }
+  return {
+    kind: 'proposal',
+    action: action,
+    proposal: text && text.length > 4000 ? text.slice(-4000) : (text || ''),
+    proposalLength: text ? text.length : 0,
+    messageId: messageId,
+    timestamp: Date.now()
+  };
+}
+
+function _nnDetectAndRenderActionButtons(messageEl, text, pendingAction) {
   try {
     // Prevent duplicate button rendering if already present on this message
     if (messageEl.querySelector('.nn-action-button-group')) return;
 
     var detection = _nnDetectPrompt(text);
+    if (!detection && pendingAction && pendingAction.kind === 'scope-divergence') {
+      detection = {
+        type: 'binary-approval',
+        responseText: null,
+        confirmLabel: 'Create new project',
+        cancelLabel: 'Cancel',
+        isDestructive: false,
+        options: null
+      };
+    }
     if (!detection) return;
 
     // Disable any previously active button groups
@@ -794,9 +829,9 @@ function _nnDetectAndRenderActionButtons(messageEl, text) {
       }
     } else {
       // Render confirm/cancel binary buttons
-      var confirmLabel = detection.confirmLabel || 'Confirm';
-      var cancelLabel = detection.cancelLabel || 'Cancel';
-      var responseText = detection.responseText || confirmLabel.toLowerCase();
+      var confirmLabel = (pendingAction && pendingAction.confirmLabel) || detection.confirmLabel || 'Confirm';
+      var cancelLabel = (pendingAction && pendingAction.cancelLabel) || detection.cancelLabel || 'Cancel';
+      var responseText = (pendingAction && pendingAction.confirmResponse) || detection.responseText || confirmLabel.toLowerCase();
 
       var confirmBtn = _nnCreateActionButton(confirmLabel, detection.isDestructive ? 'danger' : 'primary');
       var cancelBtn = _nnCreateActionButton(cancelLabel, 'ghost');
@@ -806,7 +841,7 @@ function _nnDetectAndRenderActionButtons(messageEl, text) {
         if (state.resolved) return;
         state.resolved = true;
         _nnResolveButtonGroup(container, confirmBtn);
-        sendChat(responseText);
+        sendChat(responseText, _nnBuildActionContext('confirm', text, messageEl, pendingAction));
       });
 
       cancelBtn.addEventListener('click', function(e) {
@@ -814,7 +849,7 @@ function _nnDetectAndRenderActionButtons(messageEl, text) {
         if (state.resolved) return;
         state.resolved = true;
         _nnResolveButtonGroup(container, cancelBtn);
-        sendChat('cancel');
+        sendChat('cancel', _nnBuildActionContext('cancel', text, messageEl, pendingAction));
       });
 
       container.appendChild(confirmBtn);
@@ -1424,6 +1459,7 @@ function ensureChatView() {
   var area = $$('#chat-area');
   if (!area) {
     var mc = $$('#main-content');
+    mc.classList.remove('editor-active');
     var inputBar = $$('#input-bar');
     mc.innerHTML = '';
     area = document.createElement('div');
@@ -1652,7 +1688,276 @@ function _loadOlderMessagesIntoView(area, triggerEl) {
   });
 }
 
+function _nnZeraRunElementId(runId) {
+  return 'zera-thinking-' + String(runId || 'active').replace(/[^a-zA-Z0-9_-]/g, '');
+}
+
+function _nnCopyZeraPrompt(button, prompt) {
+  function showCopied() {
+    button.textContent = 'Copied';
+    button.classList.add('is-copied');
+    setTimeout(function() {
+      button.textContent = 'Copy prompt';
+      button.classList.remove('is-copied');
+    }, 1800);
+  }
+
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(prompt).then(showCopied).catch(function() {
+      _nnFallbackCopyZeraPrompt(button, prompt, showCopied);
+    });
+    return;
+  }
+  _nnFallbackCopyZeraPrompt(button, prompt, showCopied);
+}
+
+function _nnFallbackCopyZeraPrompt(button, prompt, onCopied) {
+  var textarea = document.createElement('textarea');
+  textarea.value = prompt;
+  textarea.setAttribute('readonly', '');
+  textarea.style.cssText = 'position:fixed;left:-9999px;top:-9999px;opacity:0;';
+  document.body.appendChild(textarea);
+  textarea.select();
+  try {
+    if (document.execCommand('copy')) onCopied();
+  } catch (error) {
+    button.textContent = 'Copy failed';
+  }
+  document.body.removeChild(textarea);
+}
+
+function _nnRenderZeraOptimizer(state, meta) {
+  var area = $$('#chat-area');
+  if (!area || !state) return;
+  var welcome = area.querySelector('.welcome');
+  if (welcome) welcome.remove();
+  var emptyState = area.querySelector('.chat-empty-state');
+  if (emptyState) emptyState.remove();
+
+  var elementId = _nnZeraRunElementId(state.runId);
+  var root = document.getElementById(elementId);
+  if (!root || root.parentNode !== area) {
+    root = document.createElement('div');
+    root.id = elementId;
+    root.className = 'message assistant zera-thinking-message';
+    root.setAttribute('data-zera-run-id', state.runId || 'active');
+    root.innerHTML = '<div class="message-inner">' +
+      '<div class="message-avatar zera-thinking-avatar" aria-hidden="true">🔮</div>' +
+      '<div class="message-content zera-thinking-content">' +
+        '<button class="zera-thinking-toggle" type="button" aria-expanded="true">' +
+          '<span class="zera-thinking-heading">' +
+            '<span class="zera-thinking-title">ZERA Optimizer</span>' +
+            '<span class="zera-thinking-summary">Preparing refinement trace…</span>' +
+          '</span>' +
+          '<span class="zera-thinking-header-status"><span class="zera-thinking-live-dot" aria-hidden="true"></span><span class="zera-thinking-status-text">Thinking</span><span class="zera-thinking-chevron" aria-hidden="true">⌄</span></span>' +
+        '</button>' +
+        '<div class="zera-thinking-trace">' +
+          '<div class="zera-thinking-placeholder" role="status"><span></span><span></span><span></span>Evaluating prompt quality…</div>' +
+          '<ol class="zera-thinking-steps" aria-label="Optimizer actions"></ol>' +
+          '<section class="zera-thinking-result" aria-label="Optimized prompt result" hidden>' +
+            '<div class="zera-thinking-result-header"><span><span aria-hidden="true">◆</span> Result · Optimized prompt</span><button class="zera-thinking-copy" type="button">Copy prompt</button></div>' +
+            '<div class="zera-thinking-result-body message-body"></div>' +
+          '</section>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+
+    var toggle = root.querySelector('.zera-thinking-toggle');
+    var trace = root.querySelector('.zera-thinking-trace');
+    toggle.addEventListener('click', function() {
+      var expanded = toggle.getAttribute('aria-expanded') !== 'false';
+      toggle.setAttribute('aria-expanded', expanded ? 'false' : 'true');
+      trace.hidden = expanded;
+      root.classList.toggle('is-collapsed', expanded);
+    });
+    var copyButton = root.querySelector('.zera-thinking-copy');
+    copyButton.addEventListener('click', function(event) {
+      event.stopPropagation();
+      _nnCopyZeraPrompt(copyButton, root._zeraOptimizedPrompt || '');
+    });
+    area.appendChild(root);
+  }
+
+  var isComplete = state.phase === 'result';
+  var steps = Array.isArray(state.steps) ? state.steps.slice() : [];
+  steps.sort(function(a, b) { return Number(a.index || 0) - Number(b.index || 0); });
+  root.classList.toggle('is-complete', isComplete);
+  root.setAttribute('aria-label', isComplete ? 'ZERA prompt optimization complete' : 'ZERA is optimizing the prompt');
+
+  var summary = root.querySelector('.zera-thinking-summary');
+  var statusText = root.querySelector('.zera-thinking-status-text');
+  var countLabel = steps.length + ' check' + (steps.length === 1 ? '' : 's');
+  if (isComplete) {
+    var durationLabel = Number(state.durationMs) > 0
+      ? ' · ' + (Number(state.durationMs) >= 1000 ? (Number(state.durationMs) / 1000).toFixed(1) + 's' : Math.round(Number(state.durationMs)) + 'ms')
+      : '';
+    summary.textContent = countLabel + ' completed' + durationLabel;
+    statusText.textContent = 'Complete';
+  } else {
+    summary.textContent = steps.length ? countLabel + ' completed · refining prompt' : 'Evaluating prompt quality';
+    statusText.textContent = 'Thinking';
+  }
+
+  var placeholder = root.querySelector('.zera-thinking-placeholder');
+  placeholder.hidden = steps.length > 0;
+  var list = root.querySelector('.zera-thinking-steps');
+  list.innerHTML = '';
+  for (var i = 0; i < steps.length; i++) {
+    var step = steps[i] || {};
+    var score = Number(step.score);
+    if (!isFinite(score)) score = 0;
+    score = Math.max(0, Math.min(100, Math.round(score)));
+    var tone = score >= 85 ? 'good' : score >= 70 ? 'warn' : 'bad';
+    var item = document.createElement('li');
+    item.className = 'zera-thinking-step tone-' + tone;
+    item.setAttribute('data-step-index', String(step.index != null ? step.index : i));
+
+    var marker = document.createElement('span');
+    marker.className = 'zera-thinking-step-marker';
+    marker.setAttribute('aria-hidden', 'true');
+    marker.textContent = '✓';
+
+    var copy = document.createElement('div');
+    copy.className = 'zera-thinking-step-copy';
+    var title = document.createElement('div');
+    title.className = 'zera-thinking-step-title';
+    title.textContent = step.principle || 'Prompt refinement';
+    var suggestion = document.createElement('div');
+    suggestion.className = 'zera-thinking-step-suggestion';
+    suggestion.textContent = step.suggestion || 'No changes required.';
+    copy.appendChild(title);
+    copy.appendChild(suggestion);
+
+    var scoreWrap = document.createElement('div');
+    scoreWrap.className = 'zera-thinking-score';
+    scoreWrap.setAttribute('aria-label', 'Score ' + score + ' out of 100');
+    var scoreLabel = document.createElement('span');
+    scoreLabel.textContent = score + '/100';
+    var meter = document.createElement('span');
+    meter.className = 'zera-thinking-score-track';
+    var fill = document.createElement('span');
+    fill.className = 'zera-thinking-score-fill';
+    fill.style.width = score + '%';
+    meter.appendChild(fill);
+    scoreWrap.appendChild(scoreLabel);
+    scoreWrap.appendChild(meter);
+
+    item.appendChild(marker);
+    item.appendChild(copy);
+    item.appendChild(scoreWrap);
+    list.appendChild(item);
+  }
+
+  var result = root.querySelector('.zera-thinking-result');
+  var optimizedPrompt = typeof state.optimizedPrompt === 'string' ? state.optimizedPrompt.trim() : '';
+  root._zeraOptimizedPrompt = optimizedPrompt;
+  if (isComplete && optimizedPrompt) {
+    result.hidden = false;
+    root.querySelector('.zera-thinking-result-body').innerHTML = formatMsg(optimizedPrompt);
+  } else {
+    result.hidden = true;
+  }
+
+  area.scrollTop = area.scrollHeight;
+  return root;
+}
+
+function _nnHandleZeraOptimizerEvent(data, meta, text) {
+  var incoming = data.zeraEvent || {};
+  var runId = String(incoming.runId || 'zera-active');
+  var entry = null;
+  for (var i = chatMessageStore.length - 1; i >= 0; i--) {
+    if (chatMessageStore[i].zeraRunId === runId) {
+      entry = chatMessageStore[i];
+      break;
+    }
+  }
+
+  var isNew = !entry;
+  if (!entry) {
+    entry = {
+      role: data.role || 'assistant',
+      text: text || '',
+      timestamp: Date.now(),
+      zeraRunId: runId,
+      meta: {
+        label: 'ZERA',
+        type: 'zera-optimizer',
+        provider: meta && meta.provider,
+        model: meta && meta.model,
+        zeraEvent: {
+          runId: runId,
+          phase: 'start',
+          steps: [],
+          optimizedPrompt: ''
+        }
+      }
+    };
+    chatMessageStore.push(entry);
+    msgCount++;
+    var stat = $$('#stat-messages');
+    if (stat) stat.textContent = String(msgCount);
+  }
+
+  var state = entry.meta.zeraEvent;
+  if (meta && meta.provider) entry.meta.provider = meta.provider;
+  if (meta && meta.model) entry.meta.model = meta.model;
+
+  if (incoming.phase === 'step') {
+    var stepIndex = Number(incoming.index);
+    if (!isFinite(stepIndex)) stepIndex = state.steps.length;
+    var nextStep = {
+      index: stepIndex,
+      principle: incoming.principle || 'Prompt refinement',
+      score: incoming.score,
+      suggestion: incoming.suggestion || ''
+    };
+    var replaced = false;
+    for (var si = 0; si < state.steps.length; si++) {
+      if (Number(state.steps[si].index) === stepIndex) {
+        state.steps[si] = nextStep;
+        replaced = true;
+        break;
+      }
+    }
+    if (!replaced) state.steps.push(nextStep);
+    state.phase = 'step';
+  } else if (incoming.phase === 'result') {
+    if (Array.isArray(incoming.steps)) {
+      state.steps = incoming.steps.map(function(step, index) {
+        return {
+          index: step && step.index != null ? step.index : index,
+          principle: step && step.principle,
+          score: step && step.score,
+          suggestion: step && step.suggestion
+        };
+      });
+    }
+    state.phase = 'result';
+    state.optimizedPrompt = incoming.optimizedPrompt || '';
+    state.durationMs = incoming.durationMs;
+    entry.text = text || state.optimizedPrompt;
+  } else {
+    state.phase = 'start';
+  }
+
+  var rendered = appendMsgEl(entry.role, entry.text, entry.meta);
+  if (!$$('#chat-area') && isNew) {
+    chatUnreadCount++;
+    updateChatUnreadBadge();
+  }
+  if (isProcessing) {
+    showThinkingIndicator(state.phase === 'result'
+      ? 'Prompt optimized. Preparing the execution plan…'
+      : 'ZERA is refining your prompt…');
+  }
+  return rendered;
+}
+
 function appendMsgEl(role, text, meta) {
+  if (meta && meta.type === 'zera-optimizer' && meta.zeraEvent) {
+    return _nnRenderZeraOptimizer(meta.zeraEvent, meta);
+  }
   var area = $$('#chat-area');
   if (!area) return;
   var welcome = area.querySelector('.welcome');
@@ -1816,7 +2121,7 @@ function hideTyping() {
   if (ind) ind.remove();
 }
 
-function sendChat(text) {
+function sendChat(text, actionContext) {
   if (!text || !text.trim()) return false;
 
   // Disable any active inline action button groups when user types manually
@@ -1874,8 +2179,9 @@ function sendChat(text) {
   var displayText = text + (attachLabel ? '\n\n_' + attachLabel + '_' : '');
   var pipelineText = text + promptSuffix;
 
-  // Handle steer/queue modes
-  var mode = currentMessageMode || 'send';
+  // Handle steer/queue modes. Button decisions always resolve immediately;
+  // they must not be queued or interpreted as a steering request.
+  var mode = actionContext ? 'send' : (currentMessageMode || 'send');
   // Spec mode flag — the backend triggers the grill-me pre-flight interview
   // ONLY when this is set. In plain `send` mode the message goes straight to
   // the orchestrator (the pre-grill-me behavior).
@@ -1963,7 +2269,13 @@ function sendChat(text) {
     return false;
   }
   addMsg('user', specMode ? '📝 [Spec] ' + displayText : displayText);
-  eapi().send('chat-message', { projectId: activeProjectId, message: pipelineText, images: pending, spec: specMode });
+  eapi().send('chat-message', {
+    projectId: activeProjectId,
+    message: pipelineText,
+    images: pending,
+    spec: specMode,
+    actionContext: actionContext || undefined
+  });
   if (pending.length) clearPendingAttachments();
   return true;
 }
@@ -3058,6 +3370,13 @@ function setupIPC() {
     if (data.agent === 'Orchestrator') { removeActiveAgent('ZERA Optimizer'); addActiveAgent('Orchestrator'); }
     if (data.agent === 'Swarm' && text && text.indexOf('Phase') !== -1) { removeActiveAgent('Orchestrator'); }
 
+    // ZERA emits a structured optimizer lifecycle. Fold start/progress/result
+    // events into one expandable Thinking trace instead of separate bubbles.
+    if (data.zeraEvent) {
+      _nnHandleZeraOptimizerEvent(data, meta, text);
+      return;
+    }
+
     // Agent completion carries the authoritative full Markdown as a fallback.
     // Correlate by the per-execution stream message ID so parallel workers,
     // including repeated agent names, always update the correct bubble. This
@@ -3095,7 +3414,7 @@ function setupIPC() {
       if (chatArea) {
         var lastMsg = chatArea.lastElementChild;
         if (lastMsg && lastMsg.classList.contains('message')) {
-          _nnDetectAndRenderActionButtons(lastMsg, text);
+          _nnDetectAndRenderActionButtons(lastMsg, text, data.pendingAction || null);
         }
       }
 
@@ -3479,10 +3798,21 @@ function setupIPC() {
         for (var i = 0; i < project.messages.length; i++) {
           var m = project.messages[i];
           var meta = null;
-          if (m.agent || m.isCommand) {
+          if (m.zeraEvent) {
+            meta = {
+              label: 'ZERA',
+              type: 'zera-optimizer',
+              zeraEvent: m.zeraEvent
+            };
+          } else if (m.agent || m.isCommand) {
             meta = { label: m.agent || 'Agent', type: m.isCommand ? 'command' : undefined };
           }
-          chatMessageStore.push({ role: m.role || 'assistant', text: m.content || '', meta: meta });
+          chatMessageStore.push({
+            role: m.role || 'assistant',
+            text: m.content || '',
+            meta: meta,
+            zeraRunId: m.zeraEvent && m.zeraEvent.runId ? m.zeraEvent.runId : undefined
+          });
           msgCount++;
         }
         console.log('[Frontend] Loaded', chatMessageStore.length, 'messages into chatMessageStore');
@@ -3512,6 +3842,7 @@ function setupIPC() {
 
   api.on('project-files-updated', function(data) {
     if (data && data.projectId) {
+      invalidateCleanEditorModels(data.projectId, data.filePaths);
       loadProjectFiles(data.projectId);
     }
   });
@@ -7732,8 +8063,123 @@ function handleTreeDirClick(e) {
 }
 
 var currentEditorInstance = null;
+var currentEditorIsFileEditor = false;
 var currentEditorFile = null;
+var currentEditorProjectId = null;
+var currentEditorLanguage = 'plaintext';
+var editorModelCache = Object.create(null);
+var editorModelDirty = Object.create(null);
+var editorModelStale = Object.create(null);
+var editorModelRefreshing = Object.create(null);
 var fileLoadingId = 0;
+
+function getEditorModelKey(projectId, filePath) {
+  return String(projectId || '') + '::' + filePath;
+}
+
+function invalidateCleanEditorModels(projectId, filePaths) {
+  var prefix = String(projectId || '') + '::';
+  var changedPaths = null;
+  if (Array.isArray(filePaths) && filePaths.length > 0) {
+    changedPaths = Object.create(null);
+    for (var i = 0; i < filePaths.length; i++) {
+      changedPaths[String(filePaths[i]).replace(/\\/g, '/').replace(/^\.\//, '')] = true;
+    }
+  }
+  var keys = Object.keys(editorModelCache);
+  for (var j = 0; j < keys.length; j++) {
+    var key = keys[j];
+    if (key.indexOf(prefix) !== 0 || editorModelDirty[key]) continue;
+    var modelPath = key.slice(prefix.length).replace(/\\/g, '/').replace(/^\.\//, '');
+    if (!changedPaths || changedPaths[modelPath]) editorModelStale[key] = true;
+  }
+}
+
+function markEditorModelSaved(projectId, filePath) {
+  var key = getEditorModelKey(projectId, filePath);
+  editorModelDirty[key] = false;
+  editorModelStale[key] = false;
+}
+
+function getEditorLanguage(filePath) {
+  var fileName = (filePath.split('/').pop() || filePath).toLowerCase();
+  if (fileName === 'dockerfile' || fileName.indexOf('dockerfile.') === 0) return 'docker';
+  if (fileName === 'makefile' || fileName === 'gnumakefile') return 'make';
+  var ext = (fileName.split('.').pop() || '').toLowerCase();
+  var langMap = {
+    js: 'javascript', mjs: 'javascript', cjs: 'javascript', jsx: 'jsx',
+    ts: 'typescript', mts: 'typescript', cts: 'typescript', tsx: 'tsx',
+    py: 'python', pyw: 'python', json: 'json', jsonc: 'jsonc', md: 'markdown', mdx: 'markdown',
+    html: 'html', htm: 'html', css: 'css', scss: 'scss', sass: 'sass', less: 'less',
+    sh: 'shellscript', bash: 'shellscript', zsh: 'shellscript', fish: 'shellscript',
+    yml: 'yaml', yaml: 'yaml', xml: 'xml', svg: 'xml', sql: 'sql', graphql: 'graphql', gql: 'graphql',
+    rs: 'rust', go: 'go', java: 'java', rb: 'ruby', php: 'php',
+    swift: 'swift', kt: 'kotlin', kts: 'kotlin', cs: 'csharp', cpp: 'cpp', cc: 'cpp', cxx: 'cpp', h: 'cpp', hpp: 'cpp', c: 'c',
+    r: 'r', toml: 'toml', ini: 'ini', env: 'dotenv', properties: 'ini',
+    vue: 'html', svelte: 'html', astro: 'html', proto: 'proto', lua: 'lua', pl: 'perl',
+  };
+  return langMap[ext] || 'plaintext';
+}
+
+function getEditorModel(projectId, filePath, content, lang) {
+  if (!window.monaco || !window.monaco.editor) return null;
+  var key = getEditorModelKey(projectId, filePath);
+  var cached = editorModelCache[key];
+  if (cached && (!cached.isDisposed || !cached.isDisposed())) {
+    if (editorModelStale[key] && !editorModelDirty[key]) {
+      editorModelRefreshing[key] = true;
+      try {
+        var refreshedContent = String(content == null ? '' : content);
+        if (cached.getValue() !== refreshedContent) cached.setValue(refreshedContent);
+      } finally {
+        editorModelRefreshing[key] = false;
+      }
+      editorModelStale[key] = false;
+      editorModelDirty[key] = false;
+    }
+    window.monaco.editor.setModelLanguage(cached, lang);
+    return cached;
+  }
+  var uriPath = filePath.split('/').map(function(part) { return encodeURIComponent(part); }).join('/');
+  var uri = window.monaco.Uri.parse('inmemory://neuronest/' + encodeURIComponent(String(projectId || 'project')) + '/' + uriPath);
+  var model = window.monaco.editor.createModel(String(content == null ? '' : content), lang, uri);
+  editorModelCache[key] = model;
+  editorModelDirty[key] = false;
+  editorModelStale[key] = false;
+  if (model.onDidChangeContent) {
+    model.onDidChangeContent(function() {
+      if (!editorModelRefreshing[key]) editorModelDirty[key] = true;
+    });
+  }
+  return model;
+}
+
+function updateEditorChrome(filePath, lang, loading) {
+  var pathEl = $$('.editor-file-path');
+  var badgeEl = $$('.editor-lang-badge');
+  var iconEl = $$('.editor-file-icon');
+  var statusEl = $$('#editor-save-status');
+  var runtimeBadge = $$('#editor-runtime-badge');
+  var tokenizerStatus = $$('#editor-tokenizer-status');
+  if (pathEl) pathEl.textContent = filePath;
+  if (badgeEl) badgeEl.textContent = lang;
+  if (iconEl) iconEl.textContent = getFileIcon(filePath.split('/').pop() || filePath);
+  if (statusEl) statusEl.textContent = loading ? 'Loading…' : '';
+  if (runtimeBadge) {
+    runtimeBadge.classList.toggle('is-loading', !!loading);
+    runtimeBadge.textContent = loading ? 'Loading Shiki' : 'Shiki Local';
+  }
+  if (tokenizerStatus) tokenizerStatus.textContent = loading ? 'Loading local grammar…' : 'Shiki · ' + lang;
+}
+
+function resetCurrentEditorFile() {
+  fileLoadingId++;
+  currentEditorIsFileEditor = false;
+  currentEditorFile = null;
+  currentEditorProjectId = null;
+  currentEditorLanguage = 'plaintext';
+  highlightActiveFileInTree(null);
+}
 
 function highlightActiveFileInTree(filePath) {
   // Remove previous highlight
@@ -7763,13 +8209,21 @@ function highlightActiveFileInTree(filePath) {
 }
 
 function openProjectFile(projectId, filePath) {
-  // Always allow switching to a different file
-  if (currentEditorFile === filePath) return;
+  // Ignore only a true no-op while this exact model is still mounted. If the
+  // user navigated away, the same file must be allowed to restore the editor.
+  var activeEditorHost = $$('#main-content');
+  var activeEditorContainer = $$('#monaco-container');
+  if (currentEditorFile === filePath && currentEditorProjectId === projectId &&
+      !editorModelStale[getEditorModelKey(projectId, filePath)] &&
+      currentEditorIsFileEditor && currentEditorInstance && activeEditorContainer && activeEditorContainer.isConnected &&
+      activeEditorHost && activeEditorHost.classList.contains('editor-active')) return;
 
   // Cancel any pending file load
   fileLoadingId++;
   var myLoadId = fileLoadingId;
   currentEditorFile = filePath;
+  currentEditorProjectId = projectId;
+  currentEditorLanguage = getEditorLanguage(filePath);
 
   // Highlight the active file in the tree
   highlightActiveFileInTree(filePath);
@@ -7787,11 +8241,9 @@ function openProjectFile(projectId, filePath) {
     highlightNav('Editor');
 
     var mc = $('#main-content');
+    mc.classList.remove('editor-active');
     var fileName = filePath.split('/').pop() || filePath;
     var fileIcon = getFileIcon(fileName);
-
-    // Get the actual file path on disk
-    eapi().invoke('read-project-file', { projectId: projectId, filePath: filePath, resolvePath: true }).then(function() {}).catch(function() {});
 
     if (ext === 'pdf') {
       // PDF — auto-open in system viewer, show placeholder in editor
@@ -7812,7 +8264,7 @@ function openProjectFile(projectId, filePath) {
 
       var backBtn = $('#editor-back-btn-pdf');
       if (backBtn) backBtn.addEventListener('click', function() {
-        currentEditorFile = null; highlightActiveFileInTree(null);
+        resetCurrentEditorFile();
         if (searchReturnState) { showView('search'); } else { switchToChatView(); }
       });
 
@@ -7844,7 +8296,7 @@ function openProjectFile(projectId, filePath) {
         '</div></div></div>';
       var backBtn2 = $('#editor-back-btn-img');
       if (backBtn2) backBtn2.addEventListener('click', function() {
-        currentEditorFile = null; highlightActiveFileInTree(null);
+        resetCurrentEditorFile();
         if (searchReturnState) { showView('search'); } else { switchToChatView(); }
       });
       return;
@@ -7865,58 +8317,78 @@ function openProjectFile(projectId, filePath) {
       '</div></div></div>';
     var backBtn3 = $('#editor-back-btn-bin');
     if (backBtn3) backBtn3.addEventListener('click', function() {
-      currentEditorFile = null; highlightActiveFileInTree(null);
+      resetCurrentEditorFile();
       if (searchReturnState) { showView('search'); } else { switchToChatView(); }
     });
     return;
   }
 
-  // Dispose previous editor immediately
-  if (currentEditorInstance) {
-    try { currentEditorInstance.dispose(); } catch {}
-    currentEditorInstance = null;
-  }
-
   highlightNav('Editor');
 
-  // Show loading animation in the editor area
+  // Keep the mounted editor visible while the next file is read. Replacing the
+  // whole view here used to destroy Monaco and made every click pay its full
+  // initialization cost again.
   var mc = $$('#main-content');
   var fileName = filePath.split('/').pop() || filePath;
   var fileIcon = getFileIcon(fileName);
-  mc.innerHTML = '<div style="display:flex;flex-direction:column;height:100%;">' +
-    '<div class="editor-toolbar">' +
-    '<button class="back-btn" id="editor-back-btn-loading">\u2190 Back</button>' +
-    '<span class="editor-file-icon">' + fileIcon + '</span>' +
-    '<span class="editor-file-path">' + escHtml(filePath) + '</span>' +
-    '</div>' +
-    '<div style="flex:1;display:flex;align-items:center;justify-content:center;">' + showThinkingAnimation() + '</div></div>';
-  var backBtn = $$('#editor-back-btn-loading');
-  if (backBtn) backBtn.addEventListener('click', function() {
-    currentEditorFile = null; highlightActiveFileInTree(null);
-    if (searchReturnState) { showView('search'); } else { switchToChatView(); }
-  });
+  var pendingLang = getEditorLanguage(filePath);
+  var mountedEditorContainer = $$('#monaco-container');
+  var canReuseMountedEditor = !!(currentEditorIsFileEditor && currentEditorInstance && mountedEditorContainer && mountedEditorContainer.isConnected);
+
+  mc.classList.add('editor-active');
+  if (canReuseMountedEditor) {
+    updateEditorChrome(filePath, pendingLang, true);
+  } else {
+    if (currentEditorInstance) {
+      try { currentEditorInstance.dispose(); } catch {}
+      currentEditorInstance = null;
+      currentEditorIsFileEditor = false;
+    }
+    mc.innerHTML = '<div class="editor-shell" style="display:flex;flex-direction:column;height:100%;min-width:0;min-height:0;">' +
+      '<div class="editor-toolbar">' +
+      '<button class="back-btn" id="editor-back-btn-loading">\u2190 Back</button>' +
+      '<span class="editor-file-icon">' + fileIcon + '</span>' +
+      '<span class="editor-file-path">' + escHtml(filePath) + '</span>' +
+      '<span class="editor-lang-badge">' + escHtml(pendingLang) + '</span>' +
+      '<div style="flex:1;"></div>' +
+      '<span class="editor-runtime-badge is-loading">Loading Shiki</span>' +
+      '</div>' +
+      '<div class="editor-stage"><div style="height:100%;display:flex;align-items:center;justify-content:center;min-width:0;min-height:0;">' + showThinkingAnimation() + '</div></div>' +
+      '<div class="editor-statusbar"><span class="editor-tokenizer-status">Local syntax engine</span><span class="editor-status-spacer"></span><span>Preparing grammar…</span></div></div>';
+    var backBtn = $$('#editor-back-btn-loading');
+    if (backBtn) backBtn.addEventListener('click', function() {
+      resetCurrentEditorFile();
+      if (searchReturnState) { showView('search'); } else { switchToChatView(); }
+    });
+  }
+
+  var cachedModelKey = getEditorModelKey(projectId, filePath);
+  var cachedModel = editorModelCache[cachedModelKey];
+  if (cachedModel && !editorModelStale[cachedModelKey] && (!cachedModel.isDisposed || !cachedModel.isDisposed())) {
+    currentEditorProjectId = projectId;
+    currentEditorFile = filePath;
+    currentEditorLanguage = pendingLang;
+    createEditor(cachedModel.getValue(), pendingLang, projectId, filePath);
+    return;
+  }
 
   eapi().invoke('read-project-file', { projectId: projectId, filePath: filePath }).then(function(content) {
     // Check if a newer file was requested while we were loading
     if (myLoadId !== fileLoadingId) return;
 
-    var ext = (filePath.split('.').pop() || 'txt').toLowerCase();
-    var langMap = {
-      js: 'javascript', ts: 'typescript', jsx: 'javascript', tsx: 'typescript',
-      py: 'python', json: 'json', md: 'markdown', html: 'html', css: 'css',
-      scss: 'scss', less: 'less', sh: 'shell', bash: 'shell',
-      yml: 'yaml', yaml: 'yaml', xml: 'xml', sql: 'sql',
-      rs: 'rust', go: 'go', java: 'java', rb: 'ruby', php: 'php',
-      swift: 'swift', kt: 'kotlin', cs: 'csharp', cpp: 'cpp', c: 'c',
-      r: 'r', toml: 'ini', env: 'ini', dockerfile: 'dockerfile',
-    };
-    var lang = langMap[ext] || 'plaintext';
-    if (filePath.toLowerCase().endsWith('dockerfile')) lang = 'dockerfile';
-    if (filePath.toLowerCase().endsWith('makefile')) lang = 'makefile';
-    createEditor(content || '', lang, projectId, filePath);
+    if (content && typeof content === 'object' && content.error) {
+      throw new Error(content.error);
+    }
+    var textContent = typeof content === 'string' ? content : '';
+    var lang = getEditorLanguage(filePath);
+    currentEditorProjectId = projectId;
+    currentEditorFile = filePath;
+    currentEditorLanguage = lang;
+    createEditor(textContent, lang, projectId, filePath);
   }).catch(function() {
     if (myLoadId !== fileLoadingId) return;
-    currentEditorFile = null;
+    resetCurrentEditorFile();
+    updateEditorChrome(filePath, getEditorLanguage(filePath), false);
     addMsg('assistant', 'Failed to open file: ' + filePath, { label: 'System' });
   });
 }
@@ -7925,37 +8397,64 @@ function createEditor(content, lang, projectId, filePath) {
   var mc = $$('#main-content');
   var fileName = filePath.split('/').pop() || filePath;
   var fileIcon = getFileIcon(fileName);
-  mc.innerHTML = '<div style="display:flex;flex-direction:column;height:100%;">' +
+  var monacoTheme = getCurrentTheme();
+  var editorTheme = getMonacoThemeName(monacoTheme);
+
+  currentEditorProjectId = projectId;
+  currentEditorFile = filePath;
+  currentEditorLanguage = lang;
+  mc.classList.add('editor-active');
+
+  // Fast path: reuse the mounted Monaco instance and switch to a cached,
+  // language-aware model instead of reconstructing the editor DOM.
+  var mountedContainer = $$('#monaco-container');
+  if (currentEditorIsFileEditor && currentEditorInstance && mountedContainer && mountedContainer.isConnected && window.monaco) {
+    var nextModel = getEditorModel(projectId, filePath, content, lang);
+    if (nextModel) currentEditorInstance.setModel(nextModel);
+    window.monaco.editor.setTheme(editorTheme);
+    updateEditorChrome(filePath, lang, false);
+    currentEditorInstance.layout();
+    currentEditorInstance.focus();
+    return;
+  }
+
+  mc.innerHTML = '<div class="editor-shell" style="display:flex;flex-direction:column;height:100%;min-width:0;min-height:0;">' +
     '<div class="editor-toolbar">' +
     '<button class="back-btn" id="editor-back-btn">\u2190 Back</button>' +
     '<span class="editor-file-icon">' + fileIcon + '</span>' +
     '<span class="editor-file-path">' + escHtml(filePath) + '</span>' +
     '<span class="editor-lang-badge">' + escHtml(lang) + '</span>' +
     '<div style="flex:1;"></div>' +
-    '<button class="setting-btn" id="editor-save-btn">\ud83d\udcbe Save</button>' +
-    '<span id="editor-save-status" style="font-size:12px;color:var(--green);margin-left:8px;"></span>' +
+    '<span class="editor-runtime-badge" id="editor-runtime-badge">Shiki Local</span>' +
+    '<button class="setting-btn" id="editor-save-btn">Save</button>' +
+    '<span id="editor-save-status"></span>' +
     '</div>' +
-    '<div id="monaco-container" style="flex:1;min-height:0;"></div></div>';
+    '<div class="editor-stage"><div id="monaco-container"></div></div>' +
+    '<div class="editor-statusbar">' +
+    '<span class="editor-tokenizer-status" id="editor-tokenizer-status">Shiki · TextMate</span>' +
+    '<span class="editor-status-spacer"></span>' +
+    '<span id="editor-cursor-position">Ln 1, Col 1</span>' +
+    '<span id="editor-indent-status">Spaces: 2</span>' +
+    '<span>UTF-8</span><span>LF</span>' +
+    '</div></div>';
 
   $$('#editor-back-btn').addEventListener('click', function() {
     if (currentEditorInstance) { try { currentEditorInstance.dispose(); } catch {} currentEditorInstance = null; }
-    currentEditorFile = null;
+    resetCurrentEditorFile();
     if (searchReturnState) { showView('search'); } else { switchToChatView(); }
   });
-
-  var monacoTheme = getCurrentTheme();
-  var editorTheme = (monacoTheme === 'light' || monacoTheme === 'sepia') ? 'neuronest-light' : 'neuronest-dark';
 
   function createMonacoEditor() {
     if (!window.monaco) return false;
     var container = $$('#monaco-container');
     if (!container) return false;
     console.log('[NeuroNest] Creating Monaco editor for:', filePath);
-    // Dispose previous editor instance
+    // Dispose only a stale editor whose host was replaced by another view.
     if (currentEditorInstance) { try { currentEditorInstance.dispose(); } catch {} }
+    var model = getEditorModel(projectId, filePath, content, lang);
+    if (!model) return false;
     var editor = window.monaco.editor.create(container, {
-      value: content,
-      language: lang,
+      model: model,
       theme: editorTheme,
       automaticLayout: true,
 
@@ -7963,7 +8462,8 @@ function createEditor(content, lang, projectId, filePath) {
       minimap: { enabled: minimapEnabled, maxColumn: 80, renderCharacters: false, showSlider: 'always', side: 'right', size: 'proportional', scale: 1 },
 
       // Font
-      fontSize: 13,
+      fontSize: 14,
+      lineHeight: 22,
       fontFamily: "'SF Mono', 'Menlo', 'Consolas', 'Courier New', monospace",
       fontLigatures: true,
 
@@ -7979,7 +8479,16 @@ function createEditor(content, lang, projectId, filePath) {
       smoothScrolling: true,
       mouseWheelScrollSensitivity: 1.5,
       fastScrollSensitivity: 5,
-      scrollbar: { verticalScrollbarSize: 10, horizontalScrollbarSize: 10, useShadows: true, verticalHasArrows: false },
+      scrollbar: {
+        vertical: 'visible',
+        horizontal: 'visible',
+        verticalScrollbarSize: 12,
+        horizontalScrollbarSize: 12,
+        useShadows: true,
+        verticalHasArrows: false,
+        horizontalHasArrows: false,
+        alwaysConsumeMouseWheel: false
+      },
 
       // Brackets
       bracketPairColorization: { enabled: true, independentColorPoolPerBracketType: true },
@@ -7991,9 +8500,9 @@ function createEditor(content, lang, projectId, filePath) {
       detectIndentation: true,
       autoIndent: 'full',
 
-      // Word wrap
-      wordWrap: 'on',
-      wrappingIndent: 'indent',
+      // Preserve source lines and expose horizontal scrolling for long code.
+      wordWrap: 'off',
+      wrappingIndent: 'none',
 
       // Cursor
       cursorBlinking: 'smooth',
@@ -8046,18 +8555,42 @@ function createEditor(content, lang, projectId, filePath) {
 
     // Cmd+S to save
     editor.addCommand(window.monaco.KeyMod.CtrlCmd | window.monaco.KeyCode.KeyS, function() {
-      eapi().send('save-project-file', { projectId: projectId, filePath: filePath, content: editor.getValue() });
+      eapi().send('save-project-file', { projectId: currentEditorProjectId, filePath: currentEditorFile, content: editor.getValue() });
+      markEditorModelSaved(currentEditorProjectId, currentEditorFile);
       var st = $$('#editor-save-status');
       if (st) { st.textContent = 'Saved \u2713'; setTimeout(function() { st.textContent = ''; }, 2000); }
     });
 
     $$('#editor-save-btn').addEventListener('click', function() {
-      eapi().send('save-project-file', { projectId: projectId, filePath: filePath, content: editor.getValue() });
+      eapi().send('save-project-file', { projectId: currentEditorProjectId, filePath: currentEditorFile, content: editor.getValue() });
+      markEditorModelSaved(currentEditorProjectId, currentEditorFile);
       var st = $$('#editor-save-status');
       if (st) { st.textContent = 'Saved \u2713'; setTimeout(function() { st.textContent = ''; }, 2000); }
     });
 
     currentEditorInstance = editor;
+    currentEditorIsFileEditor = true;
+
+    function updateEditorStatusbar() {
+      var position = editor.getPosition();
+      var cursorStatus = $$('#editor-cursor-position');
+      var indentStatus = $$('#editor-indent-status');
+      var tokenizerStatus = $$('#editor-tokenizer-status');
+      var model = editor.getModel();
+      var options = model && model.getOptions ? model.getOptions() : null;
+      if (cursorStatus && position) cursorStatus.textContent = 'Ln ' + position.lineNumber + ', Col ' + position.column;
+      if (indentStatus && options) indentStatus.textContent = (options.insertSpaces ? 'Spaces: ' : 'Tab Size: ') + options.tabSize;
+      if (tokenizerStatus) tokenizerStatus.textContent = 'Shiki · ' + currentEditorLanguage;
+    }
+    editor.onDidChangeCursorPosition(updateEditorStatusbar);
+    editor.onDidChangeModel(updateEditorStatusbar);
+    editor.onDidChangeModelContent(function() {
+      var key = getEditorModelKey(currentEditorProjectId, currentEditorFile);
+      if (editorModelRefreshing[key]) return;
+      var status = $$('#editor-save-status');
+      if (status) status.textContent = 'Modified';
+    });
+    updateEditorStatusbar();
 
     // Add AI context menu actions
     if (window.monaco) {
@@ -8084,8 +8617,8 @@ function createEditor(content, lang, projectId, filePath) {
               eapi().invoke('code-action:build', {
                 action: act.action,
                 code: selectedText,
-                language: lang,
-                filePath: filePath,
+                language: currentEditorLanguage,
+                filePath: currentEditorFile,
                 lineStart: selection ? selection.startLineNumber : 1,
                 lineEnd: selection ? selection.endLineNumber : undefined,
               }).then(function(res) {
@@ -8102,11 +8635,22 @@ function createEditor(content, lang, projectId, filePath) {
     return true;
   }
 
-  function createFallbackEditor() {
+  function createFallbackEditor(error) {
     var container = $$('#monaco-container');
     if (!container) return;
     console.log('[NeuroNest] Using fallback textarea editor');
-    container.style.cssText = 'display:flex;flex:1;min-height:0;overflow:hidden;';
+    var runtimeBadge = $$('#editor-runtime-badge');
+    var tokenizerStatus = $$('#editor-tokenizer-status');
+    if (runtimeBadge) {
+      runtimeBadge.classList.add('is-fallback');
+      runtimeBadge.textContent = 'Highlighting Failed';
+      runtimeBadge.title = String(error || window.monacoInitializationError || 'Monaco initialization failed');
+    }
+    if (tokenizerStatus) {
+      tokenizerStatus.classList.add('is-fallback');
+      tokenizerStatus.textContent = 'Syntax engine unavailable';
+    }
+    container.style.cssText = 'display:flex;position:absolute;inset:0;min-width:0;min-height:0;overflow:hidden;';
     var lineNums = document.createElement('div');
     lineNums.className = 'editor-line-numbers';
     var ta = document.createElement('textarea');
@@ -8127,26 +8671,37 @@ function createEditor(content, lang, projectId, filePath) {
     container.appendChild(lineNums);
     container.appendChild(ta);
 
-    $$('#editor-save-btn').addEventListener('click', function() {
+    function saveFallbackEditor() {
       eapi().send('save-project-file', { projectId: projectId, filePath: filePath, content: ta.value });
       var st = $$('#editor-save-status');
       if (st) { st.textContent = 'Saved \u2713'; setTimeout(function() { st.textContent = ''; }, 2000); }
+    }
+    ta.addEventListener('keydown', function(event) {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
+        event.preventDefault();
+        saveFallbackEditor();
+      }
     });
+    $$('#editor-save-btn').addEventListener('click', saveFallbackEditor);
   }
 
-  // Try Monaco immediately, retry up to 2s, then fallback
+  // Monaco initialization is asynchronous. Wait for the loader's explicit
+  // readiness promise instead of polling for five seconds and incorrectly
+  // falling back during a normal startup race.
   if (!createMonacoEditor()) {
-    var attempts = 0;
-    var timer = setInterval(function() {
-      attempts++;
-      if (createMonacoEditor()) {
-        clearInterval(timer);
-      } else if (attempts >= 50) {
-        clearInterval(timer);
-        console.warn('[NeuroNest] Monaco not available after 5s, using fallback');
-        createFallbackEditor();
-      }
-    }, 100);
+    if (window.monacoReady && typeof window.monacoReady.then === 'function') {
+      window.monacoReady.then(function() {
+        if (currentEditorFile !== filePath || currentEditorProjectId !== projectId) return;
+        if (!createMonacoEditor()) createFallbackEditor(window.monacoInitializationError);
+      }).catch(function(err) {
+        if (currentEditorFile !== filePath || currentEditorProjectId !== projectId) return;
+        console.error('[NeuroNest] Monaco failed to initialize:', err);
+        createFallbackEditor(err);
+      });
+    } else {
+      console.error('[NeuroNest] Monaco readiness promise is unavailable');
+      createFallbackEditor(window.monacoInitializationError || new Error('Monaco readiness promise is unavailable'));
+    }
   }
 }
 
@@ -8827,6 +9382,7 @@ function showView(view) {
   
   currentDepartment = null; // Clear navigation state when switching views
   var mc = $$('#main-content');
+  if (view !== 'editor' && mc) mc.classList.remove('editor-active');
   if (view === 'chat') {
     if (!activeProjectId) {
       showThemedToast('Please select or create a project first', 'info');
@@ -9488,22 +10044,73 @@ function highlightMatch(text, query) {
 
 function showEditorView() {
   var mc = $$('#main-content');
-  mc.innerHTML = '<div style="display:flex;flex-direction:column;height:100%;">' +
-    '<div class="editor-toolbar"><span class="editor-file-icon">📝</span><span class="editor-file-path">Editor — open a file from the project tree</span></div>' +
-    '<div id="monaco-container" style="flex:1;min-height:0;"></div></div>';
-  if (window.monaco) {
-    window.monaco.editor.create($$('#monaco-container'), {
-      value: '// Open a file from the project tree to start editing\n// Select a project, expand its file tree, and click any file\n',
+  mc.classList.add('editor-active');
+  if (currentEditorInstance) {
+    try { currentEditorInstance.dispose(); } catch {}
+    currentEditorInstance = null;
+  }
+  resetCurrentEditorFile();
+  mc.innerHTML = '<div class="editor-shell" style="display:flex;flex-direction:column;height:100%;min-width:0;min-height:0;">' +
+    '<div class="editor-toolbar">' +
+    '<span class="editor-file-icon">◇</span>' +
+    '<span class="editor-file-path">NeuroNest Editor</span>' +
+    '<span class="editor-lang-badge">JavaScript</span>' +
+    '<div style="flex:1;"></div>' +
+    '<span class="editor-runtime-badge is-loading" id="editor-runtime-badge">Loading Shiki</span>' +
+    '</div>' +
+    '<div class="editor-stage"><div id="monaco-container"></div></div>' +
+    '<div class="editor-statusbar"><span class="editor-tokenizer-status" id="editor-tokenizer-status">Preparing local syntax engine…</span><span class="editor-status-spacer"></span><span>Open a project file to edit</span><span>UTF-8</span></div>' +
+    '</div>';
+
+  function createWelcomeMonaco() {
+    var container = $$('#monaco-container');
+    if (!window.monaco || !container || !container.isConnected) return false;
+    currentEditorInstance = window.monaco.editor.create(container, {
+      value: [
+        '/** Local Shiki highlighting is ready. */',
+        'const workspace = await NeuroNest.openProject({',
+        "  mode: 'agentic',",
+        '  offline: true,',
+        '});',
+        '',
+        "workspace.on('file:open', ({ path, language }) => {",
+        '  console.log(`Editing ${path} with ${language}`);',
+        '});',
+      ].join('\n'),
       language: 'javascript',
-      theme: document.body.classList.contains('theme-light') ? 'neuronest-light' : 'neuronest-dark',
+      theme: getMonacoThemeName(getCurrentTheme()),
       automaticLayout: true,
       minimap: { enabled: false },
-      fontSize: 13,
+      fontSize: 14,
+      lineHeight: 22,
       fontFamily: "'SF Mono', 'Menlo', 'Consolas', monospace",
+      fontLigatures: true,
       readOnly: true,
       lineNumbers: 'on',
-      renderLineHighlight: 'line',
-      padding: { top: 12 },
+      renderLineHighlight: 'all',
+      bracketPairColorization: { enabled: true },
+      guides: { indentation: true, bracketPairs: true },
+      padding: { top: 18, bottom: 18 },
+      scrollbar: { vertical: 'visible', horizontal: 'visible', verticalScrollbarSize: 12, horizontalScrollbarSize: 12 },
+      wordWrap: 'off',
+    });
+    var badge = $$('#editor-runtime-badge');
+    var tokenizer = $$('#editor-tokenizer-status');
+    if (badge) { badge.classList.remove('is-loading'); badge.textContent = 'Shiki Local'; }
+    if (tokenizer) tokenizer.textContent = 'Shiki · JavaScript';
+    return true;
+  }
+
+  if (!createWelcomeMonaco() && window.monacoReady && typeof window.monacoReady.then === 'function') {
+    window.monacoReady.then(function() {
+      if ($$('#main-content') !== mc || !mc.classList.contains('editor-active') || currentEditorFile !== null) return;
+      createWelcomeMonaco();
+    }).catch(function(error) {
+      console.error('[NeuroNest] Welcome editor failed to initialize:', error);
+      var badge = $$('#editor-runtime-badge');
+      var tokenizer = $$('#editor-tokenizer-status');
+      if (badge) { badge.classList.remove('is-loading'); badge.classList.add('is-fallback'); badge.textContent = 'Highlighting Failed'; badge.title = String(error || window.monacoInitializationError || 'Monaco initialization failed'); }
+      if (tokenizer) { tokenizer.classList.add('is-fallback'); tokenizer.textContent = 'Syntax engine unavailable'; }
     });
   }
 }
@@ -20893,6 +21500,18 @@ function setupSidebar() {
 
 var ALL_THEMES = ['dark', 'light', 'midnight', 'sepia', 'terminal', 'zen'];
 
+function getMonacoThemeName(theme) {
+  var themeMap = {
+    dark: 'neuronest-dark',
+    light: 'neuronest-light',
+    midnight: 'neuronest-midnight',
+    sepia: 'neuronest-sepia',
+    terminal: 'neuronest-terminal',
+    zen: 'neuronest-zen',
+  };
+  return themeMap[theme] || themeMap.dark;
+}
+
 function applyTheme(theme) {
   // Remove all theme classes
   for (var i = 0; i < ALL_THEMES.length; i++) {
@@ -20908,8 +21527,7 @@ function applyTheme(theme) {
 
   // Update Monaco editor theme if it's active
   if (window.monaco) {
-    var monacoTheme = (theme === 'light' || theme === 'sepia' || theme === 'zen') ? 'neuronest-light' : 'neuronest-dark';
-    window.monaco.editor.setTheme(monacoTheme);
+    window.monaco.editor.setTheme(getMonacoThemeName(theme));
   }
 }
 

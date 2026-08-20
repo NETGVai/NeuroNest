@@ -170,6 +170,13 @@ export class ToolSystem {
    *   - 'ask'   → route to existing approval flow via approvalHandler
    */
   async execute(toolId: string, input: unknown, context: ToolContext): Promise<ToolResult> {
+    const cancelled = (): ToolResult => ({
+      success: false,
+      output: null,
+      error: 'Tool execution aborted by user',
+    });
+    if (context.signal?.aborted) return cancelled();
+
     const tool = this.tools.get(toolId);
     if (!tool) {
       return { success: false, output: null, error: `Tool not found: ${toolId}` };
@@ -187,6 +194,7 @@ export class ToolSystem {
       ...context,
       riskLevel: tool.definition.riskLevel,
     });
+    if (context.signal?.aborted) return cancelled();
 
     // Handle decision verdicts
     switch (decision.verdict) {
@@ -204,6 +212,7 @@ export class ToolSystem {
           const approved = await context.approvalHandler(
             `${promptContext.toolName}: ${promptContext.reason}`,
           );
+          if (context.signal?.aborted) return cancelled();
           if (!approved) {
             return {
               success: false,
@@ -233,9 +242,11 @@ export class ToolSystem {
     // Lazy load if needed
     if (!tool.loaded && tool.loader) {
       tool.execute = await tool.loader();
+      if (context.signal?.aborted) return cancelled();
       tool.loaded = true;
     }
 
+    if (context.signal?.aborted) return cancelled();
     if (!tool.execute) {
       return { success: false, output: null, error: `Tool has no execute function: ${toolId}` };
     }

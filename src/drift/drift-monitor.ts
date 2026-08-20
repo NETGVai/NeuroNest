@@ -68,6 +68,10 @@ export interface ScopeCheckResult {
 export interface DriftDashboardState {
   active: boolean;
   confidence: number;
+  thresholds: {
+    warning: number;
+    critical: number;
+  };
   signals: DriftSignal[];
   scope: {
     toolsUsed: number;
@@ -149,6 +153,7 @@ export class DriftMonitor {
     this.toolsUsed = new Set();
     this.pathsModified = new Set();
     this.lastIteration = 0;
+    this.active = true;
     this.initialized = true;
 
     this.dedup = {
@@ -293,14 +298,30 @@ export class DriftMonitor {
   }
 
   /**
-   * Record a tool execution result. Updates consecutive failure tracking.
+   * Record a tool execution result. Tool scope and generic execution outcomes
+   * share the same consecutive-failure component of the confidence model.
    */
   recordToolResult(_toolName: string, success: boolean): void {
+    this.recordOutcome(success);
+  }
+
+  /** Record a truthful non-tool execution outcome (phase, task, or agent). */
+  recordOutcome(success: boolean): void {
+    if (!this.initialized || !this.active) return;
     if (success) {
       this.consecutiveFailures = 0;
     } else {
       this.consecutiveFailures += 1;
     }
+  }
+
+  /**
+   * Stop monitoring and return an immutable final dashboard snapshot.
+   * Idempotent so abort, error, and normal-completion paths can converge.
+   */
+  stop(): DriftDashboardState {
+    this.active = false;
+    return this.getState();
   }
 
   /**
@@ -351,6 +372,10 @@ export class DriftMonitor {
       return {
         active: false,
         confidence: 1.0,
+        thresholds: {
+          warning: this.params.warningThreshold,
+          critical: this.params.criticalThreshold,
+        },
         signals: [],
         scope: {
           toolsUsed: 0,
@@ -369,6 +394,10 @@ export class DriftMonitor {
     return {
       active: this.active,
       confidence: this.currentConfidence,
+      thresholds: {
+        warning: this.params.warningThreshold,
+        critical: this.params.criticalThreshold,
+      },
       signals: [...this.emittedSignals],
       scope: {
         toolsUsed: this.toolsUsed.size,

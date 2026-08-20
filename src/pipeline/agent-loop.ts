@@ -25,7 +25,7 @@ import type { ExecutionTraceService } from '../infrastructure/execution-trace-se
 import type { ArtifactService } from '../artifacts/artifact-service.js';
 import type { VisionAnalyzerService } from '../vision/vision-analyzer-service.js';
 import { FeatureError } from '../shared/feature-integration-errors.js';
-import { DriftMonitor } from '../drift/drift-monitor.js';
+import { DriftMonitor, type DriftDashboardState } from '../drift/drift-monitor.js';
 import type { DriftConfig } from '../drift/drift-config.js';
 import { FeatureGateSystem } from '../feature-gate/feature-gate-system.js';
 import type { FeatureGateFlags } from '../feature-gate/feature-gate-config.js';
@@ -176,6 +176,15 @@ export interface AutoTunerResult {
 }
 
 /** Configuration for the Agent Loop Controller */
+export interface AgentLoopToolObservation {
+  toolName: string;
+  input?: unknown;
+  filePath?: string;
+  success: boolean;
+  blocked: boolean;
+  error?: string;
+}
+
 export interface AgentLoopConfig {
   llmClient: AgentLLMClient;
   toolSystem: ToolSystem;
@@ -199,8 +208,22 @@ export interface AgentLoopConfig {
   callbackEngine?: CallbackEngineEmitter;
   /** Optional IPC send function for communicating with the renderer process */
   ipcSend?: (channel: string, data: unknown) => void;
+  /** Identity used for authorization and audit context. Defaults to `agent-loop`. */
+  agentId?: string;
+  /** Appended to the normal AgentLoop system prompt to specialize a delegated worker. */
+  systemPromptPrefix?: string;
+  /** Disables the global phased-pipeline branch for bounded delegated workers. */
+  phasedExecutionEnabled?: boolean;
+  /** Scope divergence was already evaluated by the parent turn before delegation. */
+  scopePreflightCompleted?: boolean;
+  /** Cooperative cancellation propagated from the owning coordinator. */
+  signal?: AbortSignal;
+  /** Receives one normalized observation for every terminal tool-call outcome. */
+  onToolObservation?: (observation: AgentLoopToolObservation) => void | Promise<void>;
   /** Optional drift management configuration (all drift features are opt-in) */
   driftConfig?: DriftConfig;
+  /** Optional callback invoked once after an execution result is finalized. */
+  onRunComplete?: (completion: AgentLoopCompletion) => void | Promise<void>;
   /** Optional Superagent configuration — enables feature gate system and subsystems (Req 0.1-0.6) */
   superagentConfig?: SuperagentConfig;
   onProgress?: (update: LoopProgress) => void;
@@ -211,6 +234,8 @@ export interface AgentLoopConfig {
   minMaxIterations?: number;
   /** Enable action-first re-prompting when LLM produces text-only responses (Req 2.3, 2.5) */
   actionFirstEnabled?: boolean;
+  /** Re-prompt any pre-tool text response; intended for bounded delegated coding workers. */
+  requireToolUsageBeforeFinalResponse?: boolean;
   /** Maximum re-prompt attempts for text-only responses before accepting. Default: 3 (Req 2.3) */
   maxRePromptAttempts?: number;
   /** Steering file content to prepend before instructions (Req 16.4) */
@@ -254,10 +279,26 @@ export interface AgentLoopResult {
   driftConfidence?: number;
   /** Count of drift signals emitted during execution */
   driftSignalCount?: number;
+  /** Count of successful tool outcomes recorded during this run. */
+  toolSuccessCount?: number;
+  /** Count of failed or policy-blocked tool outcomes recorded during this run. */
+  toolFailureCount?: number;
   /** Indicates the task was not fully completed (max iterations reached). (Req 1.3) */
   incomplete?: boolean;
+  /** Indicates execution was cooperatively cancelled by its owner. */
+  aborted?: boolean;
   /** Summary of work performed when task is incomplete. (Req 1.3) */
   workSummary?: string;
+}
+
+export interface AgentLoopCompletion {
+  projectId: string;
+  sessionId: string;
+  status: 'completed' | 'incomplete' | 'failed';
+  startedAt: Date;
+  completedAt: Date;
+  result: AgentLoopResult;
+  driftState: DriftDashboardState | null;
 }
 
 /** OpenAI-compatible tool call structure in LLM responses */
@@ -715,6 +756,15 @@ export class AgentLoopController {
   private wasmSandbox: WasmSandbox | null = null;
   /** Overwrite gate config — null when protection is not configured (Req 2.1, 4.1) */
   private overwriteGateConfig: OverwriteGateConfig | null = null;
+  /** Per-run outcome counters persisted by the completion callback. */
+  private runToolSuccessCount = 0;
+  private runToolFailureCount = 0;
+  /** Final drift state captured for persistence after every execution mode. */
+  private completedDriftState: DriftDashboardState | null = null;
+  /** Run-scoped monitor shared by phased, plan, and iterative execution. */
+  private runDriftMonitor: DriftMonitor | null = null;
+  /** Auto-tuning is resolved once at the run boundary and reused by each mode. */
+  private runAutoTuningResult: AutoTunerResult | null = null;
   /** Browser automation — null when browser_automation feature gate is disabled (Req 29.1, 29.6) */
   private browserAutomation: BrowserAutomation | null = null;
   /** Backpropagation engine — null when backpropagation feature gate is disabled (Req 30.1, 30.6) */
@@ -1725,33 +1775,231 @@ export class AgentLoopController {
    * Otherwise iterates until the LLM produces a final response with no tool calls,
    * or maxIterations is reached.
    */
+  private isAborted(): boolean {
+    return this.config.signal?.aborted === true;
+  }
+
+  private createAbortedResult(overrides: Partial<AgentLoopResult> = {}): AgentLoopResult {
+    return {
+      response: 'Execution aborted by user.',
+      toolCallsExecuted: this.runToolSuccessCount + this.runToolFailureCount,
+      iterations: 0,
+      tokenUsage: { promptTokens: 0, completionTokens: 0, totalTokens: 0, estimatedCost: 0 },
+      filesModified: [],
+      ...overrides,
+      incomplete: true,
+      aborted: true,
+    };
+  }
+
+  private resolveSystemPrompt(basePrompt: string): string {
+    const workerPrompt = this.config.systemPromptPrefix?.trim();
+    return workerPrompt
+      ? `${basePrompt}\n\n## Swarm Worker Assignment\n${workerPrompt}`
+      : basePrompt;
+  }
+
+  private getObservedPath(input: unknown): string | undefined {
+    if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined;
+    const candidate = (input as Record<string, unknown>).path;
+    return typeof candidate === 'string' && candidate.trim() ? candidate : undefined;
+  }
+
+  private async reportToolObservation(
+    toolName: string,
+    input: unknown,
+    result: Pick<ToolResult, 'success' | 'error'>,
+    blocked = false,
+  ): Promise<void> {
+    if (!this.config.onToolObservation) return;
+    try {
+      await this.config.onToolObservation({
+        toolName,
+        input,
+        filePath: this.getObservedPath(input),
+        success: result.success,
+        blocked,
+        error: result.error,
+      });
+    } catch (error) {
+      console.warn('[AgentLoopController] Tool observation callback failed:', error);
+    }
+  }
+
   async run(message: string): Promise<AgentLoopResult> {
     const { planMode, onPlanReady } = this.config;
+    const startedAt = new Date();
+    this.runToolSuccessCount = 0;
+    this.runToolFailureCount = 0;
+    this.completedDriftState = null;
+    this.runDriftMonitor = null;
+    this.runAutoTuningResult = await this.resolveAutoTuning(message);
 
-    // ─── PHASED_EXECUTION flag gate (Requirements 9.2, 9.3, 9.6, 12.4) ───
-    // When PHASED_EXECUTION is enabled, route through PhasedPipeline.
-    // When disabled (default: false), run the unchanged single-pass loop.
-    if (PERF_FLAGS.PHASED_EXECUTION) {
-      try {
-        return await this.runPhasedPipeline(message);
-      } catch (phasedError: unknown) {
-        // R9.6: On PhasedPipeline failure, fall back to single-pass loop,
-        // surface error identifying the failure, and preserve request state.
-        const errorMessage = phasedError instanceof Error
-          ? phasedError.message
-          : String(phasedError);
-        console.error(
-          `[AgentLoopController] PhasedPipeline failed, falling back to single-pass loop: ${errorMessage}`,
-        );
-        // Fall through to the existing single-pass loop below
+    await this.initializeRunDriftMonitor(message);
+
+    try {
+      let result: AgentLoopResult | null = this.isAborted()
+        ? this.createAbortedResult({ autoTuning: this.runAutoTuningResult ?? undefined })
+        : null;
+
+      // ─── PHASED_EXECUTION flag gate (Requirements 9.2, 9.3, 9.6, 12.4) ───
+      // Drift ownership is outside this gate so phased and fallback execution
+      // share one intent anchor and one project-scoped monitor.
+      if (!result && PERF_FLAGS.PHASED_EXECUTION && this.config.phasedExecutionEnabled !== false) {
+        try {
+          result = await this.runPhasedPipeline(message);
+          if (this.isAborted()) result = this.createAbortedResult(result);
+        } catch (phasedError: unknown) {
+          if (this.isAborted()) {
+            result = this.createAbortedResult();
+          } else {
+          const errorMessage = phasedError instanceof Error
+            ? phasedError.message
+            : String(phasedError);
+          console.error(
+            `[AgentLoopController] PhasedPipeline failed, falling back to single-pass loop: ${errorMessage}`,
+          );
+          }
+        }
       }
-    }
 
-    if (planMode && onPlanReady) {
-      return this.runPlanMode(message);
-    }
+      if (!result) {
+        result = planMode && onPlanReady
+          ? await this.runPlanMode(message)
+          : await this.runStandardLoop(message);
+      }
 
-    return this.runStandardLoop(message);
+      const completedResult: AgentLoopResult = {
+        ...result,
+        toolSuccessCount: this.runToolSuccessCount,
+        toolFailureCount: this.runToolFailureCount,
+      };
+      const status: AgentLoopCompletion['status'] = completedResult.incomplete
+        ? 'incomplete'
+        : completedResult.response.startsWith('Error calling LLM:')
+          ? 'failed'
+          : 'completed';
+
+      this.finalizeRunDriftMonitor();
+      await this.notifyRunComplete(startedAt, status, completedResult);
+      return completedResult;
+    } catch (error) {
+      this.finalizeRunDriftMonitor();
+      if (this.isAborted()) {
+        const abortedResult = this.createAbortedResult();
+        await this.notifyRunComplete(startedAt, 'incomplete', abortedResult);
+        return abortedResult;
+      }
+      const failedResult: AgentLoopResult = {
+        response: `Error calling LLM: ${error instanceof Error ? error.message : String(error)}`,
+        toolCallsExecuted: this.runToolSuccessCount + this.runToolFailureCount,
+        iterations: 0,
+        tokenUsage: { promptTokens: 0, completionTokens: 0, totalTokens: 0, estimatedCost: 0 },
+        filesModified: [],
+        toolSuccessCount: this.runToolSuccessCount,
+        toolFailureCount: this.runToolFailureCount,
+      };
+      await this.notifyRunComplete(startedAt, 'failed', failedResult);
+      throw error;
+    } finally {
+      this.clearRunDriftContext();
+    }
+  }
+
+  private async initializeRunDriftMonitor(message: string): Promise<void> {
+    if (!this.config.driftConfig?.enabled) return;
+
+    try {
+      const registeredToolNames = this.config.toolSystem.list().map((tool: ToolDefinition) => tool.id);
+      const monitor = new DriftMonitor(this.config.driftConfig, {
+        callbackEngine: (this.config.callbackEngine as CallbackEngine | undefined) ?? null,
+        ipcSend: this.config.ipcSend,
+        registeredTools: registeredToolNames,
+      });
+      monitor.initialize(
+        this.runAutoTuningResult?.classification ?? { type: 'code-generation', confidence: 0.0 },
+        message,
+      );
+      this.runDriftMonitor = monitor;
+      (global as any).__activeDriftMonitor = monitor;
+      (global as any).__activeDriftMonitorContext = {
+        monitor,
+        projectId: this.config.sessionId,
+        sessionId: this.config.sessionId,
+        projectDir: this.config.projectDir,
+      };
+      this.config.ipcSend?.('drift:state-update', {
+        ...monitor.getState(),
+        projectId: this.config.sessionId,
+        message: 'Drift management active — monitoring task focus and scope boundaries',
+      });
+    } catch (error) {
+      this.runDriftMonitor = null;
+      console.warn('[DriftMonitor] Initialization failed:', error);
+    }
+  }
+
+  private evaluateRunDriftMonitor(checkpoint: number, startedAtMs: number, outcome?: boolean): void {
+    const monitor = this.runDriftMonitor;
+    if (!monitor?.isActive()) return;
+    try {
+      if (outcome !== undefined) monitor.recordOutcome(outcome);
+      monitor.evaluateConfidence(Math.max(1, checkpoint), Math.max(0, Date.now() - startedAtMs));
+      this.config.ipcSend?.('drift:state-update', {
+        ...monitor.getState(),
+        projectId: this.config.sessionId,
+      });
+    } catch (error) {
+      console.warn('[DriftMonitor] Evaluation failed:', error);
+    }
+  }
+
+  private finalizeRunDriftMonitor(): void {
+    if (!this.runDriftMonitor || this.completedDriftState) return;
+    try {
+      this.completedDriftState = this.runDriftMonitor.stop();
+      this.config.ipcSend?.('drift:state-update', {
+        ...this.completedDriftState,
+        completed: true,
+        projectId: this.config.sessionId,
+      });
+    } catch (error) {
+      console.warn('[DriftMonitor] Finalization failed:', error);
+      this.completedDriftState = null;
+    }
+  }
+
+  private clearRunDriftContext(): void {
+    const monitor = this.runDriftMonitor;
+    const activeContext = (global as any).__activeDriftMonitorContext;
+    if (activeContext?.monitor === monitor) {
+      (global as any).__activeDriftMonitorContext = null;
+      (global as any).__activeDriftMonitor = null;
+    } else if ((global as any).__activeDriftMonitor === monitor) {
+      (global as any).__activeDriftMonitor = null;
+    }
+    this.runDriftMonitor = null;
+  }
+
+  private async notifyRunComplete(
+    startedAt: Date,
+    status: AgentLoopCompletion['status'],
+    result: AgentLoopResult,
+  ): Promise<void> {
+    if (!this.config.onRunComplete) return;
+    try {
+      await this.config.onRunComplete({
+        projectId: this.config.sessionId,
+        sessionId: this.config.sessionId,
+        status,
+        startedAt,
+        completedAt: new Date(),
+        result,
+        driftState: this.completedDriftState,
+      });
+    } catch (error) {
+      console.warn('[AgentLoopController] Failed to persist completed run metrics:', error);
+    }
   }
 
   /**
@@ -1835,7 +2083,15 @@ export class AgentLoopController {
       roleLoader,
     });
 
+    const phasedStartedAt = Date.now();
     const result: PipelineRunResult = await pipeline.execute(task, context);
+
+    // Quality-gate outcomes are the phased pipeline's truthful execution
+    // checkpoints. They affect consecutive-failure confidence without being
+    // mislabeled as tool calls.
+    for (let index = 0; index < result.phaseResults.length; index++) {
+      this.evaluateRunDriftMonitor(index + 1, phasedStartedAt, result.phaseResults[index].gateResult.passed);
+    }
 
     if (!result.success) {
       // Pipeline completed but phases failed — this is a pipeline-level failure.
@@ -1876,7 +2132,7 @@ export class AgentLoopController {
     const rulesContent = aiRules?.content ?? undefined;
 
     // ─── AutoTuner: classify task and resolve parameters (Req 16.1-16.4) ───
-    const autoTuningResult = await this.resolveAutoTuning(message);
+    const autoTuningResult = this.runAutoTuningResult;
     const llmOptions = autoTuningResult
       ? { temperature: autoTuningResult.recommendedParams.temperature, maxTokens: autoTuningResult.recommendedParams.maxTokens }
       : undefined;
@@ -1887,7 +2143,7 @@ export class AgentLoopController {
     // is false, so the entire scope detection block is skipped — absolute guarantee
     // that no scope warnings appear. Overwrite_Gate checks are deferred to executePlan.
     const planProtectionSettings = parseOverwriteProtectionConfig(rulesContent ?? null);
-    if (planProtectionSettings.scopeDetector.enabled) {
+    if (!this.config.scopePreflightCompleted && planProtectionSettings.scopeDetector.enabled) {
       try {
         const manifest = deriveProjectManifest(projectDir);
         const scopeResult = computeScopeDivergence(message, manifest, planProtectionSettings.scopeDetector);
@@ -1930,7 +2186,9 @@ export class AgentLoopController {
     // Run Smart Context selection if enabled (requirement 11.3)
     const relevantContext = await runSmartContextSelection(message, projectDir, smartContextEnabled, smartContextConfig);
 
-    const systemPrompt = buildPlanModeSystemPrompt(projectDir, toolDefs, rulesContent, relevantContext || undefined);
+    const systemPrompt = this.resolveSystemPrompt(
+      buildPlanModeSystemPrompt(projectDir, toolDefs, rulesContent, relevantContext || undefined),
+    );
 
     // Initialize conversation
     const messages: AgentMessage[] = [
@@ -1949,7 +2207,7 @@ export class AgentLoopController {
     const maxPlanAttempts = 3;
     let planAttempt = 0;
 
-    while (planAttempt < maxPlanAttempts) {
+    while (planAttempt < maxPlanAttempts && !this.isAborted()) {
       planAttempt++;
 
       // Emit progress: thinking (generating plan)
@@ -1972,6 +2230,9 @@ export class AgentLoopController {
           await callbackEngine.emit({ event: 'after-llm-call', sessionId, iteration: planAttempt, output: response });
         }
       } catch (error) {
+        if (this.isAborted()) {
+          return this.createAbortedResult({ iterations: planAttempt, tokenUsage });
+        }
         if (callbackEngine) {
           await callbackEngine.emit({
             event: 'on-error',
@@ -1987,6 +2248,10 @@ export class AgentLoopController {
           tokenUsage,
           filesModified: [],
         };
+      }
+
+      if (this.isAborted()) {
+        return this.createAbortedResult({ iterations: planAttempt, tokenUsage });
       }
 
       // Accumulate token usage
@@ -2019,6 +2284,9 @@ export class AgentLoopController {
       });
 
       const approval = await onPlanReady!(plan);
+      if (this.isAborted()) {
+        return this.createAbortedResult({ iterations: planAttempt, tokenUsage });
+      }
 
       if (approval === 'approved') {
         // Execute the plan steps sequentially using the normal loop
@@ -2057,7 +2325,10 @@ export class AgentLoopController {
       }
     }
 
-    // Exhausted plan attempts
+    // Exhausted plan attempts or execution was cancelled.
+    if (this.isAborted()) {
+      return this.createAbortedResult({ iterations: planAttempt, tokenUsage });
+    }
     onProgress?.({ iteration: planAttempt, maxIterations, status: 'complete' });
     return {
       response: 'Unable to produce an approved plan after multiple attempts. Please try rephrasing your request.',
@@ -2133,7 +2404,7 @@ export class AgentLoopController {
     const executionProtectionSettings = parseOverwriteProtectionConfig(rulesContent ?? null);
     this.overwriteGateConfig = executionProtectionSettings.overwriteGate;
 
-    const systemPrompt = buildSystemPrompt(projectDir, toolDefs, rulesContent);
+    const systemPrompt = this.resolveSystemPrompt(buildSystemPrompt(projectDir, toolDefs, rulesContent));
     const messages: AgentMessage[] = [
       { role: 'system', content: systemPrompt },
       { role: 'user', content: originalMessage },
@@ -2141,6 +2412,7 @@ export class AgentLoopController {
 
     // Execute each plan step
     for (const step of plan.steps) {
+      if (this.isAborted()) break;
       iteration++;
       onProgress?.({
         iteration,
@@ -2150,10 +2422,11 @@ export class AgentLoopController {
       });
 
       const toolContext: ToolContext = {
-        agentId: 'agent-loop',
+        agentId: this.config.agentId ?? 'agent-loop',
         sessionId,
         projectDir,
         permissionMode: 'auto-approve',
+        signal: this.config.signal,
       };
 
       if (callbackEngine) {
@@ -2334,6 +2607,15 @@ export class AgentLoopController {
       toolCallsExecuted++;
     }
 
+    if (this.isAborted()) {
+      return this.createAbortedResult({
+        toolCallsExecuted,
+        iterations: iteration,
+        tokenUsage: accumulatedTokenUsage,
+        filesModified,
+      });
+    }
+
     // Final LLM call to generate summary
     iteration++;
     onProgress?.({ iteration, maxIterations, status: 'thinking' });
@@ -2401,48 +2683,18 @@ export class AgentLoopController {
     }
 
     // ─── AutoTuner: classify task and resolve parameters (Req 16.1-16.4) ───
-    const autoTuningResult = await this.resolveAutoTuning(message);
+    const autoTuningResult = this.runAutoTuningResult;
     const llmOptions = autoTuningResult
       ? { temperature: autoTuningResult.recommendedParams.temperature, maxTokens: autoTuningResult.recommendedParams.maxTokens }
       : undefined;
 
-    // ─── DriftMonitor: initialize if drift config is enabled (Req 1.5, 9.1, 9.2) ───
-    let driftMonitor: DriftMonitor | null = null;
-    let driftDisabled = false;
+    // Drift lifecycle is owned by run() so every execution mode shares the
+    // same project-scoped intent anchor. This loop contributes real tool/path
+    // scope checks to that run-level monitor.
+    const driftMonitor = this.runDriftMonitor;
+    let driftDisabled = !driftMonitor;
 
-    if (this.config.driftConfig?.enabled) {
-      try {
-        const registeredToolNames = toolSystem.list().map((t: ToolDefinition) => t.id);
-        driftMonitor = new DriftMonitor(this.config.driftConfig, {
-          callbackEngine: (callbackEngine as CallbackEngine | undefined) ?? null,
-          ipcSend: this.config.ipcSend,
-          registeredTools: registeredToolNames,
-        });
-        if (autoTuningResult) {
-          driftMonitor.initialize(autoTuningResult.classification, message);
-        } else {
-          // Default classification when AutoTuner is not configured
-          driftMonitor.initialize({ type: 'code-generation', confidence: 0.5 }, message);
-        }
-        // Expose globally so drift:get-state IPC can return live state
-        (global as any).__activeDriftMonitor = driftMonitor;
-
-        // Notify renderer that drift management is active for this execution
-        if (this.config.ipcSend) {
-          this.config.ipcSend('drift:state-update', {
-            active: true,
-            confidence: 1.0,
-            sensitivity: this.config.driftConfig.sensitivity || 'balanced',
-            message: 'Drift management active — monitoring task focus and scope boundaries',
-          });
-        }
-      } catch (err) {
-        console.warn('[DriftMonitor] Initialization failed, drift disabled:', err);
-        driftMonitor = null;
-        driftDisabled = true;
-      }
-    }
-
+    try {
     // Build tool definitions for the LLM
     const toolDefs = buildToolDefinitions(toolSystem);
 
@@ -2468,7 +2720,7 @@ export class AgentLoopController {
     // ─── Scope Divergence Detection: check if user is requesting a different project (Req 3.1, 3.2, 4.2) ───
     // Early-return guard: when scopeDetector.enabled === false (i.e. protection disabled),
     // the entire scope detection block is skipped — no warnings, no prompts, no processing.
-    if (protectionSettings.scopeDetector.enabled) {
+    if (!this.config.scopePreflightCompleted && protectionSettings.scopeDetector.enabled) {
       try {
         const manifest = deriveProjectManifest(projectDir);
         const scopeResult = computeScopeDivergence(message, manifest, protectionSettings.scopeDetector);
@@ -2541,6 +2793,7 @@ export class AgentLoopController {
     } else {
       systemPrompt = buildSystemPrompt(projectDir, toolDefs, rulesContent, combinedContext);
     }
+    systemPrompt = this.resolveSystemPrompt(systemPrompt);
 
     // ─── Context Mentions: resolve @-mentions in user message before LLM call (Req 14.3, 14.7) ───
     let processedMessage = message;
@@ -2613,7 +2866,7 @@ export class AgentLoopController {
     const maxRePromptAttemptsResolved = this.config.maxRePromptAttempts ?? DEFAULT_MAX_RE_PROMPT_ATTEMPTS;
 
     // Iteration loop
-    while (iteration < maxIterations) {
+    while (iteration < maxIterations && !this.isAborted()) {
       iteration++;
 
       // ─── DriftMonitor: per-iteration confidence evaluation (Req 2.7, 12.1) ───
@@ -2652,6 +2905,10 @@ export class AgentLoopController {
               }
             }
           }
+          this.config.ipcSend?.('drift:state-update', {
+            ...driftMonitor.getState(),
+            projectId: this.config.sessionId,
+          });
         } catch (err) {
           console.warn('[DriftMonitor] Confidence evaluation failed, disabling drift:', err);
           driftDisabled = true;
@@ -2702,6 +2959,17 @@ export class AgentLoopController {
           });
         }
       } catch (error) {
+        if (this.isAborted()) {
+          return this.createAbortedResult({
+            toolCallsExecuted,
+            iterations: iteration,
+            tokenUsage,
+            filesModified,
+            autoTuning: autoTuningResult ?? undefined,
+            traceId,
+            artifactIds: artifactIds.length > 0 ? artifactIds : undefined,
+          });
+        }
         // LLM call failed — emit error hook and stop
         if (callbackEngine) {
           await callbackEngine.emit({
@@ -2735,6 +3003,18 @@ export class AgentLoopController {
           artifactIds: artifactIds.length > 0 ? artifactIds : undefined,
           ...(driftMonitor ? { driftConfidence: driftMonitor.getState().confidence, driftSignalCount: driftMonitor.getState().signals.length } : {}),
         };
+      }
+
+      if (this.isAborted()) {
+        return this.createAbortedResult({
+          toolCallsExecuted,
+          iterations: iteration,
+          tokenUsage,
+          filesModified,
+          autoTuning: autoTuningResult ?? undefined,
+          traceId,
+          artifactIds: artifactIds.length > 0 ? artifactIds : undefined,
+        });
       }
 
       // Accumulate token usage
@@ -2809,13 +3089,16 @@ export class AgentLoopController {
         // 2. actionFirstEnabled config is not explicitly false
         // 3. Re-prompt attempts haven't been exhausted
         // 4. The LLM hasn't already used tools in this session (toolCallsExecuted === 0)
-        // 5. The user message implies tool usage
+        // 5. This delegated worker requires grounding, or the user message implies tool usage
         if (
           this.isFeatureEnabled('production_ux_action_first') &&
           this.config.actionFirstEnabled !== false &&
           rePromptAttempts < maxRePromptAttemptsResolved &&
           toolCallsExecuted === 0 &&
-          actionFirstDetector.isTextOnlyWhenToolsExpected(response, message)
+          (
+            this.config.requireToolUsageBeforeFinalResponse === true ||
+            actionFirstDetector.isTextOnlyWhenToolsExpected(response, message)
+          )
         ) {
           // Text-only response when tools were expected — re-prompt the LLM
           rePromptAttempts++;
@@ -2902,6 +3185,7 @@ export class AgentLoopController {
 
       // Execute each tool call
       for (const toolCall of response.tool_calls) {
+        if (this.isAborted()) break;
         const toolName = toolCall.function.name;
 
         // Emit progress: tool executing
@@ -2918,25 +3202,29 @@ export class AgentLoopController {
           parsedArgs = JSON.parse(toolCall.function.arguments);
         } catch {
           // If arguments can't be parsed, report error as tool result
-          const errorResult = JSON.stringify({
+          const parseFailure: ToolResult = {
             success: false,
+            output: null,
             error: `Failed to parse tool arguments: ${toolCall.function.arguments}`,
-          });
+          };
           messages.push({
             role: 'tool',
-            content: errorResult,
+            content: JSON.stringify(parseFailure),
             tool_call_id: toolCall.id,
           });
           toolCallsExecuted++;
+          this.runToolFailureCount++;
+          await this.reportToolObservation(toolName, undefined, parseFailure);
           continue;
         }
 
         // Build tool context
         const toolContext: ToolContext = {
-          agentId: 'agent-loop',
+          agentId: this.config.agentId ?? 'agent-loop',
           sessionId,
           projectDir,
           permissionMode: 'auto-approve',
+          signal: this.config.signal,
         };
 
         // Emit before-tool-call hook
@@ -2959,6 +3247,9 @@ export class AgentLoopController {
               tool_call_id: toolCall.id,
             });
             toolCallsExecuted++;
+            if (blockedResult.success) this.runToolSuccessCount++;
+            else this.runToolFailureCount++;
+            await this.reportToolObservation(toolName, parsedArgs, blockedResult, !blockedResult.success);
             continue;
           }
         }
@@ -2970,17 +3261,20 @@ export class AgentLoopController {
             const scopeResult = driftMonitor.validateScope(toolName, filePath);
             if (scopeResult.blocked) {
               // Scope violation in block mode — return error to LLM instead of executing
-              const blockedResult = JSON.stringify({
+              const blockedToolResult: ToolResult = {
                 success: false,
+                output: null,
                 error: scopeResult.error || `Tool call "${toolName}" blocked by drift scope envelope.`,
-              });
+              };
               messages.push({
                 role: 'tool',
-                content: blockedResult,
+                content: JSON.stringify(blockedToolResult),
                 tool_call_id: toolCall.id,
               });
               toolCallsExecuted++;
+              this.runToolFailureCount++;
               driftMonitor.recordToolResult(toolName, false);
+              await this.reportToolObservation(toolName, parsedArgs, blockedToolResult, true);
               continue;
             }
           } catch (err) {
@@ -3012,31 +3306,37 @@ export class AgentLoopController {
               }
 
               // Block the write and inform the LLM (Req 2.3, 2.5)
-              const blockedResult = JSON.stringify({
+              const blockedToolResult: ToolResult = {
                 success: false,
+                output: null,
                 error: `Write to "${filePath}" was blocked by overwrite protection (relatedness: ${Math.round(decision.relatedness.score * 100)}%). The file contains unrelated content. User confirmation required.`,
-              });
+              };
               messages.push({
                 role: 'tool',
-                content: blockedResult,
+                content: JSON.stringify(blockedToolResult),
                 tool_call_id: toolCall.id,
               });
               toolCallsExecuted++;
+              this.runToolFailureCount++;
+              await this.reportToolObservation(toolName, parsedArgs, blockedToolResult, true);
               continue;
             }
 
             if (!decision.allowed) {
               // Path safety failure — block immediately (Req 2.8)
-              const blockedResult = JSON.stringify({
+              const blockedToolResult: ToolResult = {
                 success: false,
+                output: null,
                 error: `Write to "${filePath}" was blocked: path is not safe (outside project directory).`,
-              });
+              };
               messages.push({
                 role: 'tool',
-                content: blockedResult,
+                content: JSON.stringify(blockedToolResult),
                 tool_call_id: toolCall.id,
               });
               toolCallsExecuted++;
+              this.runToolFailureCount++;
+              await this.reportToolObservation(toolName, parsedArgs, blockedToolResult, true);
               continue;
             }
           }
@@ -3088,6 +3388,7 @@ export class AgentLoopController {
         if (driftMonitor && !driftDisabled) {
           driftMonitor.recordToolResult(toolName, toolResult.success);
         }
+        await this.reportToolObservation(toolName, parsedArgs, toolResult);
 
         // Track file modifications (heuristic: tools that write files)
         if (toolResult.success && (toolName === 'file-write' || toolName === 'file-edit')) {
@@ -3111,8 +3412,12 @@ export class AgentLoopController {
           tool_call_id: toolCall.id,
         });
 
+        if (toolResult.success) this.runToolSuccessCount++;
+        else this.runToolFailureCount++;
         toolCallsExecuted++;
       }
+
+      if (this.isAborted()) break;
 
       // ─── Post-Tool Verification: run VerificationGatePipeline on modified files (Req 20.1, 20.2, 20.3) ───
       if (filesModified.length > 0) {
@@ -3300,6 +3605,20 @@ export class AgentLoopController {
       }, 'checkpoint-after-tool-cycle');
     }
 
+    if (this.isAborted()) {
+      onProgress?.({ iteration, maxIterations, status: 'complete' });
+      return this.createAbortedResult({
+        toolCallsExecuted,
+        iterations: iteration,
+        tokenUsage,
+        filesModified,
+        autoTuning: autoTuningResult ?? undefined,
+        traceId,
+        artifactIds: artifactIds.length > 0 ? artifactIds : undefined,
+        ...(driftMonitor ? { driftConfidence: driftMonitor.getState().confidence, driftSignalCount: driftMonitor.getState().signals.length } : {}),
+      });
+    }
+
     // Max iterations reached — return partial results
     onProgress?.({
       iteration,
@@ -3351,6 +3670,10 @@ export class AgentLoopController {
       ...(driftMonitor ? { driftConfidence: driftMonitor.getState().confidence, driftSignalCount: driftMonitor.getState().signals.length } : {}),
       ...(iterationPersistenceEnabled ? { incomplete: true, workSummary } : {}),
     };
+    } finally {
+      // Run-level finalization owns snapshot capture and context cleanup so this
+      // monitor remains valid across phased-to-standard fallback boundaries.
+    }
   }
 
   // ─── Iteration Persistence: Work Summary Builder (Req 1.3) ──
@@ -3431,11 +3754,6 @@ export class AgentLoopController {
       } catch {
         // Graceful degradation: continue with recommended params if override callback fails
       }
-    }
-
-    // Cleanup: clear global drift monitor reference when run completes
-    if ((global as any).__activeDriftMonitor) {
-      (global as any).__activeDriftMonitor = null;
     }
 
     return result;

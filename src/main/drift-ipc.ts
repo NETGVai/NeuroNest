@@ -18,6 +18,7 @@ import { ipcMain, type BrowserWindow } from 'electron';
 import type { DriftMonitor } from '../drift/drift-monitor.js';
 import type { DriftDashboardState } from '../shared/feature-integration-types.js';
 import type { DriftSignal } from '../drift/drift-signal.js';
+import type { StoredAgentRunSnapshot } from '../metrics/agent-loop-metrics.js';
 
 // ─── IPCErrorResponse ───────────────────────────────────────────
 
@@ -25,6 +26,10 @@ export interface DriftIPCErrorResponse {
   error: true;
   code: string;
   message: string;
+}
+
+export interface DriftDashboardResponse extends DriftDashboardState {
+  latestCompleted?: StoredAgentRunSnapshot | null;
 }
 
 // ─── Error helper ───────────────────────────────────────────────
@@ -57,7 +62,10 @@ const INACTIVE_STATE: DriftDashboardState = {
 
 export interface DriftIPCOptions {
   getMainWindow: () => BrowserWindow | null;
-  getDriftMonitor: () => DriftMonitor | null;
+  /** Returns only a monitor associated with the requested project, when supplied. */
+  getDriftMonitor: (projectId?: string) => DriftMonitor | null;
+  /** Returns durable evidence from the most recently completed project run. */
+  getLatestCompletedRun?: (projectId: string) => StoredAgentRunSnapshot | null;
 }
 
 /**
@@ -67,20 +75,27 @@ export interface DriftIPCOptions {
  * The main process pushes updates via 'drift:signal' and 'drift:state-update'.
  */
 export function registerDriftIPC(options: DriftIPCOptions): void {
-  const { getDriftMonitor } = options;
+  const { getDriftMonitor, getLatestCompletedRun } = options;
 
   // ── drift:get-state ──
   // Requirement 8.5: Dashboard updates within 100ms via IPC handle pattern
   // Requirement 8.7: Follow existing renderer panel patterns for IPC communication
-  ipcMain.handle('drift:get-state', (): DriftDashboardState | DriftIPCErrorResponse => {
+  ipcMain.handle('drift:get-state', (_event, args?: { projectId?: string }): DriftDashboardResponse | DriftIPCErrorResponse => {
     try {
-      const monitor = getDriftMonitor();
+      const requestedProjectId = typeof args?.projectId === 'string' && args.projectId.length > 0
+        ? args.projectId
+        : undefined;
+      const monitor = getDriftMonitor(requestedProjectId);
+      const latestCompleted = requestedProjectId && getLatestCompletedRun
+        ? getLatestCompletedRun(requestedProjectId)
+        : null;
 
       if (!monitor || !monitor.isActive()) {
-        return INACTIVE_STATE;
+        return latestCompleted ? { ...INACTIVE_STATE, latestCompleted } : INACTIVE_STATE;
       }
 
-      return monitor.getState();
+      const liveState = monitor.getState();
+      return latestCompleted ? { ...liveState, latestCompleted } : liveState;
     } catch (err) {
       return makeError('DRIFT_STATE_FAILED', err);
     }

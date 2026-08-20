@@ -3,7 +3,7 @@
  * Extends existing swarm coordination with task lifecycle management and enhanced agent tracking
  */
 
-import { SwarmCoordinator, SwarmMemoryPool, type SwarmEvent, type SwarmEventCallback, type SwarmResult } from './swarm-coordinator';
+import { SwarmCoordinator, SwarmMemoryPool, type SwarmCoordinatorOptions, type SwarmEvent, type SwarmEventCallback, type SwarmResult } from './swarm-coordinator';
 import { ExecutionPlan, AgentTask as OrchestratorAgentTask } from './orchestrator-planner';
 import { EnhancedAgentManager, type AgentTask, type EnhancedAgentEvent } from '../agents/enhanced-agent-manager';
 import { LLMClient } from './llm-client';
@@ -67,10 +67,14 @@ export class EnhancedSwarmCoordinator extends SwarmCoordinator {
   /** Skill IDs actually injected into an agent's prompt during the current run (Requirement: accurate "Skills Used" reporting). */
   private appliedSkillIds: Set<string> = new Set();
 
-  constructor(llmClient: LLMClient | null, db: Database.Database) {
+  constructor(
+    llmClient: LLMClient | null,
+    db: Database.Database,
+    private enhancedOptions: SwarmCoordinatorOptions = {},
+  ) {
     // Create memory pool for parent constructor
     const memoryPool = new SwarmMemoryPool();
-    super(memoryPool, llmClient);
+    super(memoryPool, llmClient, null, null, db, enhancedOptions);
     
     this.db = db;
     this.enhancedLLMClient = llmClient;
@@ -96,6 +100,7 @@ export class EnhancedSwarmCoordinator extends SwarmCoordinator {
     onEvent?: EnhancedSwarmEventCallback, 
     agentLLMConfigs?: Map<string, LLMClient>
   ): Promise<EnhancedSwarmResult> {
+    this.beginExecution();
     this.sessionId = sessionId;
     const startTime = Date.now();
     this.appliedSkillIds = new Set();
@@ -158,6 +163,7 @@ export class EnhancedSwarmCoordinator extends SwarmCoordinator {
     const tasks: AgentTask[] = [];
 
     for (const agentTask of plan.agents) {
+      if (this.aborted) break;
       const agentDef = AGENT_REGISTRY.find(a => a.id === agentTask.id);
       const agentName = agentDef?.name || agentTask.id;
 
@@ -206,22 +212,28 @@ export class EnhancedSwarmCoordinator extends SwarmCoordinator {
       (this.enhancedLLMClient as any).config?.provider === 'llamacpp' ||
       ((this.enhancedLLMClient as any).config?.baseUrl && ((this.enhancedLLMClient as any).config.baseUrl.includes('localhost') || (this.enhancedLLMClient as any).config.baseUrl.includes('127.0.0.1')))
     );
+    const usesWorkerDelegates = Boolean(this.enhancedOptions.workerDelegateFactory);
+    const executeSequentially = usesWorkerDelegates || Boolean(isLocalProvider);
 
     for (const { phase, agents } of phases) {
+      if (this.aborted) break;
       onEvent?.({
         type: 'phase_start',
         phase,
-        content: `Phase ${phase}: executing ${agents.length} agent(s)` + (isLocalProvider ? ' (sequential — local LLM)' : ''),
+        content: `Phase ${phase}: executing ${agents.length} agent(s)` + (usesWorkerDelegates
+          ? ' (sequential — tool-capable workers)'
+          : isLocalProvider ? ' (sequential — local LLM)' : ''),
       });
 
-      if (isLocalProvider) {
+      if (executeSequentially) {
         // Sequential execution for local LLMs (Ollama can only handle 1 request at a time)
         for (const agentTask of agents) {
+          if (this.aborted) break;
           const task = tasks.find(t => t.metadata.orchestratorTaskId === agentTask.id);
           if (!task) continue;
           try {
             const result = await this.executeAgentWithLifecycle(agentTask, task, onEvent, agentLLMConfigs);
-            if (result.response) outputs.set(result.id, result.response);
+            if (!this.aborted && result.response) outputs.set(result.id, result.response);
           } catch (err) {
             console.error('[EnhancedSwarm] Agent failed:', agentTask.id, err);
           }
@@ -229,6 +241,7 @@ export class EnhancedSwarmCoordinator extends SwarmCoordinator {
       } else {
         // Parallel execution for cloud providers
         const promises = agents.map(async (agentTask: OrchestratorAgentTask) => {
+          if (this.aborted) return { id: agentTask.id, response: '' };
           const task = tasks.find(t => t.metadata.orchestratorTaskId === agentTask.id);
           if (!task) return { id: agentTask.id, response: '' };
 
@@ -346,6 +359,19 @@ export class EnhancedSwarmCoordinator extends SwarmCoordinator {
       // is injected into the agent's system prompt inside executeAgentTask.
       const response = await this.executeAgentTask(agentTask, task, onEvent, agentLLMConfigs, applicableSkill);
 
+      if (this.aborted) {
+        onEvent?.({
+          type: 'agent_complete',
+          agentId: agentTask.id,
+          agentName,
+          phase: 0,
+          content: `## ${agentName} Cancelled\n\nExecution aborted by user.`,
+          msgId: this.agentStreamMsgIds.get(agentTask.id),
+        });
+        this.agentStreamMsgIds.delete(agentTask.id);
+        return { id: agentTask.id, response: '' };
+      }
+
       // Complete task
       await this.enhancedAgentManager.completeTask(task.id, agentTask.id, response);
       // Update in-memory task status so the summary reflects completion
@@ -368,7 +394,44 @@ export class EnhancedSwarmCoordinator extends SwarmCoordinator {
     } catch (error: any) {
       // Handle failures and blockers
       const errorMessage = error.message || 'Unknown error';
+      if (this.aborted) {
+        const msgId = this.agentStreamMsgIds.get(agentTask.id);
+        if (msgId) {
+          onEvent?.({
+            type: 'agent_token',
+            agentId: agentTask.id,
+            agentName,
+            msgId,
+            done: true,
+            error: true,
+            content: 'Execution aborted by user',
+          });
+        }
+        onEvent?.({
+          type: 'agent_complete',
+          agentId: agentTask.id,
+          agentName,
+          phase: 0,
+          content: `## ${agentName} Cancelled\n\nExecution aborted by user.`,
+          msgId,
+        });
+        this.agentStreamMsgIds.delete(agentTask.id);
+        return { id: agentTask.id, response: '' };
+      }
       
+      const failureMsgId = this.agentStreamMsgIds.get(agentTask.id);
+      if (failureMsgId) {
+        onEvent?.({
+          type: 'agent_token',
+          agentId: agentTask.id,
+          agentName,
+          msgId: failureMsgId,
+          done: true,
+          error: true,
+          content: errorMessage,
+        });
+      }
+
       // Check if this is a blocker vs a failure
       if (this.isBlocker(errorMessage)) {
         await this.enhancedAgentManager.reportBlocker(task.id, {
@@ -512,24 +575,12 @@ export class EnhancedSwarmCoordinator extends SwarmCoordinator {
     let fullTask = (contextPrefix ? `${agentTask.task}\n\nPrior context:\n${contextPrefix}` : agentTask.task) +
       (contextSummary ? '\n\n' + contextSummary : '');
 
-    // Truncate to fit context window
-    const taskBudget = Math.floor(promptBudgetChars * 0.4);
-    const systemBudget = promptBudgetChars - taskBudget;
-    if (systemPrompt.length > systemBudget) {
-      systemPrompt = systemPrompt.slice(0, systemBudget - 20) + '\n[truncated]';
-    }
-    if (fullTask.length > taskBudget) {
-      fullTask = fullTask.slice(0, taskBudget - 20) + '\n[truncated]';
-    }
-
-    // Use true streaming — forward tokens as they arrive from the LLM
     const crypto = require('node:crypto');
     const streamMsgId = crypto.randomUUID();
     this.agentStreamMsgIds.set(agentTask.id, streamMsgId);
-    let streamedContent = '';
     const agentName = agentDef?.name || agentTask.id;
 
-    // Signal stream start
+    // Signal stream start for both delegated and legacy workers.
     onEvent?.({
       type: 'agent_token',
       agentId: agentTask.id,
@@ -539,32 +590,20 @@ export class EnhancedSwarmCoordinator extends SwarmCoordinator {
       done: false,
     });
 
-    await agentLLM.chatStream([
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: fullTask },
-    ], {
-      onToken: ({ content: tokenText }) => {
-        streamedContent += tokenText;
-        onEvent?.({
-          type: 'agent_token',
-          agentId: agentTask.id,
-          agentName,
-          msgId: streamMsgId,
-          token: tokenText,
-        });
-      },
-      onDone: (result) => {
-        onEvent?.({
-          type: 'agent_token',
-          agentId: agentTask.id,
-          agentName,
-          msgId: streamMsgId,
-          done: true,
-          reasoning: result.reasoning,
-        });
-      },
-      onError: ({ message: errMsg, partialContent }) => {
-        streamedContent = partialContent;
+    const workerDelegate = this.enhancedOptions.workerDelegateFactory?.({
+      agentId: agentTask.id,
+      agentName,
+      task: fullTask,
+      systemPrompt,
+      llmClient: agentLLM,
+      sessionId: this.sessionId || undefined,
+      signal: this.executionSignal,
+    });
+
+    let streamedContent = '';
+    if (workerDelegate) {
+      const workerResult = await workerDelegate.execute();
+      if (this.aborted) {
         onEvent?.({
           type: 'agent_token',
           agentId: agentTask.id,
@@ -572,12 +611,85 @@ export class EnhancedSwarmCoordinator extends SwarmCoordinator {
           msgId: streamMsgId,
           done: true,
           error: true,
-          content: errMsg,
+          content: 'Execution aborted by user',
         });
-      },
-    }, { temperature: 0.7, maxTokens, nLoops: (agentLLM as any)._nLoops });
+        return '';
+      }
+      streamedContent = workerResult.response;
+      onEvent?.({
+        type: 'agent_token',
+        agentId: agentTask.id,
+        agentName,
+        msgId: streamMsgId,
+        token: streamedContent,
+      });
+      onEvent?.({
+        type: 'agent_token',
+        agentId: agentTask.id,
+        agentName,
+        msgId: streamMsgId,
+        done: true,
+        reasoning: workerResult.reasoning,
+      });
+    } else {
+      // Truncate the legacy direct-stream prompt to fit the provider context window.
+      const taskBudget = Math.floor(promptBudgetChars * 0.4);
+      const systemBudget = promptBudgetChars - taskBudget;
+      if (systemPrompt.length > systemBudget) {
+        systemPrompt = systemPrompt.slice(0, systemBudget - 20) + '\n[truncated]';
+      }
+      if (fullTask.length > taskBudget) {
+        fullTask = fullTask.slice(0, taskBudget - 20) + '\n[truncated]';
+      }
 
-    console.log('[EnhancedSwarm] LLM streamed response for', agentTask.id, ':', streamedContent.length, 'chars,', (streamedContent.match(/```/g) || []).length / 2, 'code blocks');
+      const abortDirectStream = () => {
+        try { agentLLM.abort(); } catch {}
+      };
+      this.executionSignal?.addEventListener('abort', abortDirectStream, { once: true });
+      try {
+      await agentLLM.chatStream([
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: fullTask },
+      ], {
+        onToken: ({ content: tokenText }) => {
+          streamedContent += tokenText;
+          onEvent?.({
+            type: 'agent_token',
+            agentId: agentTask.id,
+            agentName,
+            msgId: streamMsgId,
+            token: tokenText,
+          });
+        },
+        onDone: (result) => {
+          onEvent?.({
+            type: 'agent_token',
+            agentId: agentTask.id,
+            agentName,
+            msgId: streamMsgId,
+            done: true,
+            reasoning: result.reasoning,
+          });
+        },
+        onError: ({ message: errMsg, partialContent }) => {
+          streamedContent = partialContent;
+          onEvent?.({
+            type: 'agent_token',
+            agentId: agentTask.id,
+            agentName,
+            msgId: streamMsgId,
+            done: true,
+            error: true,
+            content: errMsg,
+          });
+        },
+      }, { temperature: 0.7, maxTokens, nLoops: (agentLLM as any)._nLoops });
+      } finally {
+        this.executionSignal?.removeEventListener('abort', abortDirectStream);
+      }
+
+      console.log('[EnhancedSwarm] LLM streamed response for', agentTask.id, ':', streamedContent.length, 'chars,', (streamedContent.match(/```/g) || []).length / 2, 'code blocks');
+    }
 
     // Update progress: 75% - Processing complete
     await this.enhancedAgentManager.updateTaskProgress(task.id, 75, 'LLM processing complete');

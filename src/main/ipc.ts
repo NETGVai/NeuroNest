@@ -104,6 +104,8 @@ import { registerSkillPacksIPC } from './skill-packs-ipc.js';
 import { ZeraOptimizer } from '../pipeline/zera-optimizer';
 import { OrchestratorPlanner } from '../pipeline/orchestrator-planner';
 import { SwarmCoordinator, SwarmMemoryPool } from '../pipeline/swarm-coordinator';
+import { createAgentLoopSwarmWorkerFactory } from '../pipeline/swarm-worker-agent-loop';
+import { SwarmDispatchGate, type SwarmDispatchLease } from '../pipeline/swarm-dispatch-gate';
 import { EnhancedSwarmCoordinator } from '../pipeline/enhanced-swarm-coordinator';
 import { getOllamaStatus, OLLAMA_DEFAULT_URL, installOllama, startOllama, stopOllama, getLlamaCppStatus, installLlamaCpp, startLlamaCpp, stopLlamaCpp, uninstallOllama, uninstallLlamaCpp } from './ollama-manager';
 import { getOpenMythosStatus, installOpenMythos, startOpenMythos, stopOpenMythos, uninstallOpenMythos } from './openmythos-manager';
@@ -197,6 +199,7 @@ import { TestGenerator } from '../testing/test-generator.impl.js';
 import { TestHealthTracker } from '../testing/test-health-tracker.impl.js';
 import { TestPlanner } from '../testing/test-planner.impl.js';
 import { EnhancedDriftClassifier } from '../drift/enhanced-drift-classifier.impl.js';
+import { DriftMonitor, type DriftDashboardState } from '../drift/drift-monitor.js';
 import { VerificationAgent } from '../agents/verification-agent.impl.js';
 import { WorktreeCheckpointManager } from '../durability/worktree-checkpoint-manager.impl.js';
 import { WorktreeIsolation as WorktreeIsolationForCategoryB } from '../orchestration/worktree-isolation.js';
@@ -214,13 +217,19 @@ const COMMAND_ALLOWLIST = [
   'make', 'cmake', 'git', 'curl', 'zip', 'tar', 'wc',
 ];
 import { AsyncSystemMonitor } from './performance/async-system-monitor';
-import { AgentLoopController, type AgentLoopResult, type AgentLLMClient, type AgentMessage, type AgentLLMResponse, type FunctionDefinition } from '../pipeline/agent-loop';
+import { AgentLoopController, type AgentLoopCompletion, type AgentLoopResult, type AgentLoopToolObservation, type AgentLLMClient, type AgentMessage, type AgentLLMResponse, type FunctionDefinition } from '../pipeline/agent-loop';
 import { ToolSystem as AgentToolSystem } from '../tools/tool-system';
 import { PermissionSystem } from '../security/permission-system';
 import { builtInTools } from '../tools/built-in/index';
 import { autoCommit, type AutoVersioningLLMClient } from '../tools/auto-versioning';
 import { CallbackEngine } from '../pipeline/callback-engine';
 import { AgentLoopMetricsStore } from '../metrics/agent-loop-metrics.js';
+import {
+  advanceEnhancedPhaseCount,
+  mergeEnhancedTaskState,
+  SwarmRunSnapshotRecorder,
+  type EnhancedTaskTerminalState,
+} from './swarm-run-snapshot-recorder.js';
 import { ApprovalGate } from '../services/approval-gate.js';
 import { FeatureGateSystem } from '../feature-gate/feature-gate-system.js';
 import { FeatureGateStore } from '../feature-gate/feature-gate-store.js';
@@ -231,7 +240,7 @@ import { loadProjectConfig } from '../config/project-config';
 // Agent status based on actual Agent_Pipeline state
 function getAgentStatus(_agentId: string): 'active' | 'busy' | 'offline' {
   // Check if the swarm coordinator is actively running a task
-  if (activeSwarmCoordinator) {
+  if (swarmDispatchGate.activeOwner) {
     return 'busy';
   }
   // If there's an enhanced coordinator initialized and a session is active, the agent is active
@@ -348,7 +357,7 @@ function emitShippedChat(
   mainWindow.webContents.send(channel, payload);
 }
 
-function sendAndStore(mainWindow: any, data: any) {
+function sendAndStore(mainWindow: any, data: any, options?: { persist?: boolean }) {
   // Auto-attach provider/model to every message if not already present
   if (!data.provider || !data.model) {
     try {
@@ -375,7 +384,10 @@ function sendAndStore(mainWindow: any, data: any) {
     }
   }
   emitShippedChat(mainWindow, 'chat-response', data);
-  storeMessage(data.role || 'assistant', data.content || '', data.agent);
+  if (options?.persist !== false) {
+    const messageMetadata = data.zeraEvent ? { zeraEvent: data.zeraEvent } : undefined;
+    storeMessage(data.role || 'assistant', data.content || '', data.agent, messageMetadata);
+  }
 }
 
 /**
@@ -423,6 +435,7 @@ let sessionManager: SessionManager;
 let commandSystem: CommandSystem;
 let agentManager: SuperAgentManager;
 let activeSessionId: string | null = null;
+let activeChatTurnCount = 0;
 let activeAgentName: string | null = null;
 let tokenCount = 0;
 let channelManager: ChannelManager;
@@ -431,7 +444,7 @@ let orchestratorPlanner: OrchestratorPlanner;
 let firewallEngine: FirewallEngine;
 let enhancedFirewallEngine: EnhancedFirewallEngine;
 let firewallConfigManager: FirewallConfigManager;
-let activeSwarmCoordinator: SwarmCoordinator | null = null;
+const swarmDispatchGate = new SwarmDispatchGate<SwarmCoordinator>();
 let enhancedSwarmCoordinator: EnhancedSwarmCoordinator | null = null;
 let activeLlmClient: ReturnType<typeof createLLMClient> | null = null;
 let graphManager: GraphManager;
@@ -453,6 +466,85 @@ let projectMemoryRef: any = null; // Reference to ProjectMemoryStore, used by me
 let cronScheduler: CronScheduler | null = null; // Cron scheduler for automated tasks
 let skillLearner: SkillLearner | null = null; // Self-improving skill learner
 let dispatchBridge: DispatchBridge | null = null; // Dispatch-to-Chat bridge (dispatch-chat-visibility)
+
+interface PendingScopeConfirmation {
+  confirmationId: string;
+  sourceProjectId: string;
+  sourceProjectDir: string;
+  originalMessage: string;
+  targetProjectName: string;
+  targetStack: string | null;
+  explanation: string;
+  specMode: boolean;
+  createdAt: number;
+}
+
+const SCOPE_CONFIRMATION_TTL_MS = 30 * 60 * 1000;
+const pendingScopeConfirmations = new Map<string, PendingScopeConfirmation>();
+const consumedProposalMessageIds = new Set<string>();
+const MAX_CONSUMED_PROPOSAL_IDS = 1000;
+
+function markProposalMessageConsumed(messageId: string): boolean {
+  if (consumedProposalMessageIds.has(messageId)) return false;
+  consumedProposalMessageIds.add(messageId);
+  if (consumedProposalMessageIds.size > MAX_CONSUMED_PROPOSAL_IDS) {
+    const oldest = consumedProposalMessageIds.values().next().value;
+    if (oldest) consumedProposalMessageIds.delete(oldest);
+  }
+  return true;
+}
+
+function hasRecentUnresolvedScopeWarning(projectId: string): boolean {
+  if (!db) return false;
+  try {
+    const rows = db.prepare(
+      'SELECT role, content FROM messages WHERE session_id = ? ORDER BY rowid DESC LIMIT 50',
+    ).all(projectId) as Array<{ role: string; content: string }>;
+    let skippedCurrentUser = false;
+    for (const row of rows) {
+      if (row.role === 'user') {
+        if (!skippedCurrentUser) {
+          skippedCurrentUser = true;
+          continue;
+        }
+        break;
+      }
+      if (
+        row.role === 'assistant'
+        && /scope (?:change needs confirmation|divergence detected|confirmation (?:has expired|is no longer active))/i.test(row.content || '')
+      ) {
+        return true;
+      }
+    }
+  } catch {}
+  return false;
+}
+
+function getPendingScopeConfirmation(projectId: string | null): PendingScopeConfirmation | null {
+  if (!projectId) return null;
+  const pending = pendingScopeConfirmations.get(projectId);
+  if (!pending) return null;
+  if (Date.now() - pending.createdAt > SCOPE_CONFIRMATION_TTL_MS) {
+    pendingScopeConfirmations.delete(projectId);
+    return null;
+  }
+  return pending;
+}
+
+function classifyScopeConfirmationResponse(message: string): 'confirm' | 'cancel' | null {
+  if (/^(confirm|confirmed|i confirm|yes|yes please|yeah|yep|yup|sure|ok|okay|affirmative|do it|please do|go ahead|go for it|proceed|create(?: the)? new project|create_new_project)[\s.!]*$/i.test(message)) {
+    return 'confirm';
+  }
+  if (/^(cancel|cancelled|no|nope|stop|abort|never mind|nevermind)[\s.!]*$/i.test(message)) {
+    return 'cancel';
+  }
+  return null;
+}
+
+function normalizeScopeProjectName(name: string): string {
+  const normalized = name.replace(/[\\/\0-\x1f]/g, ' ').replace(/\s+/g, ' ').trim();
+  return normalized.slice(0, 80) || 'New Project';
+}
 
 // ── DevOps Safety Layer singletons (Codebase Wiring Completion, Req 1.1–1.3, 3.1, 4.1) ──
 let devOpsEngine: import('../devops-engine/devops-engine').DevOpsEngine | null = null;
@@ -568,6 +660,32 @@ function getAgentLoopToolSystem(): InstanceType<typeof AgentToolSystem> {
     console.log('[AgentLoop] ToolSystem initialized with', agentLoopToolSystem.list().length, 'tools');
   }
   return agentLoopToolSystem;
+}
+
+function resolveNeuroNestProjectDir(sessionId: string): string {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const projectId = sessionId.trim();
+  if (!projectId || path.basename(projectId) !== projectId || projectId === '.' || projectId === '..') {
+    throw new Error('Invalid DeerFlow session ID');
+  }
+
+  const projectsRoot = path.resolve(os.homedir(), '.neuronest', 'projects');
+  const projectDir = path.resolve(projectsRoot, projectId);
+  if (projectDir === projectsRoot || !projectDir.startsWith(`${projectsRoot}${path.sep}`)) {
+    throw new Error('DeerFlow project directory escapes the projects root');
+  }
+  if (!fs.existsSync(projectDir) || !fs.statSync(projectDir).isDirectory()) {
+    throw new Error(`Project directory not found for session ${projectId}`);
+  }
+
+  const realRoot = fs.realpathSync(projectsRoot);
+  const realProjectDir = fs.realpathSync(projectDir);
+  if (realProjectDir === realRoot || !realProjectDir.startsWith(`${realRoot}${path.sep}`)) {
+    throw new Error('DeerFlow project directory escapes the projects root');
+  }
+  return realProjectDir;
 }
 
 /**
@@ -2488,14 +2606,24 @@ async function refreshLocalModelLists() {
   } catch { /* llama.cpp not running — that's fine */ }
 }
 
-function storeMessage(role: string, content: string, agent?: string) {
+function storeMessage(
+  role: string,
+  content: string,
+  agent?: string,
+  metadata?: Record<string, unknown>,
+) {
   if (!activeSessionId || !db) return;
   // Don't store messages with empty content (completion signals, etc.)
   if (!content || content.trim() === '') return;
   try {
     const id = require('node:crypto').randomUUID();
+    const storedMetadata: Record<string, unknown> = metadata ? { ...metadata } : {};
+    if (agent) storedMetadata.agent = agent;
+    const serializedMetadata = Object.keys(storedMetadata).length > 0
+      ? JSON.stringify(storedMetadata)
+      : null;
     cachedStmt('INSERT INTO messages (id, session_id, role, content, tool_calls, created_at) VALUES (?, ?, ?, ?, ?, ?)')
-      .run(id, activeSessionId, role, content, agent ? JSON.stringify({agent}) : null, new Date().toISOString());
+      .run(id, activeSessionId, role, content, serializedMetadata, new Date().toISOString());
 
     // ── Pipeline_Event emit (12-factor-agent-improvements task 11) ──
     // Emit chat.user on user-message receipt and chat.assistant on
@@ -2833,6 +2961,10 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
   });
 
   ensureInit();
+
+  // One shared store feeds both completed-run writes and dashboard reads.
+  // Keeping a single instance prevents the previous query-only wiring gap.
+  const agentLoopMetricsStore = db ? new AgentLoopMetricsStore(db) : null;
 
   // ── Instantiate DispatchBridge (dispatch-chat-visibility, Req 1.1, 3.4, 3.5) ──
   // Bridges Agent Dashboard dispatches to the Chat Panel by persisting messages
@@ -3758,12 +3890,132 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
   // ── Chat message ──
 
   ipcMain.on('chat-message', async (_event, arg: any) => {
+    let swarmDriftMonitor: DriftMonitor | null = null;
+    let swarmDriftProjectId: string | null = null;
+    let swarmDriftStartedAt = 0;
+    let swarmDriftCheckpoint = 0;
+    let swarmDriftFinalState: DriftDashboardState | null = null;
+    let swarmDispatchLease: SwarmDispatchLease<SwarmCoordinator> | null = null;
+    let wasSwarmAborted: (() => boolean) | null = null;
+    const swarmDriftOutcomeAgents = new Set<string>();
+    const enhancedTaskStates = new Map<string, EnhancedTaskTerminalState>();
+    let enhancedPhaseCount = 0;
+    let scopePreflightCompleted = false;
+
+    const pushSwarmDriftState = (): void => {
+      if (!swarmDriftMonitor || !swarmDriftProjectId || !mainWindow || mainWindow.isDestroyed()) return;
+      mainWindow.webContents.send('drift:state-update', {
+        ...swarmDriftMonitor.getState(),
+        projectId: swarmDriftProjectId,
+      });
+    };
+    const evaluateSwarmDrift = (outcome?: boolean): void => {
+      if (!swarmDriftMonitor?.isActive()) return;
+      try {
+        if (outcome !== undefined) swarmDriftMonitor.recordOutcome(outcome);
+        swarmDriftCheckpoint += 1;
+        swarmDriftMonitor.evaluateConfidence(swarmDriftCheckpoint, Date.now() - swarmDriftStartedAt);
+        pushSwarmDriftState();
+      } catch (error) {
+        console.warn('[IPC] Swarm drift evaluation failed:', error);
+      }
+    };
+    const observeSwarmWorkerTool = (observation: AgentLoopToolObservation): void => {
+      swarmSnapshotRecorder.observeTool(observation.success);
+      if (!swarmDriftMonitor?.isActive()) return;
+      try {
+        // Worker loops deliberately do not own global DriftMonitors. Feed their
+        // real terminal tool/path evidence into this request's swarm monitor.
+        swarmDriftMonitor.validateScope(observation.toolName, observation.filePath);
+        swarmDriftMonitor.recordToolResult(observation.toolName, observation.success);
+        swarmDriftCheckpoint += 1;
+        swarmDriftMonitor.evaluateConfidence(swarmDriftCheckpoint, Date.now() - swarmDriftStartedAt);
+        pushSwarmDriftState();
+      } catch (error) {
+        console.warn('[IPC] Failed to record swarm worker tool observation:', error);
+      }
+    };
+    const finalizeSwarmDrift = (): DriftDashboardState | null => {
+      if (swarmDriftFinalState) return swarmDriftFinalState;
+      if (!swarmDriftMonitor) return null;
+      try {
+        swarmDriftFinalState = swarmDriftMonitor.stop();
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('drift:state-update', {
+            ...swarmDriftFinalState,
+            completed: true,
+            projectId: swarmDriftProjectId,
+          });
+        }
+      } catch (error) {
+        console.warn('[IPC] Swarm drift finalization failed:', error);
+      }
+      const activeContext = (global as any).__activeDriftMonitorContext;
+      if (activeContext?.monitor === swarmDriftMonitor) {
+        (global as any).__activeDriftMonitorContext = null;
+        (global as any).__activeDriftMonitor = null;
+      } else if ((global as any).__activeDriftMonitor === swarmDriftMonitor) {
+        (global as any).__activeDriftMonitor = null;
+      }
+      return swarmDriftFinalState;
+    };
+    const swarmSnapshotRecorder = new SwarmRunSnapshotRecorder({
+      writer: agentLoopMetricsStore,
+      finalizeDrift: finalizeSwarmDrift,
+      onPersisted: projectId => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('drift:state-update', {
+            active: false,
+            completed: true,
+            projectId,
+          });
+        }
+      },
+      onError: snapshotErr => {
+        console.warn('[IPC] Failed to persist swarm run evidence:', snapshotErr);
+      },
+    });
+    const updateEnhancedSnapshotProgress = (): void => {
+      const states = [...enhancedTaskStates.values()];
+      const completed = states.filter(status => status === 'completed').length;
+      swarmSnapshotRecorder.update({
+        source: 'enhanced-swarm',
+        phaseCount: enhancedPhaseCount,
+        taskCompletedCount: completed,
+        taskFailedCount: states.filter(status => status === 'failed').length,
+        taskBlockedCount: states.filter(status => status === 'blocked').length,
+        agentOutputCount: completed,
+      });
+    };
+    const recordEnhancedTaskState = (
+      agentId: string | undefined,
+      status: EnhancedTaskTerminalState,
+    ): void => {
+      if (!mergeEnhancedTaskState(enhancedTaskStates, agentId, status)) return;
+      updateEnhancedSnapshotProgress();
+    };
+
+    activeChatTurnCount += 1;
     try {
     // Accept both plain string and {projectId, message} object from renderer
     const message = typeof arg === 'object' && arg !== null ? arg.message : arg;
-    if (typeof arg === 'object' && arg !== null && arg.projectId && !activeSessionId) {
-      activeSessionId = arg.projectId;
+    const payloadProjectId = typeof arg === 'object' && arg !== null && typeof arg.projectId === 'string'
+      ? arg.projectId
+      : null;
+    if (payloadProjectId && !activeSessionId) {
+      activeSessionId = payloadProjectId;
     }
+    if (payloadProjectId && activeSessionId && payloadProjectId !== activeSessionId) {
+      emitShippedChat(mainWindow, 'chat-response', {
+        role: 'assistant',
+        content: '⚠️ The active project changed before this message was processed. Please resend it in the currently selected project.',
+        isCommand: true,
+        agent: 'System',
+      });
+      return;
+    }
+    let turnProjectId = activeSessionId;
+    let authoritativeActionMessage: string | null = null;
     // `steer: true` is set by the renderer when the user redirected
     // mid-flight via the Steer toggle. The user has already proven they
     // want speed (they aborted in-progress work to redirect), so we
@@ -3774,11 +4026,10 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
     // "Spec" mode. The grill-me pre-flight interview is now gated behind this
     // flag: a fresh interview is ONLY kicked off in spec mode. Plain `send`
     // mode goes straight to the orchestrator (pre-grill-me behavior).
-    const isSpecMode = !!(typeof arg === 'object' && arg !== null && arg.spec);
+    let isSpecMode = !!(typeof arg === 'object' && arg !== null && arg.spec);
     // `actionContext` is set by the renderer when the message originates from
-    // a Confirm/Cancel button click. Contains the preceding agent proposal so
-    // the pipeline can interpret "confirm" as approval of that proposal rather
-    // than an ambiguous freeform prompt.
+    // a Confirm/Cancel button click. Scope decisions carry an opaque confirmation
+    // ID; generic proposal decisions carry the displayed proposal text.
     const actionContext = (typeof arg === 'object' && arg !== null && arg.actionContext) || null;
     // `agent` is a routing hint from the Agent Dashboard specifying which agent
     // should handle the task. When set, the pipeline prefers this agent over auto-routing.
@@ -3786,7 +4037,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
     // `source` identifies the origin of the message (e.g. 'dashboard' when dispatched
     // from the Agent Dashboard panel).
     const dispatchSource: string | null = (typeof arg === 'object' && arg !== null && arg.source) || null;
-    const trimmed = (message || '').trim();
+    let trimmed = (message || '').trim();
     if (!trimmed) return;
 
     // Explicit lifecycle events keep the visible legacy working card active
@@ -3797,6 +4048,166 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
       type: 'execution-lifecycle',
       lifecycle: 'working',
     });
+
+    // Resolve scope decisions before generic confirmation routing. The renderer
+    // sends only an opaque ID; the original request and target remain authoritative
+    // in this main-process store. A manually typed response resolves the sole
+    // pending decision for the active project as a compatibility fallback.
+    const pendingScope = getPendingScopeConfirmation(activeSessionId);
+    const isStructuredScopeAction = actionContext?.kind === 'scope-divergence';
+    const requestedScopeAction = isStructuredScopeAction
+      ? (actionContext.action === 'confirm' || actionContext.action === 'cancel' ? actionContext.action : null)
+      : (pendingScope ? classifyScopeConfirmationResponse(trimmed) : null);
+
+    if (isStructuredScopeAction && (
+      !pendingScope
+      || typeof actionContext.confirmationId !== 'string'
+      || actionContext.confirmationId !== pendingScope.confirmationId
+      || activeSessionId !== pendingScope.sourceProjectId
+    )) {
+      storeMessage('user', trimmed);
+      sendAndStore(mainWindow, {
+        role: 'assistant',
+        content: '⚠️ This scope confirmation is no longer active. Please resend the project request to generate a fresh confirmation.',
+        isCommand: true,
+        agent: 'Scope Guard',
+      });
+      return;
+    }
+
+    if (pendingScope && requestedScopeAction === 'cancel') {
+      pendingScopeConfirmations.delete(pendingScope.sourceProjectId);
+      storeMessage('user', trimmed);
+      sendAndStore(mainWindow, {
+        role: 'assistant',
+        content: 'Cancelled the new-project request. No files were changed.',
+        isCommand: true,
+        agent: 'Scope Guard',
+      });
+      return;
+    }
+
+    if (pendingScope && requestedScopeAction === 'confirm') {
+      if (activeChatTurnCount > 1) {
+        sendAndStore(mainWindow, {
+          role: 'assistant',
+          content: '⏳ Another request is still active in this project. Wait for it to finish, then confirm this scope change again.',
+          isCommand: true,
+          agent: 'Scope Guard',
+        });
+        return;
+      }
+      const sourceProjectId = pendingScope.sourceProjectId;
+      const sourceProjectDir = pendingScope.sourceProjectDir;
+      const targetProjectName = normalizeScopeProjectName(pendingScope.targetProjectName);
+
+      // Preserve the decision in the source project's history before switching.
+      storeMessage('user', trimmed);
+
+      const newSession = sessionManager.create({ name: targetProjectName });
+      const osScope = require('node:os');
+      const pathScope = require('node:path');
+      const fsScope = require('node:fs');
+      const newProjectDir = pathScope.join(osScope.homedir(), '.neuronest', 'projects', newSession.id);
+      try {
+        fsScope.mkdirSync(newProjectDir, { recursive: true });
+      } catch (createDirError) {
+        try { sessionManager.delete(newSession.id); } catch {}
+        throw createDirError;
+      }
+
+      pendingScopeConfirmations.delete(sourceProjectId);
+      activeSessionId = newSession.id;
+      turnProjectId = newSession.id;
+      projectContextCache = '';
+      scopePreflightCompleted = true;
+      isSpecMode = pendingScope.specMode;
+      trimmed = pendingScope.originalMessage;
+
+      try {
+        setCachedConfig('activeProjectId', newSession.id);
+      } catch (configError) {
+        console.warn('[IPC] Failed to persist scope-created project:', configError);
+      }
+
+      mainWindow.webContents.send('project-updated', {
+        action: 'created', id: newSession.id, name: newSession.name,
+      });
+      mainWindow.webContents.send('projects-list', sessionManager.list().map((session: any) => ({
+        id: session.id, name: session.name, messageCount: session.messageCount,
+      })));
+      mainWindow.webContents.send('active-project', { id: newSession.id, name: newSession.name });
+      mainWindow.webContents.send('project-opened', {
+        id: newSession.id,
+        name: newSession.name,
+        messages: [],
+      });
+
+      try {
+        const { registerProject } = await import('../pipeline/overwrite-protection');
+        registerProject(sourceProjectDir, newProjectDir);
+      } catch (registryError) {
+        console.warn('[IPC] Could not register scope-created sibling project:', registryError);
+      }
+
+      sendAndStore(mainWindow, {
+        role: 'assistant',
+        content: `✅ Created the separate project **${newSession.name}** and switched execution to it. Continuing with the original request now.`,
+        isCommand: true,
+        agent: 'Scope Guard',
+      }, { persist: false });
+    } else if (pendingScope && !isStructuredScopeAction) {
+      // Any substantive new request supersedes an unanswered scope prompt.
+      pendingScopeConfirmations.delete(pendingScope.sourceProjectId);
+    }
+
+    // Generic proposal buttons identify the latest persisted assistant message,
+    // but the renderer never supplies executable authority. Validate its excerpt
+    // and length against the server-held row, then consume that row exactly once.
+    if (actionContext?.kind === 'proposal') {
+      const proposalAction = actionContext.action === 'confirm' || actionContext.action === 'cancel'
+        ? actionContext.action
+        : null;
+      const latestProposal = turnProjectId
+        ? db.prepare(
+            "SELECT id, content FROM messages WHERE session_id = ? AND role = 'assistant' ORDER BY rowid DESC LIMIT 1",
+          ).get(turnProjectId) as { id: string; content: string } | undefined
+        : undefined;
+      const proposalExcerpt = typeof actionContext.proposal === 'string' ? actionContext.proposal : '';
+      const proposalLength = Number.isInteger(actionContext.proposalLength) ? actionContext.proposalLength : -1;
+      const proposalMatches = Boolean(
+        proposalAction
+        && latestProposal
+        && proposalLength > 0
+        && proposalExcerpt.length === Math.min(4000, proposalLength)
+        && proposalLength === latestProposal.content.length
+        && latestProposal.content.endsWith(proposalExcerpt),
+      );
+
+      if (!proposalMatches || !latestProposal || !markProposalMessageConsumed(latestProposal.id)) {
+        storeMessage('user', trimmed);
+        sendAndStore(mainWindow, {
+          role: 'assistant',
+          content: '⚠️ This proposal is stale or has already been resolved. Please ask for a fresh proposal before confirming.',
+          isCommand: true,
+          agent: 'Action Guard',
+        });
+        return;
+      }
+
+      if (proposalAction === 'cancel') {
+        storeMessage('user', trimmed);
+        sendAndStore(mainWindow, {
+          role: 'assistant',
+          content: 'Cancelled the proposed action. No action was taken.',
+          isCommand: true,
+          agent: 'Action Guard',
+        });
+        return;
+      }
+
+      authoritativeActionMessage = `User approved the following proposal. Proceed with execution:\n\n${latestProposal.content}`;
+    }
 
     const legacyMessageId = (typeof arg === 'object' && arg !== null && typeof arg.messageId === 'string' && arg.messageId)
       || require('node:crypto').randomUUID();
@@ -3897,10 +4308,13 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
 
     autoCreateProject(mainWindow, trimmed);
 
-    // ── Firewall: scan user input (skip system-generated fix prompts) ──
-    const isFixPrompt = trimmed.startsWith('SECURITY FIX REQUEST:');
+    // ── Firewall: scan the authoritative instruction (skip system-generated fix prompts) ──
+    // For correlated proposal approvals this is the server-held proposal, not
+    // the short button label supplied by the renderer.
+    const firewallInput = authoritativeActionMessage || trimmed;
+    const isFixPrompt = firewallInput.startsWith('SECURITY FIX REQUEST:');
     if (!isFixPrompt) {
-      const fwResult = await evaluateFirewall(trimmed, { agentId: 'user', projectId: activeSessionId || undefined });
+      const fwResult = await evaluateFirewall(firewallInput, { agentId: 'user', projectId: turnProjectId || undefined });
       if (fwResult.blocked) {
         sendAndStore(mainWindow, {
           role: 'assistant',
@@ -3938,10 +4352,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
 
       if (trimmed === '/abort') {
         console.log('[IPC] Abort command received — terminating pipeline');
-        if (activeSwarmCoordinator) {
-          activeSwarmCoordinator.abort();
-          activeSwarmCoordinator = null;
-        }
+        swarmDispatchGate.abortActive();
         sendAndStore(mainWindow, {
           role: 'assistant', content: '\u26d4 Pipeline aborted. All agent processes terminated.', isCommand: true, agent: 'System',
         });
@@ -3998,12 +4409,45 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
         (trimmed as any) = swarmTask;
       } else if (result.success && result.output.startsWith('__OPTIMIZE__')) {
         const optPrompt = result.output.slice(12);
-        sendAndStore(mainWindow, { role: 'assistant', content: '\u{1F52E} Running ZERA Optimizer...', isCommand: true, agent: 'ZERA' });
+        const zeraRunId = require('node:crypto').randomUUID();
+        const zeraStartedAt = Date.now();
+        sendAndStore(mainWindow, {
+          role: 'assistant',
+          content: '🔮 Running ZERA Optimizer...',
+          isCommand: true,
+          agent: 'ZERA',
+          zeraEvent: { runId: zeraRunId, phase: 'start' },
+        }, { persist: false });
         const zeraOnly = await zeraOptimizer.optimize(optPrompt, (step: any, index: number) => {
-          sendAndStore(mainWindow, { role: 'assistant', content: '\u2705 **' + step.principle + '** \u2014 Score: ' + step.score + '/100\n\n' + step.suggestion, isCommand: true, agent: 'ZERA' });
+          sendAndStore(mainWindow, {
+            role: 'assistant',
+            content: '✅ **' + step.principle + '** — Score: ' + step.score + '/100\n\n' + step.suggestion,
+            isCommand: true,
+            agent: 'ZERA',
+            zeraEvent: {
+              runId: zeraRunId,
+              phase: 'step',
+              index,
+              principle: step.principle,
+              score: step.score,
+              suggestion: step.suggestion,
+            },
+          }, { persist: false });
         });
         const displayPromptOnly = zeraOnly.optimizedPrompt.split('---')[0].split('Existing project code')[0].trim();
-        sendAndStore(mainWindow, { role: 'assistant', content: '\u{1F4CB} **Optimized Prompt:**\n\n> ' + displayPromptOnly.replace(/\n/g, '\n> '), isCommand: true, agent: 'ZERA' });
+        sendAndStore(mainWindow, {
+          role: 'assistant',
+          content: '📋 **Optimized Prompt:**\n\n> ' + displayPromptOnly.replace(/\n/g, '\n> '),
+          isCommand: true,
+          agent: 'ZERA',
+          zeraEvent: {
+            runId: zeraRunId,
+            phase: 'result',
+            steps: zeraOnly.steps,
+            optimizedPrompt: displayPromptOnly,
+            durationMs: Date.now() - zeraStartedAt,
+          },
+        });
         emitShippedChat(mainWindow, 'chat-response', { role: 'assistant', content: '', agent: 'NeuroNest' });
         return;
       } else if (result.success && result.output.startsWith('__PLAN__')) {
@@ -4136,7 +4580,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
     // ── Local Request Optimization: answer trivial messages without LLM ──
     // Only applies when there's no pending confirmation (confirmations go to simple responder)
     const localResp = tryLocalResponse(trimmed);
-    if (localResp.handled && localResp.content) {
+    if (!actionContext && localResp.handled && localResp.content) {
       // Check if the last stored message looks like it's waiting for confirmation
       let hasPendingAction = false;
       try {
@@ -4157,13 +4601,22 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
     // classifier sees "yes go ahead" in isolation and has no idea it's confirming a
     // previous destructive action — it classifies it as "ambiguous".
     const confirmPattern = /^(yes|yeah|yep|yup|sure|ok|okay|confirm|confirmed|do it|go ahead|proceed|please do|yes go ahead|yes please|i confirm|affirmative|go for it)[\s.!]*$/i;
-    if (confirmPattern.test(trimmed)) {
-      console.log('[IPC] Confirmation message detected — routing directly to simple responder');
+    if (confirmPattern.test(trimmed) && !actionContext) {
+      if (turnProjectId && hasRecentUnresolvedScopeWarning(turnProjectId)) {
+        sendAndStore(mainWindow, {
+          role: 'assistant',
+          content: '⚠️ That scope confirmation has expired or was interrupted. Please resend the original project request so I can issue a fresh, targeted confirmation.',
+          isCommand: true,
+          agent: 'Scope Guard',
+        });
+        return;
+      }
+      console.log('[IPC] Unscoped confirmation message detected — routing to simple responder');
       const { SimpleResponder } = await import('../pipeline/simple-responder');
       try {
         const osConf = require('node:os');
         const pathConf = require('node:path');
-        const projDirConf = pathConf.join(osConf.homedir(), '.neuronest', 'projects', activeSessionId || 'default');
+        const projDirConf = pathConf.join(osConf.homedir(), '.neuronest', 'projects', turnProjectId || 'default');
 
         // Get project context
         let confProjectContext = '';
@@ -4192,11 +4645,11 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
         try {
           const histRows = db.prepare(
             'SELECT role, content FROM messages WHERE session_id = ? ORDER BY rowid DESC LIMIT 6'
-          ).all(activeSessionId || 'default') as Array<{ role: string; content: string }>;
+          ).all(turnProjectId || 'default') as Array<{ role: string; content: string }>;
           confHistory = histRows.reverse();
         } catch {}
 
-        const confResponder = await SimpleResponder.create(db, activeSessionId, confProjectContext, projDirConf, confHistory, assembleStateBlockForSession);
+        const confResponder = await SimpleResponder.create(db, turnProjectId || undefined, confProjectContext, projDirConf, confHistory, assembleStateBlockForSession);
         const confResponse = await confResponder.respond(trimmed);
 
         // Resolve provider/model for display
@@ -4222,8 +4675,8 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
           model: confModel,
         });
 
-        if (confResponse.filesChanged && activeSessionId) {
-          notifyProjectFilesUpdated(activeSessionId);
+        if (confResponse.filesChanged && turnProjectId) {
+          notifyProjectFilesUpdated(turnProjectId);
         }
 
         emitShippedChat(mainWindow, 'chat-response', { role: 'assistant', content: '', agent: 'NeuroNest' });
@@ -4255,15 +4708,15 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
       const { abortGrillSession: dropStaleGrill } = await import('../pipeline/grill-me-session');
       dropStaleGrill(activeSessionId);
     }
-    if (activeSessionId && !isSteerRedirect) {
+    if (turnProjectId && !isSteerRedirect) {
       const grillLLM = resolveActiveLLMClient();
-      const existing = getGrillSession(activeSessionId);
+      const existing = getGrillSession(turnProjectId);
 
       if (existing) {
         // Active session: route the user's reply through it.
         if (!grillLLM) {
           // No LLM available — abort the interview gracefully and fall back.
-          abortGrillSession(activeSessionId);
+          abortGrillSession(turnProjectId);
           sendAndStore(mainWindow, {
             role: 'assistant',
             content: '⚠️ Lost LLM connection mid-interview. Routing your last message normally.',
@@ -4272,7 +4725,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
           });
         } else {
           try {
-            const step = await continueGrillSession(activeSessionId, trimmed, grillLLM);
+            const step = await continueGrillSession(turnProjectId, authoritativeActionMessage || trimmed, grillLLM);
             if ('question' in step) {
               sendAndStore(mainWindow, {
                 role: 'assistant',
@@ -4307,7 +4760,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
               // Fall through to classification with the spec as the message.
             }
             if ('error' in step) {
-              abortGrillSession(activeSessionId);
+              abortGrillSession(turnProjectId);
               sendAndStore(mainWindow, {
                 role: 'assistant',
                 content: '⚠️ Interview error (' + step.error + '). Falling back to direct routing.',
@@ -4316,28 +4769,104 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
               });
             }
           } catch (grillErr: any) {
-            abortGrillSession(activeSessionId);
+            abortGrillSession(turnProjectId);
             console.warn('[IPC] Grill-me runtime error, aborting and falling through:', grillErr?.message);
           }
         }
       }
     }
 
-    // If grill produced a spec, treat it as the new effective message so the
-    // downstream classifier + orchestrator pipeline run against it.
-    let effectiveMessage = grilledSpec ?? trimmed;
+    // If grill produced a spec, it takes precedence. Otherwise a confirmed
+    // proposal uses the server-held instruction resolved before firewall checks.
+    const effectiveMessage = grilledSpec ?? authoritativeActionMessage ?? trimmed;
 
-    // ── Action Context Resolution ──
-    // When the user clicked a Confirm/Cancel button on a prior agent response,
-    // the renderer passes actionContext with the agent's proposal. We enrich
-    // the bare "confirm"/"cancel" text so the pipeline treats it as approval
-    // or rejection of the specific proposal rather than an ambiguous prompt.
-    if (actionContext && actionContext.action === 'confirm' && actionContext.proposal) {
-      effectiveMessage = `User approved the following proposal. Proceed with execution:\n\n${actionContext.proposal}`;
-      console.log('[IPC] Action context resolved: confirm → executing agent proposal');
-    } else if (actionContext && actionContext.action === 'cancel') {
-      effectiveMessage = 'User cancelled the proposed action. Acknowledge and ask what they would like to do instead.';
-      console.log('[IPC] Action context resolved: cancel → aborting proposal');
+    // ── Parent-Owned Scope Divergence Preflight ──
+    // Evaluate the user's effective request exactly once before optimization or
+    // swarm decomposition. Generated worker prompts are not user intent and must
+    // never create ten independent approval gates for one logical turn.
+    if (!scopePreflightCompleted && turnProjectId) {
+      scopePreflightCompleted = true;
+      if (activeSessionId !== turnProjectId) {
+        sendAndStore(mainWindow, {
+          role: 'assistant',
+          content: '⚠️ The active project changed while this request was being prepared. Please resend the request in the intended project.',
+          isCommand: true,
+          agent: 'Scope Guard',
+        });
+        return;
+      }
+      try {
+        const osScope = require('node:os');
+        const pathScope = require('node:path');
+        const sourceProjectId = turnProjectId;
+        const sourceProjectDir = pathScope.join(osScope.homedir(), '.neuronest', 'projects', sourceProjectId);
+        const [{ computeScopeDivergence, deriveProjectManifest, parseOverwriteProtectionConfig }, { loadAIRules }] = await Promise.all([
+          import('../pipeline/overwrite-protection'),
+          import('../pipeline/simple-responder'),
+        ]);
+        const rulesContent = loadAIRules(sourceProjectDir)?.content ?? null;
+        const protectionSettings = parseOverwriteProtectionConfig(rulesContent);
+
+        if (protectionSettings.scopeDetector.enabled) {
+          const manifest = deriveProjectManifest(sourceProjectDir);
+          const scopeResult = computeScopeDivergence(effectiveMessage, manifest, protectionSettings.scopeDetector);
+          if (scopeResult.isNewProjectRequest) {
+            const existingPending = getPendingScopeConfirmation(sourceProjectId);
+            if (existingPending) {
+              sendAndStore(mainWindow, {
+                role: 'assistant',
+                content: `⚠️ A scope decision for **${existingPending.targetProjectName}** is already awaiting your response. Use its existing buttons, or type \"confirm\" or \"cancel\".`,
+                isCommand: true,
+                agent: 'Scope Guard',
+              });
+              return;
+            }
+            const confirmationId = require('node:crypto').randomUUID();
+            const targetProjectName = normalizeScopeProjectName(scopeResult.inferredProjectName || 'New Project');
+            const pending: PendingScopeConfirmation = {
+              confirmationId,
+              sourceProjectId,
+              sourceProjectDir,
+              originalMessage: effectiveMessage,
+              targetProjectName,
+              targetStack: scopeResult.inferredStack,
+              explanation: scopeResult.explanation,
+              specMode: isSpecMode,
+              createdAt: Date.now(),
+            };
+            pendingScopeConfirmations.set(sourceProjectId, pending);
+
+            const currentStack = manifest.framework
+              ? `${manifest.primaryLanguage}/${manifest.framework}`
+              : manifest.primaryLanguage;
+            const requestedStack = scopeResult.inferredStack || 'to be determined';
+            sendAndStore(mainWindow, {
+              role: 'assistant',
+              content:
+                `⚠️ **Scope change needs confirmation**\n\n` +
+                `- **Current project:** ${manifest.name} (${currentStack})\n` +
+                `- **Requested project:** ${targetProjectName} (${requestedStack})\n` +
+                `- **Why it was flagged:** ${scopeResult.explanation}\n\n` +
+                'Creating a separate sibling project keeps the current project intact. Please confirm whether to create the new project or cancel.',
+              isCommand: true,
+              agent: 'Scope Guard',
+              pendingAction: {
+                kind: 'scope-divergence',
+                confirmationId,
+                sourceProjectId,
+                confirmLabel: 'Create new project',
+                cancelLabel: 'Cancel',
+                confirmResponse: 'create new project',
+              },
+            });
+            return;
+          }
+        }
+      } catch (scopeError) {
+        // Preserve the detector's documented fail-open behavior, but keep this
+        // turn parent-owned so delegated workers do not multiply the same error.
+        console.warn('[IPC] Scope preflight failed; continuing without a scope prompt:', scopeError);
+      }
     }
 
     // ── Intent Classification and Message Routing ──
@@ -4393,7 +4922,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
     if (
       isSpecMode &&
       !grilledSpec &&
-      activeSessionId &&
+      turnProjectId &&
       !isSteerRedirect &&
       (routingDecision.route === 'orchestrator_pipeline') &&
       (routingDecision.intent.type === 'build_task' || routingDecision.intent.type === 'complex_orchestration')
@@ -4401,7 +4930,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
       const grillLLM = resolveActiveLLMClient();
       if (grillLLM) {
         try {
-          const opener = await startGrillSession(activeSessionId, trimmed, grillLLM);
+          const opener = await startGrillSession(turnProjectId, effectiveMessage, grillLLM);
           if ('question' in opener) {
             sendAndStore(mainWindow, {
               role: 'assistant',
@@ -4432,7 +4961,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
           const osCtx = require('node:os');
           const fsCtx = require('node:fs');
           const pathCtx = require('node:path');
-          const projDir = pathCtx.join(osCtx.homedir(), '.neuronest', 'projects', activeSessionId || 'default');
+          const projDir = pathCtx.join(osCtx.homedir(), '.neuronest', 'projects', turnProjectId || 'default');
           if (fsCtx.existsSync(projDir)) {
             const filePaths: string[] = [];
             const walkCtx = (dir: string, prefix: string = '') => {
@@ -4493,26 +5022,26 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
         // Resolve project directory and conversation history for the simple responder
         const osSimple = require('node:os');
         const pathSimple = require('node:path');
-        const projDirSimple = pathSimple.join(osSimple.homedir(), '.neuronest', 'projects', activeSessionId || 'default');
+        const projDirSimple = pathSimple.join(osSimple.homedir(), '.neuronest', 'projects', turnProjectId || 'default');
 
         // Get recent conversation history from stored messages for context continuity
         let recentHistory: Array<{ role: string; content: string }> = [];
         try {
           const historyRows = db.prepare(
             'SELECT role, content FROM messages WHERE session_id = ? ORDER BY rowid DESC LIMIT 6'
-          ).all(activeSessionId || 'default') as Array<{ role: string; content: string }>;
+          ).all(turnProjectId || 'default') as Array<{ role: string; content: string }>;
           recentHistory = historyRows.reverse(); // Oldest first
         } catch {}
 
-        const simpleResponder = await SimpleResponder.create(db, activeSessionId, projectContext, projDirSimple, recentHistory, assembleStateBlockForSession);
+        const simpleResponder = await SimpleResponder.create(db, turnProjectId || undefined, projectContext, projDirSimple, recentHistory, assembleStateBlockForSession);
 
-        // Inject active schema instruction into the message if one is active
-        let simpleMsg = trimmed;
-        if (activeSessionId) {
+        // Inject active schema instruction into the authoritative message if one is active
+        let simpleMsg = effectiveMessage;
+        if (turnProjectId) {
           try {
-            const activeSchema = schemaService.getActive(activeSessionId);
+            const activeSchema = schemaService.getActive(turnProjectId);
             if (activeSchema) {
-              simpleMsg = trimmed + '\n\n[SYSTEM: You MUST respond with valid JSON conforming to this schema. No markdown, no code blocks, only raw JSON.]\nSchema: ' + JSON.stringify(activeSchema.schema);
+              simpleMsg = effectiveMessage + '\n\n[SYSTEM: You MUST respond with valid JSON conforming to this schema. No markdown, no code blocks, only raw JSON.]\nSchema: ' + JSON.stringify(activeSchema.schema);
             }
           } catch {}
         }
@@ -4554,9 +5083,9 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
         });
 
         // ── Response Schema Validation (simple responder path) ──
-        if (activeSessionId && response.content && !response.isCommand) {
+        if (turnProjectId && response.content && !response.isCommand) {
           try {
-            const schemaResult = schemaService.validateForSession(activeSessionId, response.content);
+            const schemaResult = schemaService.validateForSession(turnProjectId, response.content);
             if (schemaResult && !schemaResult.valid) {
               sendAndStore(mainWindow, {
                 role: 'assistant',
@@ -4976,7 +5505,15 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
     // optimizer / orchestrator works against — not the original one-liner.
     const enrichedPrompt = effectiveMessage + (projectContext ? '\n\nExisting project code is available. Build upon it, don\'t recreate from scratch.' : '') + agentMemoryContext + (memoryContext ? '\n\n' + memoryContext : '');
 
-    sendAndStore(mainWindow, { role: 'assistant', content: '🔮 **ZERA Optimizer** — Refining your prompt...', isCommand: true, agent: 'ZERA' });
+    const zeraRunId = require('node:crypto').randomUUID();
+    const zeraStartTime = Date.now();
+    sendAndStore(mainWindow, {
+      role: 'assistant',
+      content: '🔮 **ZERA Optimizer** — Refining your prompt...',
+      isCommand: true,
+      agent: 'ZERA',
+      zeraEvent: { runId: zeraRunId, phase: 'start' },
+    }, { persist: false });
 
     // Give ZERA access to the LLM for framework-based optimization (Promptly-style)
     const zeraLLM = resolveActiveLLMClient();
@@ -4984,13 +5521,21 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
       zeraOptimizer.setLLMClient(zeraLLM);
     }
 
-    const zeraStartTime = Date.now();
     const zeraResult = await zeraOptimizer.optimize(enrichedPrompt, (step, index) => {
       sendAndStore(mainWindow, {
         role: 'assistant',
         content: `✅ **${step.principle}** — Score: ${step.score}/100\n\n${step.suggestion}`,
-        isCommand: true, agent: 'ZERA',
-      });
+        isCommand: true,
+        agent: 'ZERA',
+        zeraEvent: {
+          runId: zeraRunId,
+          phase: 'step',
+          index,
+          principle: step.principle,
+          score: step.score,
+          suggestion: step.suggestion,
+        },
+      }, { persist: false });
     });
     if (traceService && traceId) {
       try { traceService.recordSpan(traceId, activeSessionId, 'zera_optimization', zeraStartTime, Date.now(), { metadata: { steps: zeraResult.steps.length } }); } catch {}
@@ -5005,7 +5550,15 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
     sendAndStore(mainWindow, {
       role: 'assistant',
       content: formattedOutput,
-      isCommand: true, agent: 'ZERA',
+      isCommand: true,
+      agent: 'ZERA',
+      zeraEvent: {
+        runId: zeraRunId,
+        phase: 'result',
+        steps: zeraResult.steps,
+        optimizedPrompt: displayPrompt,
+        durationMs: Date.now() - zeraStartTime,
+      },
     });
 
     // Step 2: Execution Mode Selection + Orchestrator Planning
@@ -5172,14 +5725,8 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
       }
     } catch (e) { console.error('[IPC] LLM client creation error:', e); }
 
-    const swarmCoordinator = new SwarmCoordinator(memoryPool, llmClient, undefined, undefined, db);
-    activeSwarmCoordinator = swarmCoordinator;
-
-    // Initialize enhanced coordinator with the same LLM client
-    if (enhancedSwarmCoordinator && activeSessionId) {
-      // Update the enhanced coordinator's LLM client
-      (enhancedSwarmCoordinator as any).enhancedLLMClient = llmClient;
-    }
+    let swarmCoordinator: SwarmCoordinator;
+    let requestEnhancedSwarmCoordinator: EnhancedSwarmCoordinator | null = null;
 
     // Build per-agent LLM configs from saved agent model assignments
     // Resolution chain: active model pack → agent-specific config → default provider → first provider
@@ -5622,31 +6169,83 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
       console.warn('[IPC] Plan validation error (non-fatal, continuing with original plan):', validationErr?.message);
     }
 
+    // Capture execution identity before dispatch so project switches cannot
+    // reattribute live or completed drift evidence.
+    const executionProjectId = turnProjectId;
+    const executionProjectDir = executionProjectId
+      ? require('node:path').join(require('node:os').homedir(), '.neuronest', 'projects', executionProjectId)
+      : '';
+    const alwaysOnDriftConfig = {
+      enabled: true,
+      sensitivity: 'balanced' as const,
+      driftPauseOnCritical: true,
+      scopeViolationMode: 'warn' as const,
+    };
+
     // ─── PHASED_EXECUTION gate: route through PhasedPipeline when enabled (Req 9.2, 11.2, 11.4) ───
     // When PHASED_EXECUTION is enabled, invoke the PhasedPipeline via AgentLoopController.run()
     // which calls spawnSkillAwareSubagent on the live agent-spawn path (Req 11.2).
     // On failure, fall back to the swarm dispatch below (Req 9.6).
-    if (PERF_FLAGS.PHASED_EXECUTION && activeSessionId) {
+    if (PERF_FLAGS.PHASED_EXECUTION && executionProjectId) {
       try {
-        const phasedProjectDir = require('node:path').join(
-          require('node:os').homedir(), '.neuronest', 'projects', activeSessionId,
-        );
         const phasedConfig = {
           llmClient: wrapLLMClientForAgentLoop(llmClient || resolveActiveLLMClient()!),
           toolSystem: getAgentLoopToolSystem(),
-          projectDir: phasedProjectDir,
-          sessionId: activeSessionId,
+          projectDir: executionProjectDir,
+          sessionId: executionProjectId,
           maxIterations: 25,
           planMode: false,
+          scopePreflightCompleted,
           turboEditsEnabled: false,
           smartContextEnabled: false,
           // GCF Agent Integration: wire prompt enrichment and response validation (Req 15.1, 15.2, 15.3)
           agentIntegration: getGCFSystem()?.agentIntegration ?? undefined,
-          // Enable drift management when lint/test/fix is active for the project —
-          // drift monitors whether the agent is staying on-task and prevents scope creep.
-          driftConfig: (lintTestServiceRef && lintTestServiceRef.getConfig(activeSessionId)?.lintEnabled)
-            ? { enabled: true, sensitivity: 'balanced' as const, driftPauseOnCritical: true, scopeViolationMode: 'warn' as const }
-            : undefined,
+          // Persist project-scoped reliability and final drift evidence before
+          // the dashboard's live state transitions back to idle.
+          onRunComplete: (completion: AgentLoopCompletion) => {
+            if (agentLoopMetricsStore) {
+              const snapshotId = require('node:crypto').randomUUID();
+              let lastSnapshotError: unknown = null;
+              for (let attempt = 0; attempt < 2; attempt += 1) {
+                try {
+                  agentLoopMetricsStore.recordRunSnapshot({
+                    projectId: completion.projectId,
+                    sessionId: completion.sessionId,
+                    status: completion.status,
+                    source: 'agent-loop',
+                    loopIterations: completion.result.iterations,
+                    phaseCount: PERF_FLAGS.PHASED_EXECUTION ? completion.result.iterations : 0,
+                    toolSuccessCount: completion.result.toolSuccessCount || 0,
+                    toolFailureCount: completion.result.toolFailureCount || 0,
+                    taskCompletedCount: 0,
+                    taskFailedCount: 0,
+                    taskBlockedCount: 0,
+                    agentOutputCount: 0,
+                    tokensConsumed: completion.result.tokenUsage.totalTokens,
+                    completedAt: completion.completedAt,
+                    driftState: completion.driftState,
+                  }, snapshotId);
+                  lastSnapshotError = null;
+                  break;
+                } catch (error) {
+                  lastSnapshotError = error;
+                }
+              }
+              if (lastSnapshotError) throw lastSnapshotError;
+            }
+            if (mainWindow && !mainWindow.isDestroyed()) {
+              mainWindow.webContents.send('drift:state-update', {
+                active: false,
+                completed: true,
+                projectId: completion.projectId,
+              });
+            }
+          },
+          ipcSend: (channel: string, data: unknown) => {
+            if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, data);
+          },
+          // Drift management is a core execution invariant, independent of lint.
+          driftConfig: alwaysOnDriftConfig,
         };
 
         // Notify user that drift management is active
@@ -5659,7 +6258,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
           });
         }
         const phasedController = new AgentLoopController(phasedConfig);
-        const phasedResult: AgentLoopResult = await phasedController.run(trimmed);
+        const phasedResult: AgentLoopResult = await phasedController.run(effectiveMessage);
 
         // Pipeline succeeded — send response and completion signal
         if (phasedResult.response) {
@@ -5680,6 +6279,81 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
       }
     }
 
+    // Only one production swarm may own the shared checkout and global drift
+    // context at a time. Phased executions remain independent and /abort stays
+    // wait-free because it never acquires this lock.
+    swarmDispatchLease = await swarmDispatchGate.acquire();
+
+    // The phased path was unavailable or fell back; start an always-on monitor
+    // for either swarm coordinator using the same captured project identity.
+    if (executionProjectId) {
+      // Prepare request-scoped evidence before execution starts so caught aborts
+      // and failures persist instead of falling back to an older snapshot.
+      swarmSnapshotRecorder.initialize({
+        projectId: executionProjectId,
+        sessionId: executionProjectId,
+        status: 'incomplete',
+        source: 'standard-swarm',
+        loopIterations: 0,
+        phaseCount: 0,
+        taskCompletedCount: 0,
+        taskFailedCount: 0,
+        taskBlockedCount: 0,
+        agentOutputCount: 0,
+        tokensConsumed: 0,
+      });
+      try {
+        const toolSystem = getAgentLoopToolSystem();
+        swarmDriftMonitor = new DriftMonitor(alwaysOnDriftConfig, {
+          callbackEngine: null,
+          ipcSend: (channel: string, data: unknown) => {
+            if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, data);
+          },
+          registeredTools: toolSystem.list().map(tool => tool.id),
+        });
+        // No classifier is available on the swarm path, so mark confidence as
+        // unknown/low and use the monitor's documented permissive envelope of
+        // all registered tools rather than an empty 0/0 scope.
+        swarmDriftMonitor.initialize({ type: 'code-generation', confidence: 0.0 }, trimmed);
+        swarmDriftProjectId = executionProjectId;
+        swarmDriftStartedAt = Date.now();
+        (global as any).__activeDriftMonitor = swarmDriftMonitor;
+        (global as any).__activeDriftMonitorContext = {
+          monitor: swarmDriftMonitor,
+          projectId: executionProjectId,
+          sessionId: executionProjectId,
+          projectDir: executionProjectDir,
+        };
+        pushSwarmDriftState();
+      } catch (error) {
+        swarmDriftMonitor = null;
+        console.warn('[IPC] Failed to initialize always-on swarm drift monitor:', error);
+      }
+    }
+
+    const swarmWorkerDelegateFactory = executionProjectId && executionProjectDir
+      ? createAgentLoopSwarmWorkerFactory({
+          toolSystem: getAgentLoopToolSystem(),
+          projectDir: executionProjectDir,
+          sessionId: executionProjectId,
+          maxIterations: 25,
+          scopePreflightCompleted,
+          actionFirst: { maxRePromptAttempts: 2 },
+          onToolObservation: observeSwarmWorkerTool,
+          ipcSend: (channel: string, data: unknown) => {
+            if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, data);
+          },
+        })
+      : undefined;
+
+    const swarmOptions = { workerDelegateFactory: swarmWorkerDelegateFactory };
+    swarmCoordinator = new SwarmCoordinator(memoryPool, llmClient, undefined, undefined, db, swarmOptions);
+    requestEnhancedSwarmCoordinator = enhancedSwarmCoordinator
+      ? new EnhancedSwarmCoordinator(llmClient, db, swarmOptions)
+      : null;
+    wasSwarmAborted = () => swarmCoordinator.aborted || Boolean(requestEnhancedSwarmCoordinator?.aborted);
+    swarmDispatchLease.setOwner(swarmCoordinator);
+
     // Use enhanced coordinator if available and session is active
     let swarmResult;
     const useEnhancedCoordinatorEnv = process.env.NEURONEST_USE_ENHANCED_COORDINATOR;
@@ -5687,12 +6361,16 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
       ? useEnhancedCoordinatorEnv.toLowerCase() !== 'false'
       : true; // Default to true if env var is not set
     
-    if (enhancedSwarmCoordinator && activeSessionId && useEnhancedCoordinator) {
+    if (requestEnhancedSwarmCoordinator && executionProjectId && useEnhancedCoordinator) {
+      swarmSnapshotRecorder.update({ source: 'enhanced-swarm' });
       console.log('[IPC] Using enhanced swarm coordinator with task lifecycle management');
-      // Set activeSwarmCoordinator to the enhanced one so /abort works correctly
-      activeSwarmCoordinator = enhancedSwarmCoordinator as any;
-      swarmResult = await enhancedSwarmCoordinator.executeEnhanced(plan, activeSessionId, async (event) => {
+      // Publish the request-local enhanced coordinator so /abort targets it.
+      swarmDispatchLease.setOwner(requestEnhancedSwarmCoordinator as any);
+      swarmResult = await requestEnhancedSwarmCoordinator.executeEnhanced(plan, executionProjectId, async (event) => {
         if (event.type === 'phase_start') {
+          enhancedPhaseCount = advanceEnhancedPhaseCount(enhancedPhaseCount, event.phase);
+          updateEnhancedSnapshotProgress();
+          evaluateSwarmDrift();
           sendAndStore(mainWindow, {
             role: 'assistant', content: '⚡ ' + event.content, isCommand: true, agent: 'Swarm',
           });
@@ -5703,6 +6381,11 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
           // Suppress noisy progress updates — only log to console
           console.log('[Swarm] Progress:', event.content);
         } else if (event.type === 'task_blocker_reported') {
+          recordEnhancedTaskState(event.agentId, 'blocked');
+          if (event.agentId && !swarmDriftOutcomeAgents.has(event.agentId)) {
+            swarmDriftOutcomeAgents.add(event.agentId);
+            evaluateSwarmDrift(false);
+          }
           sendAndStore(mainWindow, {
             role: 'assistant', content: '🚫 Blocker: ' + event.content, isCommand: true, agent: 'Task Manager',
           });
@@ -5713,6 +6396,13 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
             role: 'assistant', content: '🧩 Skill applied: ' + event.content, isCommand: true, agent: 'Skills',
           });
         } else if (event.type === 'agent_token') {
+          if (event.done && event.error && !requestEnhancedSwarmCoordinator.aborted) {
+            recordEnhancedTaskState(event.agentId, 'failed');
+          }
+          if (event.done && event.agentId && !swarmDriftOutcomeAgents.has(event.agentId)) {
+            swarmDriftOutcomeAgents.add(event.agentId);
+            evaluateSwarmDrift(event.error !== true);
+          }
           // True streaming: forward LLM tokens directly to the renderer
           if (event.done) {
             if (event.error) {
@@ -5753,6 +6443,9 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
           });
           sharedMemory.store({ agentId: event.agentName || 'swarm', type: 'context', content: 'Agent started: ' + (event.agentName || '') });
         } else if (event.type === 'agent_complete') {
+          if (!requestEnhancedSwarmCoordinator.aborted) {
+            recordEnhancedTaskState(event.agentId, 'completed');
+          }
           // Firewall: scan agent output (warn only, never block code generation)
           let agentContent = event.content || '';
           if (firewallEngine && agentContent) {
@@ -5890,6 +6583,31 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
           });
         }
       }, agentLLMConfigs);
+
+      // Persist only outcomes that the enhanced coordinator reports explicitly.
+      // Task lifecycle counts remain separate from tool-call reliability.
+      const completedTasks = swarmResult.tasks.filter(t => t.status === 'completed').length;
+      const failedTasks = swarmResult.tasks.filter(t => t.status === 'failed').length;
+      const blockedTasks = swarmResult.tasks.filter(t => t.status === 'blocked').length;
+      const unfinishedTasks = swarmResult.tasks.length - completedTasks - failedTasks - blockedTasks;
+      for (const task of swarmResult.tasks) {
+        if (!swarmDriftOutcomeAgents.has(task.assigneeId)) {
+          swarmDriftOutcomeAgents.add(task.assigneeId);
+          evaluateSwarmDrift(task.status === 'completed');
+        }
+      }
+      swarmSnapshotRecorder.update({
+        status: requestEnhancedSwarmCoordinator.aborted
+          ? 'incomplete'
+          : (failedTasks > 0 ? 'failed' : (blockedTasks > 0 || unfinishedTasks > 0 ? 'incomplete' : 'completed')),
+        source: 'enhanced-swarm',
+        phaseCount: swarmResult.totalPhases,
+        taskCompletedCount: completedTasks,
+        taskFailedCount: failedTasks,
+        taskBlockedCount: blockedTasks,
+        agentOutputCount: swarmResult.outputs.size,
+      });
+      swarmSnapshotRecorder.persist();
       
       // ── Skill Learning: analyze execution and potentially learn a reusable skill ──
       if (skillLearner && activeSessionId && swarmResult && swarmResult.outputs) {
@@ -5930,6 +6648,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
       console.log('[IPC] Using standard swarm coordinator');
       swarmResult = await swarmCoordinator.execute(plan, async (event) => {
         if (event.type === 'phase_start') {
+          evaluateSwarmDrift();
           sendAndStore(mainWindow, {
             role: 'assistant', content: '⚡ ' + event.content, isCommand: true, agent: 'Swarm',
           });
@@ -5940,6 +6659,10 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
           // Inject shared memory context for this agent
           sharedMemory.store({ agentId: event.agentName || 'swarm', type: 'context', content: 'Agent started: ' + (event.agentName || '') });
         } else if (event.type === 'agent_token') {
+          if (event.done && event.agentId && !swarmDriftOutcomeAgents.has(event.agentId)) {
+            swarmDriftOutcomeAgents.add(event.agentId);
+            evaluateSwarmDrift(event.error !== true);
+          }
           // True streaming: forward LLM tokens directly to the renderer
           if (event.done) {
             if (event.error) {
@@ -6100,6 +6823,18 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
         }
       }, agentLLMConfigs);
 
+      // The standard coordinator exposes phase and output counts, but it converts
+      // provider errors into rendered agent output. Persist those observable counts
+      // without claiming that they are successful tool or task outcomes.
+      evaluateSwarmDrift();
+      swarmSnapshotRecorder.update({
+        status: swarmCoordinator.aborted ? 'incomplete' : (swarmCoordinator.failed ? 'failed' : 'completed'),
+        source: 'standard-swarm',
+        phaseCount: swarmResult.totalPhases,
+        agentOutputCount: swarmResult.outputs.size,
+      });
+      swarmSnapshotRecorder.persist();
+
       // Send a metrics summary mirroring the enhanced path, so the standard
       // coordinator's run also surfaces how many skills were actually applied.
       if (swarmResult && swarmResult.skillsUsed) {
@@ -6114,7 +6849,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
       }
     }
 
-    activeSwarmCoordinator = null; // Clear after completion
+    swarmDispatchLease.clearOwner();
 
     // ── F7 Teacher_Escalation_Loop: post-turn hook ──
     // On turn complete, escalate to a configured teacher endpoint when the
@@ -7088,6 +7823,10 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
     }
     
     } catch (err: any) {
+      swarmSnapshotRecorder.markExceptional(wasSwarmAborted?.() ?? false);
+      // The finally block retries if this write fails; successful writes remain
+      // idempotent and cannot be overwritten by later cleanup.
+      swarmSnapshotRecorder.persist();
       console.error('[IPC] chat-message handler error:', err);
       // Error_Capture_Helper (task 14, Requirement 2.7). The orchestrator's
       // top-level chat-message dispatcher is one of the three migration
@@ -7113,6 +7852,14 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
         });
       } catch {}
     } finally {
+      activeChatTurnCount = Math.max(0, activeChatTurnCount - 1);
+      // Idempotent persistence keeps abort/error evidence from falling back to
+      // an older completed run after the live monitor is cleared.
+      swarmSnapshotRecorder.persist();
+      finalizeSwarmDrift();
+      // Finalize request-owned globals before waking the next FIFO waiter.
+      swarmDispatchLease?.release();
+      swarmDispatchLease = null;
       // Runs for success, errors, and every early-return route (including
       // rejected dashboard dispatches), so the working card cannot get stuck.
       emitShippedChat(mainWindow, 'chat-response', {
@@ -7180,11 +7927,18 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
         console.warn('[IPC] Failed to start indexing pipeline on project open:', indexingError);
       }
       
-      const messages = session.messages.map(m => ({
-        role: m.role, content: m.content,
-        agent: m.toolCalls ? JSON.parse(JSON.stringify(m.toolCalls)).agent : undefined,
-        isCommand: m.role === 'system',
-      }));
+      const messages = session.messages.map(m => {
+        const messageMetadata = m.toolCalls
+          ? JSON.parse(JSON.stringify(m.toolCalls))
+          : undefined;
+        return {
+          role: m.role,
+          content: m.content,
+          agent: messageMetadata?.agent,
+          isCommand: m.role === 'system',
+          zeraEvent: messageMetadata?.zeraEvent,
+        };
+      });
       mainWindow.webContents.send('project-opened', {
         id: session.id, name: session.name, messages,
       });
@@ -9463,9 +10217,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
       legacyResponseIPCBridge?.enterTurn(activeLegacyTurnContext);
     }
     legacyResponseIPCBridge?.cancel({ origin: activeLegacyTurnContext?.origin || 'chat' });
-    if (activeSwarmCoordinator) {
-      activeSwarmCoordinator.abort();
-      activeSwarmCoordinator = null;
+    if (swarmDispatchGate.abortActive()) {
       console.log('[IPC] Swarm coordinator aborted');
     }
   });
@@ -9702,8 +10454,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
   // registerMetricsIPC — serves the live get-session-metrics / get-cumulative-metrics
   // channels for the metrics dashboard panel, backed by the session_telemetry table.
   try {
-    if (db) {
-      const agentLoopMetricsStore = new AgentLoopMetricsStore(db);
+    if (agentLoopMetricsStore) {
       registerMetricsIPC({ metricsStore: agentLoopMetricsStore });
       console.log('[IPC] Agent Loop Metrics IPC handlers registered');
     }
@@ -9783,12 +10534,20 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
   try {
     registerDriftIPC({
       getMainWindow: () => mainWindow,
-      getDriftMonitor: () => {
-        // Return any active DriftMonitor from a running agent loop.
-        // The monitor is transient (lives only during a run), so this returns
-        // null between runs — the IPC handler degrades to INACTIVE_STATE.
-        return (global as any).__activeDriftMonitor || null;
+      getDriftMonitor: (requestedProjectId?: string) => {
+        // Drift monitors are transient and project-scoped. Never return a live
+        // monitor for a different active project, otherwise the dashboard would
+        // correlate unrelated task alignment and project quality evidence.
+        const context = (global as any).__activeDriftMonitorContext;
+        if (context?.monitor) {
+          if (requestedProjectId && context.projectId !== requestedProjectId) return null;
+          return context.monitor;
+        }
+        // Compatibility for monitors created before identity-aware context was set.
+        return requestedProjectId ? null : ((global as any).__activeDriftMonitor || null);
       },
+      getLatestCompletedRun: (projectId: string) =>
+        agentLoopMetricsStore?.getLatestProjectRun(projectId) ?? null,
     });
     console.log('[IPC] Drift Dashboard IPC handlers registered');
   } catch (error) {
@@ -11648,7 +12407,10 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
   });
 
   // ── DeerFlow IPC channels ──────────────────────────────────────
-  registerDeerFlowIPC(mainWindow);
+  registerDeerFlowIPC(mainWindow, {
+    toolSystem: getAgentLoopToolSystem(),
+    resolveProjectDir: resolveNeuroNestProjectDir,
+  });
   setDeerFlowMainWindow(mainWindow);
 
   // ── Codebase Analysis IPC channels (Req 7.3, 8.5) ─────────────

@@ -86,6 +86,8 @@ export interface ToolContext {
    *  Returns true if the action is approved, false otherwise.
    *  If not provided and permissionMode is not 'auto-approve', commands are rejected. */
   approvalHandler?: (command: string) => Promise<boolean>;
+  /** Cooperative cancellation signal for the current agent/swarm execution. */
+  signal?: AbortSignal;
   /**
    * The effective sandbox profile for process-spawning tools (Req 9.9).
    * Process-spawning tools SHALL read this field rather than deriving the profile independently.

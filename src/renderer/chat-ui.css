@@ -351,6 +351,302 @@
 }
 
 /* ══════════════════════════════════════════════════════════════
+   ZERA Optimizer Thinking Trace
+   Beautiful UI-inspired expandable reasoning/actions + result.
+   ══════════════════════════════════════════════════════════════ */
+
+.message.assistant.zera-thinking-message .message-inner {
+  border-left: 3px solid var(--accent) !important;
+  background: linear-gradient(135deg, var(--surface-container-high), var(--surface-container)) !important;
+  padding: 12px 16px !important;
+}
+
+.zera-thinking-avatar {
+  background: var(--accent-container, var(--surface-container-highest));
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+.zera-thinking-content {
+  max-width: calc(100% - 40px) !important;
+  overflow: visible !important;
+}
+
+.zera-thinking-toggle {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.zera-thinking-toggle:focus-visible,
+.zera-thinking-copy:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.zera-thinking-heading {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.zera-thinking-title {
+  color: var(--nn-color-content-fg, var(--text-primary));
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.zera-thinking-summary {
+  color: var(--nn-color-content-fg-dim, var(--text-dim));
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.zera-thinking-header-status {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.zera-thinking-live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+  animation: zera-thinking-pulse 1.4s ease-in-out infinite;
+}
+
+.zera-thinking-message.is-complete .zera-thinking-header-status {
+  color: var(--green, #4ade80);
+}
+
+.zera-thinking-message.is-complete .zera-thinking-live-dot {
+  background: var(--green, #4ade80);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--green, #4ade80) 18%, transparent);
+  animation: none;
+}
+
+.zera-thinking-chevron {
+  display: inline-block;
+  color: var(--nn-color-content-fg-muted, var(--text-dim));
+  font-size: 15px;
+  line-height: 1;
+  transition: transform var(--motion-quick, 0.15s ease);
+}
+
+.zera-thinking-message.is-collapsed .zera-thinking-chevron {
+  transform: rotate(-90deg);
+}
+
+.zera-thinking-trace {
+  margin-top: 12px;
+  padding-top: 11px;
+  border-top: 1px solid var(--nn-color-border-subtle, var(--border-color));
+}
+
+.zera-thinking-trace[hidden],
+.zera-thinking-placeholder[hidden],
+.zera-thinking-result[hidden] {
+  display: none !important;
+}
+
+.zera-thinking-placeholder {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 2px;
+  color: var(--nn-color-content-fg-dim, var(--text-dim));
+  font-size: 11px;
+}
+
+.zera-thinking-placeholder span {
+  width: 4px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--accent);
+  animation: thinking-dot 1.1s ease-in-out infinite;
+}
+
+.zera-thinking-placeholder span:nth-child(2) { animation-delay: 120ms; }
+.zera-thinking-placeholder span:nth-child(3) { animation-delay: 240ms; margin-right: 5px; }
+
+.zera-thinking-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.zera-thinking-step {
+  position: relative;
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) 58px;
+  align-items: start;
+  gap: 9px;
+  padding: 8px 9px;
+  border: 1px solid var(--nn-color-border-subtle, var(--border-color));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface-container-highest) 55%, transparent);
+  animation: thinking-card-enter 180ms ease-out both;
+}
+
+.zera-thinking-step-marker {
+  display: inline-flex;
+  width: 20px;
+  height: 20px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  background: var(--accent-container, var(--surface-container-highest));
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.zera-thinking-step.tone-good .zera-thinking-step-marker { color: var(--green, #4ade80); }
+.zera-thinking-step.tone-warn .zera-thinking-step-marker { color: var(--yellow, #fbbf24); }
+.zera-thinking-step.tone-bad .zera-thinking-step-marker { color: var(--red, #f87171); }
+
+.zera-thinking-step-copy {
+  min-width: 0;
+}
+
+.zera-thinking-step-title {
+  overflow: hidden;
+  color: var(--nn-color-content-fg, var(--text-primary));
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.zera-thinking-step-suggestion {
+  margin-top: 2px;
+  color: var(--nn-color-content-fg-dim, var(--text-dim));
+  font-size: 10px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.zera-thinking-score {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 5px;
+  color: var(--nn-color-content-fg-dim, var(--text-dim));
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+.zera-thinking-score-track {
+  display: block;
+  width: 52px;
+  height: 3px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--surface-container-highest);
+}
+
+.zera-thinking-score-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+}
+
+.zera-thinking-step.tone-good .zera-thinking-score-fill { background: var(--green, #4ade80); }
+.zera-thinking-step.tone-warn .zera-thinking-score-fill { background: var(--yellow, #fbbf24); }
+.zera-thinking-step.tone-bad .zera-thinking-score-fill { background: var(--red, #f87171); }
+
+.zera-thinking-result {
+  margin-top: 10px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--nn-color-border-subtle));
+  border-radius: 9px;
+  background: var(--surface-container-highest, var(--bg-input));
+}
+
+.zera-thinking-result-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--nn-color-border-subtle, var(--border-color));
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: 0.02em;
+}
+
+.zera-thinking-copy {
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  border: 1px solid var(--nn-color-border-subtle, var(--border-color));
+  border-radius: 5px;
+  background: transparent;
+  color: var(--nn-color-content-fg-dim, var(--text-secondary));
+  font: inherit;
+  font-size: 9px;
+  cursor: pointer;
+}
+
+.zera-thinking-copy:hover,
+.zera-thinking-copy.is-copied {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-container, var(--surface-hover));
+}
+
+.zera-thinking-result-body {
+  max-height: 360px;
+  overflow: auto;
+  padding: 11px 12px;
+  color: var(--nn-color-content-fg, var(--text-primary));
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.zera-thinking-result-body > :first-child { margin-top: 0; }
+.zera-thinking-result-body > :last-child { margin-bottom: 0; }
+
+@keyframes zera-thinking-pulse {
+  0%, 100% { opacity: 0.5; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1); }
+}
+
+@media (max-width: 560px) {
+  .zera-thinking-step {
+    grid-template-columns: 22px minmax(0, 1fr);
+  }
+  .zera-thinking-score {
+    grid-column: 2;
+    flex-direction: row;
+    align-items: center;
+    justify-content: flex-start;
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════
    Code Block Wrapper
    ══════════════════════════════════════════════════════════════ */
 
@@ -668,9 +964,16 @@
   }
 
   /* Thinking indicator pulse — replaced by static muted text. */
-  .thinking-indicator {
+  .thinking-indicator,
+  .zera-thinking-live-dot,
+  .zera-thinking-placeholder span,
+  .zera-thinking-step {
     animation: none !important;
     opacity: 1 !important;
+  }
+
+  .zera-thinking-chevron {
+    transition: none !important;
   }
 
   /* Hover/transition affordances on rendered content — snap changes

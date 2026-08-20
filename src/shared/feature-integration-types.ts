@@ -332,6 +332,11 @@ import type { DriftSignal } from '../drift/drift-signal.js';
 export interface DriftDashboardState {
   active: boolean;
   confidence: number;
+  /** Resolved thresholds for the current monitor configuration. */
+  thresholds?: {
+    warning: number;
+    critical: number;
+  };
   signals: DriftSignal[];
   scope: {
     toolsUsed: number;
