@@ -3145,56 +3145,14 @@ function isAdvancedLaunchModeActive() {
 function setupIPC() {
   var api = eapi();
 
-  // Agent Catalog updated — re-fetch departments so counts reflect imported agents
-  api.on('agents:catalog-updated', function() {
-    api.invoke('get-departments').then(function(depts) {
-      renderDepartments(depts || []);
-      // Refresh agent emoji cache with updated data
-      for (var di = 0; di < (depts || []).length; di++) {
-        var dept = depts[di];
-        var agents = dept.agents || [];
-        for (var ai = 0; ai < agents.length; ai++) {
-          if (agents[ai].name && agents[ai].emoji) {
-            agentEmojiCache[agents[ai].name] = agents[ai].emoji;
-          }
-        }
-      }
-    }).catch(function() {});
-  });
-
-  // Launch Mode hot-swap — apply mode change immediately without restart
-  api.on('launch-mode:changed', function(newMode) {
-    if (!newMode || (newMode !== 'classic' && newMode !== 'advanced')) return;
-    var appEl = document.getElementById('app');
-    window.__neuronestLaunchMode = newMode;
-
-    if (window.InspectorFactory && typeof window.InspectorFactory.switchLaunchMode === 'function') {
-      window.InspectorFactory.switchLaunchMode(appEl, newMode);
-    } else if (appEl) {
-      appEl.setAttribute('data-launch-mode', newMode);
-    }
-
-    // If switching to classic, reset the main panel if showing an advanced-only view
-    if (newMode === 'classic') {
-      var advancedOnlyViews = ['agents', 'channels', 'skills', 'design', 'dashboard', 'settings'];
-      if (typeof activeView !== 'undefined' && advancedOnlyViews.indexOf(activeView) !== -1) {
-        switchToChatView();
-        // Clear active state on activity buttons without hiding the sidebar
-        var allBtns = document.querySelectorAll('.activity-btn');
-        for (var bi = 0; bi < allBtns.length; bi++) {
-          allBtns[bi].classList.remove('active');
-        }
-        activeView = 'chat';
-        try { localStorage.setItem('nn-active-view', ''); } catch (e) {}
-      }
-    }
-
-    // If switching to advanced, initialize Inspector-gated features
-    if (newMode === 'advanced') {
-      loadProdAuthStatus();
-      populateInspectorTools();
+  // Inspector catalog updates are irrelevant in Classic mode. The renderer
+  // topology is fixed for this document, so Classic never registers this
+  // Inspector-only subscription or performs its eager department fetch.
+  if (isAdvancedLaunchModeActive()) {
+    api.on('agents:catalog-updated', function() {
       api.invoke('get-departments').then(function(depts) {
         renderDepartments(depts || []);
+        // Refresh agent emoji cache with updated data
         for (var di = 0; di < (depts || []).length; di++) {
           var dept = depts[di];
           var agents = dept.agents || [];
@@ -3205,8 +3163,8 @@ function setupIPC() {
           }
         }
       }).catch(function() {});
-    }
-  });
+    });
+  }
 
   // Agent Loop progress — turn off brain on completion
   api.on('agent-progress', function(data) {
@@ -3865,29 +3823,9 @@ function setupIPC() {
   api.on('channel-status-update', function(data) {
     if (!data) return;
     console.log('[NeuroNest] Channel status update:', data.channelId, data.status);
-    // Update QR code display in real-time if WhatsApp config is open
-    // WhatsApp QR code as image (base64 data URL from qrcode package)
-    if (data.channelId === 'whatsapp' && (data.status === 'qr_required' || data.status === 'qr')) {
-      var qrEl = $$('#wa-qr-display');
-      var qrData = data.qrDataUrl || data.qrCode || '';
-      if (qrEl && qrData) {
-        if (qrData.startsWith('data:image')) {
-          // Base64 QR image
-          qrEl.innerHTML = '<div style="text-align:center;padding:16px;">' +
-            '<img src="' + qrData + '" style="width:256px;height:256px;border-radius:12px;border:2px solid var(--accent);" />' +
-            '<p style="font-size:14px;color:var(--text-secondary);margin-top:12px;">Scan with WhatsApp on your phone</p>' +
-            '<p style="font-size:12px;color:var(--text-dim);">WhatsApp \u2192 Settings \u2192 Linked Devices \u2192 Link a Device</p></div>';
-        } else {
-          // Fallback: raw QR text
-          qrEl.innerHTML = '<div style="background:#1a1a2e;display:inline-block;padding:16px;border-radius:12px;border:1px solid var(--border-color);">' +
-            '<pre style="font-family:monospace;font-size:4px;line-height:4px;color:#a6e3a1;margin:0;white-space:pre;">' +
-            escHtml(qrData) + '</pre></div>' +
-            '<p style="font-size:12px;color:var(--text-dim);margin-top:8px;">Scan with WhatsApp \u2192 Linked Devices</p>';
-        }
-      }
-      var connectBtn = $$('#ch-cfg-connect');
-      if (connectBtn) connectBtn.textContent = 'Waiting for scan...';
-    }
+    // QR payloads remain available to channel-specific adapters (for example
+    // Zalo Personal), but WhatsApp uses the official Cloud API and has no QR
+    // lifecycle in this renderer.
     if (data.status === 'connected') {
       // Only show chat notification for user-initiated connections, not auto-reconnect on startup
       if (!data.autoReconnect && window._nnChannelNotificationsReady) {
@@ -3901,10 +3839,6 @@ function setupIPC() {
       }
     }
     if (data.status === 'error') {
-      var qrEl2 = $$('#wa-qr-display');
-      if (qrEl2) {
-        qrEl2.innerHTML = '<p style="color:var(--red);font-size:13px;">\u274c ' + escHtml(data.error || 'Connection failed') + '</p>';
-      }
       var connectBtn2 = $$('#ch-cfg-connect');
       if (connectBtn2) {
         connectBtn2.textContent = 'Connect';
@@ -13379,15 +13313,6 @@ function showChannelConfig(chId, chName) {
     }
     html += '</div>';
 
-    // WhatsApp-specific: QR code section
-    if (chId === 'whatsapp') {
-      html += '<div class="settings-group" id="wa-qr-section">' +
-        '<h3>WhatsApp Connection</h3>' +
-        '<p style="font-size:12px;color:var(--text-dim);margin-bottom:8px;">Click Connect to generate a QR code. Scan it with WhatsApp on your phone: WhatsApp \u2192 Settings \u2192 Linked Devices \u2192 Link a Device.</p>' +
-        '<div id="wa-qr-display" style="text-align:center;padding:16px;"></div>' +
-        '</div>';
-    }
-
     // Processing mode selector — right after connection, before settings
     var currentMode = cfg.processingMode || 'smart';
     html += '<div class="settings-group"><h3>🧠 AI Processing Mode</h3>' +
@@ -13409,17 +13334,13 @@ function showChannelConfig(chId, chName) {
     var fields = intg.configFields || [];
     if (fields.length > 0) {
       html += '<div class="settings-group"><h3>Settings</h3>';
-      var currentModeVal = cfg['mode'] || (chId === 'whatsapp' ? 'baileys' : '');
       for (var j = 0; j < fields.length; j++) {
         var f = fields[j];
         var fName = f.name || f.key || 'field' + j;
         var fLabel = f.label || fName;
         var fType = f.type || 'text';
         var fVal = cfg[fName] || '';
-        // For WhatsApp: hide Cloud API fields when mode is baileys
-        var isCloudField = chId === 'whatsapp' && (fName === 'accessToken' || fName === 'phoneNumberId');
-        var hideField = isCloudField && currentModeVal !== 'cloud';
-        html += '<div class="form-row' + (isCloudField ? ' wa-cloud-field' : '') + '"' + (hideField ? ' style="display:none;"' : '') + '><label>' + escHtml(fLabel) + '</label>';
+        html += '<div class="form-row"><label>' + escHtml(fLabel) + '</label>';
         if (fType === 'select' && f.options) {
           html += '<select name="' + escHtml(fName) + '" style="appearance:none;-webkit-appearance:none;background-image:url(\'data:image/svg+xml;utf8,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2212%22 height=%2212%22 viewBox=%220 0 12 12%22><path d=%22M2 4l4 4 4-4%22 fill=%22none%22 stroke=%22%23999%22 stroke-width=%221.5%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22/></svg>\');background-repeat:no-repeat;background-position:right 10px center;padding-right:30px;">';
           for (var k = 0; k < f.options.length; k++) {
@@ -13464,20 +13385,6 @@ function showChannelConfig(chId, chName) {
 
     formEl.innerHTML = html;
 
-    // Wire WhatsApp mode dropdown to show/hide Cloud API fields
-    if (chId === 'whatsapp') {
-      var modeSelect = formEl.querySelector('select[name="mode"]');
-      if (modeSelect) {
-        modeSelect.addEventListener('change', function() {
-          var cloudFields = formEl.querySelectorAll('.wa-cloud-field');
-          var showCloud = this.value === 'cloud';
-          for (var cf = 0; cf < cloudFields.length; cf++) {
-            cloudFields[cf].style.display = showCloud ? '' : 'none';
-          }
-        });
-      }
-    }
-
     // Wire connect button
     var connectBtn = $$('#ch-cfg-connect');
     if (connectBtn) {
@@ -13485,11 +13392,6 @@ function showChannelConfig(chId, chName) {
         connectBtn.textContent = '⏳ Connecting...';
         connectBtn.disabled = true;
         console.log('[NeuroNest] Connecting channel:', chId);
-        // Show immediate feedback
-        var qrEl = $$('#wa-qr-display');
-        if (qrEl && chId === 'whatsapp') {
-          qrEl.innerHTML = '<p style="color:var(--text-secondary);font-size:13px;">⏳ Initializing WhatsApp connection... This may take a few seconds.</p>';
-        }
         // Collect all form values directly
         var connectConfig = {};
         for (var ck in cfg) connectConfig[ck] = cfg[ck];
@@ -13502,21 +13404,40 @@ function showChannelConfig(chId, chName) {
         console.log('[NeuroNest] Connecting with config:', JSON.stringify(connectConfig));
         eapi().invoke('connect-channel', { channelId: chId, config: connectConfig }).then(function(result) {
           console.log('[NeuroNest] Connect result:', JSON.stringify(result));
-          if (result && result.qrCode && chId === 'whatsapp') {
-            var qrEl = $$('#wa-qr-display');
-            if (qrEl) {
-              var qrVal = result.qrCode || '';
-              if (qrVal.startsWith('data:image')) {
-                qrEl.innerHTML = '<div style="text-align:center;padding:16px;">' +
-                  '<img src="' + qrVal + '" style="width:256px;height:256px;border-radius:12px;border:2px solid var(--accent);" />' +
-                  '<p style="font-size:14px;color:var(--text-secondary);margin-top:12px;">Scan with WhatsApp on your phone</p>' +
-                  '<p style="font-size:12px;color:var(--text-dim);">WhatsApp \u2192 Settings \u2192 Linked Devices \u2192 Link a Device</p></div>';
-              }
-              connectBtn.textContent = 'Waiting for scan...';
-              return; // Don't refresh — user needs to scan
+          if (result && result.success && result.qrCode) {
+            // Some non-WhatsApp adapters use a QR handoff. Render it through
+            // DOM APIs without transport-specific instructions or HTML sinks.
+            var qrSection = formEl.querySelector('#ch-qr-result');
+            if (!qrSection) {
+              qrSection = document.createElement('div');
+              qrSection.id = 'ch-qr-result';
+              qrSection.className = 'settings-group';
+              formEl.insertBefore(qrSection, formEl.firstChild);
             }
+            while (qrSection.firstChild) qrSection.removeChild(qrSection.firstChild);
+            var qrHeading = document.createElement('h3');
+            qrHeading.textContent = 'Scan to connect';
+            qrSection.appendChild(qrHeading);
+            var qrVal = String(result.qrCode || '');
+            if (/^data:image\/(?:png|jpeg|gif|webp);base64,/i.test(qrVal)) {
+              var qrImage = document.createElement('img');
+              qrImage.src = qrVal;
+              qrImage.alt = 'Channel connection QR code';
+              qrImage.width = 256;
+              qrImage.height = 256;
+              qrSection.appendChild(qrImage);
+            } else {
+              var qrText = document.createElement('pre');
+              qrText.textContent = qrVal;
+              qrSection.appendChild(qrText);
+            }
+            var qrHelp = document.createElement('p');
+            qrHelp.textContent = result.message || 'Scan this code with the provider app to continue.';
+            qrSection.appendChild(qrHelp);
+            connectBtn.textContent = 'Waiting for scan...';
+            return;
           }
-          if (result && result.success && !result.qrCode) {
+          if (result && result.success) {
             // Save connected status to channel config
             var saveData = {};
             for (var sk in connectConfig) saveData[sk] = connectConfig[sk];
@@ -13533,8 +13454,6 @@ function showChannelConfig(chId, chName) {
           console.error('[NeuroNest] Connect error:', err);
           connectBtn.textContent = 'Connect';
           connectBtn.disabled = false;
-          var qrEl2 = $$('#wa-qr-display');
-          if (qrEl2) qrEl2.innerHTML = '<p style="color:var(--red);font-size:13px;">\u274c Connection failed: ' + escHtml(err.message || String(err)) + '</p>';
           addMsg('assistant', '\u274c Connection error: ' + (err.message || err), { label: 'System' });
         });
       });
@@ -22894,64 +22813,8 @@ function initActivityBar() {
     setActiveView(initialView);
   }
 
-  // ── Mode toggle buttons in activity bar ──
-  (function() {
-    var classicBtn = document.getElementById('mode-classic-btn');
-    var advancedBtn = document.getElementById('mode-advanced-btn');
-    if (!classicBtn || !advancedBtn) return;
-
-    function updateModeButtons(mode) {
-      classicBtn.classList.toggle('active', mode === 'classic');
-      advancedBtn.classList.toggle('active', mode === 'advanced');
-    }
-
-    // Set initial state
-    var currentMode = window.__neuronestLaunchMode || 'advanced';
-    updateModeButtons(currentMode);
-
-    function switchMode(newMode) {
-      if (newMode === (window.__neuronestLaunchMode || 'advanced')) return;
-      var api = eapi();
-      if (!api) return;
-
-      // Use the typed preload methods (not raw invoke — channels are restricted)
-      if (typeof api.getLaunchModeSettings !== 'function' || typeof api.updateLaunchMode !== 'function') return;
-
-      api.getLaunchModeSettings().then(function(settings) {
-        if (!settings) return;
-        return api.updateLaunchMode({
-          schemaVersion: 1,
-          mode: newMode,
-          expectedRevision: settings.revision,
-        });
-      }).then(function(result) {
-        if (result && result.mode) {
-          updateModeButtons(result.mode);
-        }
-      }).catch(function(err) {
-        console.warn('[ModeToggle] Failed to switch mode:', err);
-      });
-    }
-
-    classicBtn.addEventListener('click', function(e) {
-      e.stopPropagation();
-      switchMode('classic');
-    });
-    advancedBtn.addEventListener('click', function(e) {
-      e.stopPropagation();
-      switchMode('advanced');
-    });
-
-    // Listen for hot-swap events to keep buttons in sync
-    var api = eapi();
-    if (api && typeof api.on === 'function') {
-      api.on('launch-mode:changed', function(newMode) {
-        if (newMode === 'classic' || newMode === 'advanced') {
-          updateModeButtons(newMode);
-        }
-      });
-    }
-  })();
+  // Launch mode is configured in Settings and applied on the next launch;
+  // the running activity-bar topology is intentionally immutable.
 
   // Initialize tippy.js tooltips on activity bar buttons
   if (typeof tippy === 'function') {

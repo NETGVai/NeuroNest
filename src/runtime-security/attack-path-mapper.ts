@@ -350,9 +350,7 @@ export class AttackPathMapper {
 
   /** Check if an edge already exists between two nodes (in either direction) */
   private hasEdgeBetween(a: string, b: string): boolean {
-    return this.edges.some(
-      (e) => (e.from === a && e.to === b) || (e.from === b && e.to === a),
-    );
+    return this.adjacency.get(a)?.has(b) ?? false;
   }
 
   /**

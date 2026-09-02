@@ -37,6 +37,12 @@ export interface ChannelAdapter {
    */
   readonly configSchema: z.ZodType;
 
+  /**
+   * Optional provider-specific guidance appended to fail-fast schema errors.
+   * ChannelManager surfaces this without calling `connect` with invalid data.
+   */
+  readonly configHelp?: string;
+
   /** Lifecycle. See REQ 1.1–1.4. */
   connect(config: unknown, context: AdapterContext): Promise<ConnectResult>;
   disconnect(): Promise<void>;

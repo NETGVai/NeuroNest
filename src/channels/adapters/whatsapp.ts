@@ -35,6 +35,16 @@ export const WhatsAppConfigSchema = z.object({
 
 type WhatsAppConfig = z.infer<typeof WhatsAppConfigSchema>;
 
+export const WHATSAPP_CLOUD_API_SETUP_HELP =
+  'WhatsApp Cloud API requires an Access Token and Phone Number ID.\n\n' +
+  'Setup steps:\n' +
+  '1. Go to developers.facebook.com → Create App → Business type\n' +
+  '2. Add WhatsApp product → API Setup\n' +
+  '3. Copy the "Temporary access token" and "Phone number ID"\n' +
+  '4. Connect with: /channel whatsapp accessToken=<token> phoneNumberId=<id>\n\n' +
+  'The Cloud API is free for up to 1,000 conversations/month.\n' +
+  'WhatsApp integration uses the official Cloud API exclusively.';
+
 // ─── WhatsApp Adapter ───────────────────────────────────────────
 
 export class WhatsAppAdapter implements ChannelAdapter {
@@ -58,6 +68,7 @@ export class WhatsAppAdapter implements ChannelAdapter {
   };
 
   readonly configSchema = WhatsAppConfigSchema;
+  readonly configHelp = WHATSAPP_CLOUD_API_SETUP_HELP;
 
   private server: http.Server | null = null;
   private connected = false;
@@ -71,15 +82,7 @@ export class WhatsAppAdapter implements ChannelAdapter {
     const parsed = this.configSchema.safeParse(config);
     if (!parsed.success) {
       // Fallback error message for direct adapter usage bypassing ChannelManager
-      const msg =
-        'WhatsApp Cloud API requires an Access Token and Phone Number ID.\n\n' +
-        'Setup steps:\n' +
-        '1. Go to developers.facebook.com → Create App → Business type\n' +
-        '2. Add WhatsApp product → API Setup\n' +
-        '3. Copy the "Temporary access token" and "Phone number ID"\n' +
-        '4. Connect with: /channel whatsapp accessToken=<token> phoneNumberId=<id>\n\n' +
-        'The Cloud API is free for up to 1,000 conversations/month.\n' +
-        'WhatsApp integration uses the official Cloud API exclusively.';
+      const msg = WHATSAPP_CLOUD_API_SETUP_HELP;
       return {
         success: false,
         message: msg,
@@ -93,15 +96,7 @@ export class WhatsAppAdapter implements ChannelAdapter {
     // Secondary fallback: even if Zod passes (shouldn't happen with min(1)),
     // guard against empty strings in case of direct usage with empty strings.
     if (!accessToken || !phoneNumberId) {
-      const msg =
-        'WhatsApp Cloud API requires an Access Token and Phone Number ID.\n\n' +
-        'Setup steps:\n' +
-        '1. Go to developers.facebook.com → Create App → Business type\n' +
-        '2. Add WhatsApp product → API Setup\n' +
-        '3. Copy the "Temporary access token" and "Phone number ID"\n' +
-        '4. Connect with: /channel whatsapp accessToken=<token> phoneNumberId=<id>\n\n' +
-        'The Cloud API is free for up to 1,000 conversations/month.\n' +
-        'WhatsApp integration uses the official Cloud API exclusively.';
+      const msg = WHATSAPP_CLOUD_API_SETUP_HELP;
       return {
         success: false,
         message: msg,

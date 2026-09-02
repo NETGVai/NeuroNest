@@ -78,6 +78,7 @@
 
 import { ipcMain, nativeTheme, dialog, type BrowserWindow } from 'electron';
 import { SessionManager } from '../session/session-manager';
+import type { WorkspaceCheckpointManager as WorkspaceCheckpointManagerInstance } from '../session/workspace-checkpoint.js';
 import { CommandSystem } from '../commands/command-system';
 import { builtInCommands } from '../commands/built-in/index';
 import { SuperAgentManager } from '../agents/super-agent-manager';
@@ -301,6 +302,14 @@ import { AsyncCommandRunner } from './performance/async-command-runner';
 import { validatePath } from '../security/path-guard';
 import { getGCFSystem } from '../context/gcf-bootstrap.js';
 import { parseConnectChannelArg, isParseError } from './connect-channel-parser';
+import {
+  deriveCallerIdentity,
+  trustedSenderFromWindows,
+  type PrincipalResolver,
+  type CallerIdentityConfig,
+} from './security/ipc-caller-identity';
+import type { IpcMainInvokeEvent } from 'electron';
+import { tierRank, type CallerIdentity, type ContractTier } from '../ipc/contract-registry';
 
 // Singleton AsyncCommandRunner instance for non-blocking command execution
 const asyncCommandRunner = new AsyncCommandRunner();
@@ -516,7 +525,7 @@ function hasRecentUnresolvedScopeWarning(projectId: string): boolean {
         return true;
       }
     }
-  } catch {}
+  } catch { /* The history lookup is best-effort; absence falls through to false. */ }
   return false;
 }
 
@@ -622,27 +631,104 @@ function isFeatureEnabled(flag: string): boolean {
 }
 
 /**
- * Verify that a caller is authorized to invoke an admin-tier IPC channel.
- * Admin-tier channels (tool:execute, ops:approve-grant, secure:get-token) require
- * caller authorization before processing (Requirement 28.2, 28.3, 28.4).
+ * Main-attested principal resolver for admin-tier IPC (FUT-PKG-04-SECURITY/T-001).
  *
- * Authorization is verified by checking that:
- * 1. The request originated from the renderer with proper tier tagging (__ipcTier === 'admin')
- * 2. A valid session is active (activeSessionId is set)
- *
- * Returns { authorized: true } if the caller is authorized, or
- * { authorized: false, error: string } with an UNAUTHORIZED error code if not.
+ * A caller only rises above the first-party `authenticated` floor when a
+ * caller-supplied `authToken` is *validated in the main process* against the
+ * `AuthSessionManager` HMAC secret. Absent a valid token, no privileged/admin
+ * tier is attested — regardless of any renderer-supplied marker. The resolver
+ * is lazily constructed and cached; a failure to construct it leaves callers at
+ * the `authenticated` floor rather than silently granting admin.
  */
-function verifyAdminAuthorization(arg: any): { authorized: true } | { authorized: false; error: string; code: string } {
-  // Check that the request has the admin tier tag injected by the preload bridge
-  if (!arg || typeof arg !== 'object' || arg.__ipcTier !== 'admin') {
+let adminPrincipalResolver: PrincipalResolver | null = null;
+let adminPrincipalResolverInit = false;
+
+function getAdminPrincipalResolver(): PrincipalResolver | undefined {
+  if (adminPrincipalResolverInit) return adminPrincipalResolver ?? undefined;
+  adminPrincipalResolverInit = true;
+  try {
+    const { AuthSessionManager } = require('./auth/session-manager');
+    const mgr = new AuthSessionManager();
+    // ensureSecret() is async and self-healing; we read the on-disk secret
+    // synchronously for validation and never generate one on the hot path so a
+    // missing secret denies (fail-closed) rather than mints a fresh acceptor.
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const os = require('node:os');
+    const secretPath = path.join(os.homedir(), '.neuronest', 'auth-secret');
+    adminPrincipalResolver = (token) => {
+      if (!token) return null;
+      let secret: string;
+      try {
+        secret = fs.readFileSync(secretPath, 'utf-8');
+      } catch {
+        return null; // no secret on disk → cannot attest admin, fail-closed
+      }
+      if (!secret || secret.length === 0) return null;
+      const payload = mgr.validateToken(token, secret);
+      if (!payload || typeof payload.userId !== 'string') return null;
+      return { principalId: payload.userId, tier: 'admin' as ContractTier };
+    };
+  } catch {
+    adminPrincipalResolver = null;
+  }
+  return adminPrincipalResolver ?? undefined;
+}
+
+/**
+ * Build the main-derived caller-identity config. Trust is anchored to the
+ * app's own main window `WebContents` (`_ipcMainWindow`); no renderer-supplied
+ * value participates in the trust decision (D-16.2).
+ */
+function callerIdentityConfig(): CallerIdentityConfig {
+  return {
+    isTrustedSender: trustedSenderFromWindows(() =>
+      _ipcMainWindow && !_ipcMainWindow.isDestroyed()
+        ? [_ipcMainWindow.webContents]
+        : [],
+    ),
+    principalResolver: getAdminPrincipalResolver(),
+  };
+}
+
+/**
+ * Verify that a caller is authorized to invoke an admin-tier IPC channel
+ * (tool:execute, ops:approve-grant, secure:get-token) — Requirement 28.2/28.3/
+ * 28.4, and the FUT-PKG-04-SECURITY/T-001 cutover to main-derived identity.
+ *
+ * Authorization is derived ENTIRELY in the main process from the sender
+ * `WebContents` and, for the admin tier, a main-validated auth token
+ * (D-16.2, NN-SEC-009). The legacy renderer-supplied `__ipcTier` marker is no
+ * longer trusted: it is read only to detect a forged-tier attempt, which is
+ * denied with a distinct reason. A forged, unknown, guest, or destroyed sender
+ * can never authorize, closing the D-16.2 anti-pattern where any renderer that
+ * set `__ipcTier: 'admin'` was granted admin.
+ *
+ * @param event The Electron invoke event (source of the attested sender).
+ * @param arg   The request payload; inspected only for a validated auth token
+ *              and the untrusted asserted-tier marker (telemetry).
+ */
+function verifyAdminAuthorization(
+  event: Pick<IpcMainInvokeEvent, 'sender'> | undefined,
+  arg: any,
+): { authorized: true; identity: CallerIdentity } | { authorized: false; error: string; code: string } {
+  const identity = deriveCallerIdentity(event, arg, callerIdentityConfig());
+
+  // Admin tier is the requirement for these channels; main must attest it.
+  if (tierRank(identity.attestedTier) < tierRank('admin')) {
+    const forged =
+      identity.assertedTier !== undefined &&
+      identity.assertedTier === 'admin' &&
+      identity.attestedTier !== 'admin';
     return {
       authorized: false,
-      error: 'Admin access required: caller authorization failed',
+      error: forged
+        ? 'Admin access denied: caller asserted a tier it does not hold (authorization is main-attested)'
+        : 'Admin access required: main-attested caller authorization failed',
       code: 'UNAUTHORIZED',
     };
   }
-  return { authorized: true };
+  return { authorized: true, identity };
 }
 
 /**
@@ -2904,6 +2990,7 @@ async function requestTerminalApproval(command: string): Promise<boolean> {
 export function registerIPCHandlers(deps: IPCDependencies): void {
   const { mainWindow } = deps;
   _ipcMainWindow = mainWindow; // Store for deferred channel wiring
+  let workspaceCheckpointManager: WorkspaceCheckpointManagerInstance | null = null;
 
   // Re-registration (tests, reloads, or window replacement) must release the
   // previous shadow correlation state and all canonical query handlers.
@@ -4112,7 +4199,7 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
       try {
         fsScope.mkdirSync(newProjectDir, { recursive: true });
       } catch (createDirError) {
-        try { sessionManager.delete(newSession.id); } catch {}
+        try { sessionManager.delete(newSession.id); } catch { /* Preserve the original mkdir failure if rollback is already complete. */ }
         throw createDirError;
       }
 
@@ -10740,8 +10827,8 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
     });
 
     ipcMain.handle('secure:get-token', async (_ev, arg: any) => {
-      // ── Admin-Tier Authorization (Req 28.2, 28.4) ──
-      const authCheck = verifyAdminAuthorization(arg);
+      // ── Main-attested Admin-Tier Authorization (Req 28.2, 28.4; T-001) ──
+      const authCheck = verifyAdminAuthorization(_ev, arg);
       if (!authCheck.authorized) {
         return { success: false, error: authCheck.error, code: authCheck.code };
       }
@@ -11362,10 +11449,10 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
       emitToolFailure,
     } = require('../pipeline/tool-event-emitter.js');
     ipcMain.handle('tool:execute', async (_ev, arg: any) => {
-      // ── Admin-Tier Authorization (Req 28.2, 28.3, 28.4) ──
-      // tool:execute requires BOTH caller authorization AND user approval.
-      // Reject immediately if caller is not authorized.
-      const authCheck = verifyAdminAuthorization(arg);
+      // ── Main-attested Admin-Tier Authorization (Req 28.2, 28.3, 28.4; T-001) ──
+      // tool:execute requires BOTH main-attested caller authorization AND user
+      // approval. Reject immediately if the main process cannot attest the tier.
+      const authCheck = verifyAdminAuthorization(_ev, arg);
       if (!authCheck.authorized) {
         return { success: false, tool: arg?.tool || 'unknown', output: '', error: authCheck.error, code: authCheck.code, durationMs: 0 };
       }
@@ -11853,7 +11940,8 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
     // each call so passing it here gives the manager a live handle for
     // the lifetime of the process. Per Requirement 2.8 emission is
     // gated and fail-soft inside the manager.
-    const checkpointMgr = new WorkspaceCheckpointManager(db, { eventLog: getEventLog() });
+    const checkpointMgr: WorkspaceCheckpointManagerInstance = new WorkspaceCheckpointManager(db, { eventLog: getEventLog() });
+    workspaceCheckpointManager = checkpointMgr;
 
     ipcMain.handle('checkpoint:snapshot', async (_ev, arg: any) => {
       try {
@@ -15900,14 +15988,29 @@ export function registerIPCHandlers(deps: IPCDependencies): void {
           },
         };
         const checkpointCreator = {
-          createCheckpoint(description: string): string {
-            try {
-              const { CheckpointManager } = require('../durability/checkpoint-manager');
-              const mgr = CheckpointManager.getInstance();
-              return mgr.createCheckpoint({ description }) || `chk_${Date.now()}`;
-            } catch {
-              return `chk_${Date.now()}`;
+          createCheckpoint(description: string, sessionId: string, turnId?: string): string {
+            const manager = workspaceCheckpointManager;
+            if (!manager) {
+              throw new Error('Workspace checkpoint manager is unavailable');
             }
+            if (!activeSessionId || sessionId !== activeSessionId) {
+              throw new Error('Diff revert session is not the active project');
+            }
+
+            const projectPath = resolveNeuroNestProjectDir(sessionId);
+            manager.setEventLog(getEventLog());
+            const snapshot = manager.takeSnapshot(
+              sessionId,
+              projectPath,
+              description,
+              undefined,
+              description,
+              { sessionId, turnId },
+            );
+            if (!snapshot.id) {
+              throw new Error('Pre-revert workspace checkpoint was not created');
+            }
+            return snapshot.id;
           },
         };
         diffRevertEngine = new RevertEngine(diffTurnStore, fsAdapter, checkpointCreator);

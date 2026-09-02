@@ -9,6 +9,17 @@
  * - Max sources limit enforcement (default 50)
  * - File deletion detection with 'delete' event emission
  *
+ * OWNERSHIP NOTE (FUT-PKG-07-EXPERIENCE/T-004, NN-INDEX-001 / NN-INV-008):
+ * this is the LEGACY per-file watch surface. The single owner of filesystem
+ * watching for a workspace root is now `IndexCoordinator`
+ * (`src/index/index-coordinator.ts`), which produces one ordered, debounced,
+ * monotonic change sequence and a deterministic file-tree projection. New and
+ * migrating callers SHOULD route through the coordinator as consumers via
+ * `FileWatchConsumer` (`src/index/file-watch-consumer.ts`) rather than starting
+ * an independent watcher here — an independent watcher must never swap the tree
+ * store (NN-INDEX-012). This class is retained unchanged for callers that have
+ * not yet migrated (bounded read compatibility).
+ *
  * Requirements: 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 8.6
  */
 

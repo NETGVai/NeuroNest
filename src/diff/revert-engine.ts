@@ -50,7 +50,7 @@ export interface FileSystem {
  * The revert engine creates a checkpoint before every revert operation.
  */
 export interface CheckpointCreator {
-  createCheckpoint(description: string): string;
+  createCheckpoint(description: string, sessionId: string, turnId?: string): string;
 }
 
 // ─── Three-Way Merge ────────────────────────────────────────────
@@ -317,9 +317,20 @@ export class RevertEngine {
       };
     }
 
+    if (turn.sessionId !== sessionId) {
+      return {
+        success: false,
+        checkpointId: '',
+        revertedFiles: [],
+        conflicts: [{ filePath: '', reason: `Turn ${turnId} does not belong to session ${sessionId}`, baseContent: null, oursContent: null, theirsContent: null }],
+      };
+    }
+
     // Create checkpoint before revert
     const checkpointId = this.checkpointCreator.createCheckpoint(
       `Before revert: turn ${turn.turnIndex} (${turnId})`,
+      sessionId,
+      turnId,
     );
 
     const files = this.store.getFilesForTurn(turnId);
@@ -365,10 +376,14 @@ export class RevertEngine {
       };
     }
 
-    // Create checkpoint before revert
-    const checkpointId = this.checkpointCreator.createCheckpoint(
-      `Before revert: ${filePath} in turn ${turn.turnIndex}`,
-    );
+    if (turn.sessionId !== sessionId) {
+      return {
+        success: false,
+        checkpointId: '',
+        revertedFiles: [],
+        conflicts: [{ filePath, reason: `Turn ${turnId} does not belong to session ${sessionId}`, baseContent: null, oursContent: null, theirsContent: null }],
+      };
+    }
 
     const files = this.store.getFilesForTurn(turnId);
     const targetFile = files.find((f) => f.filePath === filePath);
@@ -376,11 +391,18 @@ export class RevertEngine {
     if (!targetFile) {
       return {
         success: false,
-        checkpointId,
+        checkpointId: '',
         revertedFiles: [],
         conflicts: [{ filePath, reason: `File ${filePath} not found in turn ${turnId}`, baseContent: null, oursContent: null, theirsContent: null }],
       };
     }
+
+    // Create checkpoint before revert
+    const checkpointId = this.checkpointCreator.createCheckpoint(
+      `Before revert: ${filePath} in turn ${turn.turnIndex}`,
+      sessionId,
+      turnId,
+    );
 
     // Get subsequent turns for conflict checking
     const allTurns = this.store.getTurnsForSession(sessionId);

@@ -146,24 +146,28 @@ export class WorkspaceCheckpointManager {
       projectId, label, files, timestamp: Date.now(), agentId, stepDescription,
     };
 
-    // Save file contents to snapshot directory
+    // Persist file contents and metadata as one fail-closed operation. A
+    // checkpoint ID is only useful when both the snapshot directory and its
+    // database row exist; callers must never receive an ID for partial state.
     const snapDir = path.join(this.snapshotDir, snapshot.id);
-    fs.mkdirSync(snapDir, { recursive: true });
-    for (const file of files) {
-      const srcPath = path.join(projectPath, file.path);
-      const destPath = path.join(snapDir, file.path);
-      try {
+    try {
+      fs.mkdirSync(snapDir, { recursive: true });
+      for (const file of files) {
+        const srcPath = path.join(projectPath, file.path);
+        const destPath = path.join(snapDir, file.path);
         fs.mkdirSync(path.dirname(destPath), { recursive: true });
         fs.copyFileSync(srcPath, destPath);
-      } catch { /* skip unreadable files */ }
-    }
+      }
 
-    // Save metadata to DB
-    try {
       this.db.prepare(
         'INSERT INTO workspace_snapshots (id, project_id, label, files_json, timestamp, agent_id, step_description) VALUES (?, ?, ?, ?, ?, ?, ?)'
       ).run(snapshot.id, snapshot.projectId, snapshot.label, JSON.stringify(snapshot.files), snapshot.timestamp, agentId || null, stepDescription || null);
-    } catch (e) { console.warn('[WorkspaceCheckpoint] Insert failed:', e); }
+    } catch (error) {
+      try { fs.rmSync(snapDir, { recursive: true, force: true }); } catch { /* best-effort cleanup */ }
+      try { this.db.prepare('DELETE FROM workspace_snapshots WHERE id = ?').run(snapshot.id); } catch { /* best-effort cleanup */ }
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Workspace snapshot creation failed: ${message}`);
+    }
 
     // Emit checkpoint.created Pipeline_Event (task 15). The helper is
     // fail-soft and gating-aware; we still wrap defensively because a

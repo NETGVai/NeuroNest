@@ -643,7 +643,7 @@ export class EnhancedSwarmCoordinator extends SwarmCoordinator {
       }
 
       const abortDirectStream = () => {
-        try { agentLLM.abort(); } catch {}
+        try { agentLLM.abort(); } catch { /* Abort is best-effort for an already-closed stream. */ }
       };
       this.executionSignal?.addEventListener('abort', abortDirectStream, { once: true });
       try {

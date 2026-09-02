@@ -1,9 +1,68 @@
-import { cpSync, mkdirSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import {
+  cpSync as uncheckedCpSync,
+  existsSync as uncheckedExistsSync,
+  mkdirSync,
+  readFileSync as uncheckedReadFileSync,
+  readdirSync as uncheckedReaddirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import {
+  existingArtifactCandidates,
+  isPathWithin,
+  quarantineArtifactCandidates,
+  toPosixPath,
+} from './compile-main.mjs';
+import { loadQuarantinePolicy } from './lib/orphan-policy.mjs';
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const root = join(__dirname, '..');
+const root = resolve(__dirname, '..');
+
+// Policy loading must precede every filesystem mutation. Missing, malformed,
+// or expired quarantine data therefore fails closed before dist/ is touched.
+const quarantinePolicy = loadQuarantinePolicy({ root });
+const quarantineAbsoluteMembers = quarantinePolicy.members.map((member) => ({
+  member,
+  absolutePath: resolve(root, member),
+}));
+
+function assertCopySourceAllowed(source) {
+  const sourcePath = resolve(source);
+  const blocked = quarantineAbsoluteMembers.find(({ absolutePath }) =>
+    isPathWithin(sourcePath, absolutePath),
+  );
+  if (blocked) {
+    const requestedSource = toPosixPath(relative(root, sourcePath));
+    throw new Error(
+      `Refusing to copy or transform quarantined source '${blocked.member}' via '${requestedSource}'.`,
+    );
+  }
+}
+
+// Keep all copy/read/discovery routes fail-closed, including future explicit
+// entries and recursive directory copies.
+function cpSync(source, destination, options) {
+  assertCopySourceAllowed(source);
+  return uncheckedCpSync(source, destination, options);
+}
+
+function existsSync(source) {
+  assertCopySourceAllowed(source);
+  return uncheckedExistsSync(source);
+}
+
+function readFileSync(source, options) {
+  assertCopySourceAllowed(source);
+  return uncheckedReadFileSync(source, options);
+}
+
+function readdirSync(source, options) {
+  assertCopySourceAllowed(source);
+  return uncheckedReaddirSync(source, options);
+}
 
 mkdirSync(join(root, 'dist', 'renderer'), { recursive: true });
 
@@ -194,7 +253,6 @@ const panelRendererFiles = [
   'management-surfaces-panel.ts',
   'agent-dashboard-v2-base.ts',
   'agent-dashboard-v2-panel.ts',
-  'mermaid-renderer.ts',
   // Task 13.3 (enhanced-chat-ui) retired the following legacy renderer helpers.
   // Markdown, code, copy, streaming, scroll, empty-state, and action-bar behaviour
   // now flow through the canonical structured-response surfaces mounted by
@@ -294,6 +352,86 @@ if (existsSync(dataSrc)) {
 } else {
   console.warn('src/data not found, skipping');
 }
+
+// Harness SQL migrations are runtime-critical assets. TypeScript does not emit
+// them, so require the exact canonical 14-file set at both ends and verify
+// every byte before any platform package is assembled from dist/.
+const harnessMigrationFiles = Object.freeze([
+  '001_create_events.sql',
+  '002_create_lineage.sql',
+  '003_create_prompts_completions.sql',
+  '004_create_tools.sql',
+  '005_create_turns_queues.sql',
+  '006_create_attachments.sql',
+  '007_create_projections.sql',
+  '008_create_outbox_checkpoints.sql',
+  '009_create_jobs_workflows.sql',
+  '010_create_operational_bounds.sql',
+  '011_create_schema_contracts.sql',
+  '012_create_migrations.sql',
+  '013_create_fenced_lease.sql',
+  '014_create_goals_feedback.sql',
+]);
+const harnessMigrationsSrc = join(root, 'src', 'harness', 'database', 'migrations');
+const harnessMigrationsDst = join(root, 'dist', 'harness', 'database', 'migrations');
+
+function assertCanonicalMigrationDirectory(directory, label) {
+  if (!existsSync(directory)) {
+    throw new Error(`Required ${label} harness migrations directory is missing: ${directory}`);
+  }
+
+  const entries = readdirSync(directory, { withFileTypes: true });
+  const nonFiles = entries.filter((entry) => !entry.isFile()).map((entry) => entry.name);
+  const actualNames = entries.map((entry) => entry.name).sort((a, b) => a.localeCompare(b));
+  const expectedNames = [...harnessMigrationFiles];
+  const exactNames =
+    actualNames.length === 14 &&
+    expectedNames.length === 14 &&
+    actualNames.every((name, index) => name === expectedNames[index]);
+
+  if (!exactNames || nonFiles.length > 0) {
+    const missing = expectedNames.filter((name) => !actualNames.includes(name));
+    const unexpected = actualNames.filter((name) => !expectedNames.includes(name));
+    const details = [
+      missing.length > 0 ? `missing: ${missing.join(', ')}` : '',
+      unexpected.length > 0 ? `unexpected: ${unexpected.join(', ')}` : '',
+      nonFiles.length > 0 ? `not regular files: ${nonFiles.join(', ')}` : '',
+      `found ${actualNames.length}, expected exactly 14`,
+    ].filter(Boolean);
+    throw new Error(`Invalid ${label} harness migration filenames (${details.join('; ')})`);
+  }
+}
+
+// Validate and snapshot every source before replacing the destination, so a
+// bad source inventory cannot leave a partially refreshed migration set.
+assertCanonicalMigrationDirectory(harnessMigrationsSrc, 'source');
+const harnessMigrationBytes = new Map();
+for (const fileName of harnessMigrationFiles) {
+  const sourcePath = join(harnessMigrationsSrc, fileName);
+  const sourceBytes = readFileSync(sourcePath);
+  if (sourceBytes.length === 0) {
+    throw new Error(`Required harness migration is empty: ${sourcePath}`);
+  }
+  harnessMigrationBytes.set(fileName, sourceBytes);
+}
+
+rmSync(harnessMigrationsDst, { recursive: true, force: true });
+mkdirSync(harnessMigrationsDst, { recursive: true });
+for (const fileName of harnessMigrationFiles) {
+  cpSync(
+    join(harnessMigrationsSrc, fileName),
+    join(harnessMigrationsDst, fileName),
+  );
+}
+
+assertCanonicalMigrationDirectory(harnessMigrationsDst, 'destination');
+for (const fileName of harnessMigrationFiles) {
+  const destinationBytes = readFileSync(join(harnessMigrationsDst, fileName));
+  if (!harnessMigrationBytes.get(fileName).equals(destinationBytes)) {
+    throw new Error(`Harness migration copy verification failed: ${fileName}`);
+  }
+}
+console.log(`Copied and verified the exact ${harnessMigrationFiles.length} harness SQL migrations`);
 
 const legacyMonacoDst = join(root, 'dist', 'renderer', 'monaco');
 if (existsSync(legacyMonacoDst)) {
@@ -515,3 +653,20 @@ if (existsSync(lucideIconsSrc)) {
 } else {
   console.warn('lucide-icons.js not found, skipping');
 }
+
+// Final packaging boundary: no exact compiler, declaration, source-map, or
+// source-preserving copy candidate for a quarantined member may remain.
+const quarantineOutputs = quarantineArtifactCandidates(quarantinePolicy.members, {
+  repoRoot: root,
+  sourceRoot: join(root, 'src'),
+  artifactRoot: join(root, 'dist'),
+});
+const remainingQuarantineOutputs = existingArtifactCandidates(quarantineOutputs);
+if (remainingQuarantineOutputs.length > 0) {
+  throw new Error(
+    `Quarantine output verification failed:\n${remainingQuarantineOutputs
+      .map((artifact) => `  - ${toPosixPath(relative(root, artifact))}`)
+      .join('\n')}`,
+  );
+}
+console.log('Verified production dist contains no quarantined artifacts');

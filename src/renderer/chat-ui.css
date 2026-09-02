@@ -271,7 +271,7 @@
   border-radius: 12px;
   background-color: var(--surface-container-high, var(--bg-secondary));
   color: var(--nn-color-content-fg);
-  box-shadow: var(--shadow-sm, 0 4px 14px rgba(0, 0, 0, 0.12));
+  box-shadow: var(--shadow-sm, 0 4px 14px var(--nn-color-shadow-soft));
   animation: thinking-card-enter 220ms ease-out both;
 }
 
@@ -432,12 +432,12 @@
 }
 
 .zera-thinking-message.is-complete .zera-thinking-header-status {
-  color: var(--green, #4ade80);
+  color: var(--nn-color-status-success);
 }
 
 .zera-thinking-message.is-complete .zera-thinking-live-dot {
-  background: var(--green, #4ade80);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--green, #4ade80) 18%, transparent);
+  background: var(--nn-color-status-success);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--nn-color-status-success) 18%, transparent);
   animation: none;
 }
 
@@ -520,9 +520,9 @@
   font-weight: 800;
 }
 
-.zera-thinking-step.tone-good .zera-thinking-step-marker { color: var(--green, #4ade80); }
-.zera-thinking-step.tone-warn .zera-thinking-step-marker { color: var(--yellow, #fbbf24); }
-.zera-thinking-step.tone-bad .zera-thinking-step-marker { color: var(--red, #f87171); }
+.zera-thinking-step.tone-good .zera-thinking-step-marker { color: var(--nn-color-status-success); }
+.zera-thinking-step.tone-warn .zera-thinking-step-marker { color: var(--nn-color-status-warning); }
+.zera-thinking-step.tone-bad .zera-thinking-step-marker { color: var(--nn-color-status-error); }
 
 .zera-thinking-step-copy {
   min-width: 0;
@@ -573,9 +573,9 @@
   background: var(--accent);
 }
 
-.zera-thinking-step.tone-good .zera-thinking-score-fill { background: var(--green, #4ade80); }
-.zera-thinking-step.tone-warn .zera-thinking-score-fill { background: var(--yellow, #fbbf24); }
-.zera-thinking-step.tone-bad .zera-thinking-score-fill { background: var(--red, #f87171); }
+.zera-thinking-step.tone-good .zera-thinking-score-fill { background: var(--nn-color-status-success); }
+.zera-thinking-step.tone-warn .zera-thinking-score-fill { background: var(--nn-color-status-warning); }
+.zera-thinking-step.tone-bad .zera-thinking-score-fill { background: var(--nn-color-status-error); }
 
 .zera-thinking-result {
   margin-top: 10px;
@@ -1203,15 +1203,15 @@
 
 /* ── Response Group Container — SMUI card-glow ────────────────────── */
 .nn-structured-chat-shell__response-group {
-  border: 1px solid var(--border-color, #3b4252);
+  border: 1px solid var(--nn-color-border-subtle);
   border-radius: 0;
-  background: var(--surface-container, #21262e);
+  background: var(--nn-color-content-bg);
   padding: 16px;
   margin: 8px 0;
   transition: border-color 0.15s ease;
 }
 .nn-structured-chat-shell__response-group:hover {
-  border-color: var(--accent, #88c0d0);
+  border-color: var(--nn-color-status-info);
 }
 
 /* ── Metadata Header (Agent · Provider · Model) — SMUI uppercase ───── */
@@ -1222,7 +1222,7 @@
   gap: 4px;
   padding: 0 0 10px;
   margin-bottom: 12px;
-  border-bottom: 1px solid var(--border-color, #3b4252);
+  border-bottom: 1px solid var(--nn-color-border-subtle);
   font-size: 11px;
   font-weight: 500;
   letter-spacing: 1.5px;
@@ -1245,8 +1245,8 @@
   gap: 10px;
   padding: 10px 14px;
   border-radius: 0;
-  background: var(--surface-container, #21262e);
-  border: 1px solid var(--border-color, #3b4252);
+  background: var(--nn-color-content-bg);
+  border: 1px solid var(--nn-color-border-subtle);
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 1px;
@@ -1258,7 +1258,7 @@
   content: '';
   position: absolute;
   inset: 0;
-  background: linear-gradient(90deg, transparent, var(--accent-container, rgba(136,192,208,0.08)), transparent);
+  background: linear-gradient(90deg, transparent, var(--nn-color-status-info-bg), transparent);
   animation: nn-shimmer 2s infinite;
 }
 @keyframes nn-shimmer {
@@ -1284,11 +1284,11 @@
 .nn-reasoning-disclosure {
   width: 100%;
   box-sizing: border-box;
-  border: 1px solid var(--border-color, #3b4252);
+  border: 1px solid var(--nn-color-border-subtle);
   border-radius: 0;
   margin: 6px 0;
   overflow: hidden;
-  background: var(--surface-container, #21262e);
+  background: var(--nn-color-content-bg);
 }
 .nn-reasoning-disclosure > button {
   width: 100%;
@@ -1308,20 +1308,20 @@
   transition: background 0.12s ease;
 }
 .nn-reasoning-disclosure > button:hover {
-  background: var(--surface-hover, rgba(255,255,255,0.04));
+  background: var(--nn-color-surface-hover);
 }
 .nn-reasoning-disclosure > button::before {
   content: '>';
   font-weight: 700;
-  color: var(--accent, #88c0d0);
+  color: var(--nn-color-status-info);
 }
 .nn-reasoning-disclosure [role="region"] {
   padding: 12px 14px;
   font-size: 13px;
   line-height: 1.65;
   color: var(--text-secondary);
-  border-top: 1px solid var(--border-color, #3b4252);
-  background: var(--bg-primary, #1a1e24);
+  border-top: 1px solid var(--nn-color-border-subtle);
+  background: var(--nn-color-content-bg);
 }
 
 /* Thinking Card (task_progress thinking lineage) */
@@ -1329,7 +1329,7 @@
   border: 1px solid var(--outline-variant, var(--border-color));
   border-radius: 10px;
   padding: 12px 14px;
-  background: var(--surface-container, rgba(255,255,255,0.02));
+  background: var(--nn-color-content-bg);
   margin: 6px 0;
 }
 .nn-thinking-card__item {
@@ -1364,24 +1364,24 @@
 
 /* ── 04 Approval / Decision Card — SMUI status-colored ─────────────── */
 .nn-decision-surface {
-  border: 1px solid var(--yellow, #ebcb8b);
+  border: 1px solid var(--nn-color-status-warning);
   border-radius: 0;
   padding: 16px;
   margin: 8px 0;
-  background: var(--yellow-container, rgba(235,203,139,0.06));
+  background: var(--nn-color-status-warning-bg);
 }
 .nn-decision-surface[data-state="pending"] {
-  border-color: var(--yellow, #ca8a04);
+  border-color: var(--nn-color-status-warning);
 }
 .nn-decision-surface[data-state="approved"],
 .nn-decision-surface[data-state="answered"] {
-  border-color: var(--green, #a3be8c);
-  background: var(--green-container, rgba(163,190,140,0.06));
+  border-color: var(--nn-color-status-success);
+  background: var(--nn-color-status-success-bg);
 }
 .nn-decision-surface[data-state="rejected"],
 .nn-decision-surface[data-state="expired"] {
-  border-color: var(--red, #d4737c);
-  background: var(--red-container, rgba(212,115,124,0.06));
+  border-color: var(--nn-color-status-error);
+  background: var(--nn-color-status-error-bg);
 }
 .nn-decision-surface__actions {
   display: flex;
@@ -1392,8 +1392,8 @@
 .nn-decision-surface__actions button {
   padding: 8px 16px;
   border-radius: 0;
-  border: 1px solid var(--border-color, #3b4252);
-  background: var(--surface-container-high, #282e37);
+  border: 1px solid var(--nn-color-border-subtle);
+  background: var(--nn-color-content-bg-inset);
   color: var(--text-primary);
   font-size: 11px;
   font-weight: 500;
@@ -1403,9 +1403,9 @@
   transition: all 0.12s ease;
 }
 .nn-decision-surface__actions button:hover {
-  background: var(--accent, #88c0d0);
-  color: var(--bg-primary, #1a1e24);
-  border-color: var(--accent, #88c0d0);
+  background: var(--nn-color-status-info);
+  color: var(--nn-color-content-bg);
+  border-color: var(--nn-color-status-info);
 }
 
 /* ── 05 Tool Chips — SMUI compact status rows ─────────────────────── */
@@ -1421,8 +1421,8 @@
   gap: 8px;
   padding: 8px 12px;
   border-radius: 0;
-  background: var(--surface-container, #21262e);
-  border: 1px solid var(--border-color, #3b4252);
+  background: var(--nn-color-content-bg);
+  border: 1px solid var(--nn-color-border-subtle);
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.5px;
@@ -1430,12 +1430,12 @@
   transition: border-color 0.12s ease;
 }
 .nn-tool-activity__row:hover {
-  border-color: var(--accent, #88c0d0);
+  border-color: var(--nn-color-status-info);
 }
 .nn-tool-activity__row::before {
   content: '>';
   font-weight: 700;
-  color: var(--accent, #88c0d0);
+  color: var(--nn-color-status-info);
   font-size: 10px;
 }
 
@@ -1452,25 +1452,25 @@
   gap: 10px;
   padding: 10px 14px;
   border-radius: 0;
-  background: var(--surface-container, #21262e);
-  border: 1px solid var(--border-color, #3b4252);
+  background: var(--nn-color-content-bg);
+  border: 1px solid var(--nn-color-border-subtle);
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.5px;
   transition: border-color 0.12s;
 }
 .nn-task-progress__row[data-state="running"] {
-  border-left: 3px solid var(--accent, #88c0d0);
+  border-left: 3px solid var(--nn-color-status-info);
 }
 .nn-task-progress__row[data-state="completed"] {
-  border-left: 3px solid var(--green, #a3be8c);
+  border-left: 3px solid var(--nn-color-status-success);
   opacity: 0.8;
 }
 .nn-task-progress__row[data-state="failed"] {
-  border-left: 3px solid var(--red, #d4737c);
+  border-left: 3px solid var(--nn-color-status-error);
 }
 .nn-task-progress__row[data-state="queued"] {
-  border-left: 3px solid var(--text-dim, #5c6678);
+  border-left: 3px solid var(--nn-color-content-fg-dim);
   opacity: 0.6;
 }
 
@@ -1480,7 +1480,7 @@
   border-radius: 10px;
   padding: 16px;
   margin: 8px 0;
-  background: var(--surface-container, rgba(255,255,255,0.02));
+  background: var(--nn-color-content-bg);
 }
 
 /* ── 10 Context Cards ─────────────────────────────────────────────── */
@@ -1496,8 +1496,8 @@
   gap: 8px;
   padding: 8px 12px;
   border-radius: 6px;
-  background: var(--surface-container, rgba(255,255,255,0.03));
-  border: 1px solid var(--outline-variant, var(--border-color, rgba(255,255,255,0.06)));
+  background: var(--nn-color-content-bg);
+  border: 1px solid var(--nn-color-border-default);
   font-size: 12px;
   color: var(--text-secondary);
 }
@@ -1510,16 +1510,16 @@
   border-radius: 0;
   overflow: hidden;
   margin: 8px 0;
-  background: var(--bg-primary, #1a1e24);
-  border: 1px solid var(--border-color, #3b4252);
+  background: var(--nn-color-content-bg);
+  border: 1px solid var(--nn-color-border-subtle);
 }
 .nn-code-surface__header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 8px 14px;
-  background: var(--surface-container-high, #282e37);
-  border-bottom: 1px solid var(--border-color, #3b4252);
+  background: var(--nn-color-content-bg-inset);
+  border-bottom: 1px solid var(--nn-color-border-subtle);
   font-size: 11px;
   color: var(--text-dim);
 }
@@ -1527,7 +1527,7 @@
   font-weight: 500;
   text-transform: uppercase;
   letter-spacing: 1.5px;
-  color: var(--accent, #88c0d0);
+  color: var(--nn-color-status-info);
 }
 .nn-code-surface__actions {
   display: flex;
@@ -1544,11 +1544,11 @@
   transition: all 0.12s ease;
 }
 .nn-code-surface__action-btn:hover {
-  background: var(--surface-hover, rgba(255,255,255,0.06));
+  background: var(--nn-color-surface-hover);
   color: var(--text-secondary);
 }
 .nn-code-surface__copy-btn--success {
-  color: var(--green, #4ade80);
+  color: var(--nn-color-status-success);
 }
 .nn-code-surface__code-container {
   width: 100%;
@@ -1593,7 +1593,7 @@
 body.theme-light .nn-code-surface,
 body.theme-sepia .nn-code-surface,
 body.theme-zen .nn-code-surface {
-  background: var(--surface-container-highest, #c8ced9);
+  background: var(--nn-color-content-bg-raised);
 }
 body.theme-light .nn-code-surface__pre,
 body.theme-sepia .nn-code-surface__pre,
@@ -1604,27 +1604,27 @@ body.theme-zen .nn-code-surface__pre {
 body.theme-light .nn-structured-chat-shell__response-group,
 body.theme-sepia .nn-structured-chat-shell__response-group,
 body.theme-zen .nn-structured-chat-shell__response-group {
-  background: var(--surface-container, #e5e9f0);
-  border-color: var(--border-color, #c9cfda);
+  background: var(--nn-color-content-bg);
+  border-color: var(--nn-color-border-subtle);
 }
 body.theme-light .nn-structured-chat-shell__response-group:hover,
 body.theme-sepia .nn-structured-chat-shell__response-group:hover,
 body.theme-zen .nn-structured-chat-shell__response-group:hover {
-  border-color: var(--accent, #4c6d94);
+  border-color: var(--nn-color-status-info);
 }
 
 /* ── Error Block ──────────────────────────────────────────────────── */
 .nn-error-block {
-  border: 1px solid var(--red, #f87171);
+  border: 1px solid var(--nn-color-status-error);
   border-radius: 10px;
   padding: 14px 16px;
   margin: 6px 0;
-  background: var(--red-container, rgba(248,113,113,0.06));
+  background: var(--nn-color-status-error-bg);
 }
 .nn-error-block__header {
   font-size: 13px;
   font-weight: 600;
-  color: var(--red, #f87171);
+  color: var(--nn-color-status-error);
   margin-bottom: 6px;
 }
 .nn-error-block__body {
@@ -1645,7 +1645,7 @@ body.theme-zen .nn-structured-chat-shell__response-group:hover {
   border-radius: 10px;
   padding: 16px;
   margin: 8px 0;
-  background: var(--surface-container, rgba(255,255,255,0.02));
+  background: var(--nn-color-content-bg);
 }
 
 /* ── Follow-up Actions ────────────────────────────────────────────── */
@@ -1658,17 +1658,17 @@ body.theme-zen .nn-structured-chat-shell__response-group:hover {
 .nn-follow-up-actions button {
   padding: 8px 14px;
   border-radius: 8px;
-  border: 1px solid var(--accent, #60a5fa);
-  background: var(--accent-container, rgba(96,165,250,0.08));
-  color: var(--accent, #60a5fa);
+  border: 1px solid var(--nn-color-status-info);
+  background: var(--nn-color-status-info-bg);
+  color: var(--nn-color-status-info);
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
   transition: all 0.12s ease;
 }
 .nn-follow-up-actions button:hover {
-  background: var(--accent, #60a5fa);
-  color: #fff;
+  background: var(--nn-color-status-info);
+  color: var(--nn-color-on-accent);
 }
 
 /* ── Attachment Block ─────────────────────────────────────────────── */
@@ -1684,8 +1684,8 @@ body.theme-zen .nn-structured-chat-shell__response-group:hover {
   gap: 8px;
   padding: 8px 12px;
   border-radius: 6px;
-  background: var(--surface-container, rgba(255,255,255,0.03));
-  border: 1px solid var(--outline-variant, var(--border-color, rgba(255,255,255,0.06)));
+  background: var(--nn-color-content-bg);
+  border: 1px solid var(--nn-color-border-default);
   font-size: 12px;
   color: var(--text-secondary);
 }
@@ -1696,17 +1696,17 @@ body.theme-zen .nn-structured-chat-shell__response-group:hover {
   color: var(--text-dim);
   padding: 6px 0;
   margin-top: 8px;
-  border-top: 1px solid var(--outline-variant, var(--border-color, rgba(255,255,255,0.04)));
+  border-top: 1px solid var(--nn-color-border-default);
 }
 .nn-structured-chat-shell__response-terminal[data-outcome="non_success"] {
-  color: var(--red, #f87171);
+  color: var(--nn-color-status-error);
 }
 
 /* ── Response Actions Toolbar ─────────────────────────────────────── */
 .nn-structured-chat-shell__response-actions {
   margin-top: 12px;
   padding-top: 10px;
-  border-top: 1px solid var(--outline-variant, var(--border-color, rgba(255,255,255,0.04)));
+  border-top: 1px solid var(--nn-color-border-default);
 }
 .nn-structured-chat-shell__response-actions__btn {
   padding: 6px 12px;
@@ -1720,7 +1720,7 @@ body.theme-zen .nn-structured-chat-shell__response-group:hover {
   transition: all 0.12s ease;
 }
 .nn-structured-chat-shell__response-actions__btn:hover {
-  background: var(--surface-hover, rgba(255,255,255,0.04));
+  background: var(--nn-color-surface-hover);
   color: var(--text-secondary);
   border-color: var(--outline, var(--text-dim));
 }

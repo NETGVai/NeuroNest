@@ -297,14 +297,17 @@ export class ChannelManager {
     const parsed = adapter.configSchema.safeParse(config);
     if (!parsed.success) {
       const fields = parsed.error.issues.map((i: any) => i.path.join('.')).join(', ');
-      const errorMsg = `Invalid config for '${channelId}': fields = ${fields}`;
+      const fieldError = `Invalid config for '${channelId}': fields = ${fields}`;
+      const errorMsg = adapter.configHelp
+        ? `${fieldError}\n\n${adapter.configHelp}`
+        : fieldError;
       this.emitter.emit(CHANNEL_STATUS_EVENT, {
         channelId,
         status: 'error',
         error: errorMsg,
         errorCode: 'CONFIG_INVALID' as ErrorCode,
       });
-      return { success: false, message: errorMsg, error: { code: 'CONFIG_INVALID', message: `Invalid fields: ${fields}` } };
+      return { success: false, message: errorMsg, error: { code: 'CONFIG_INVALID', message: errorMsg } };
     }
 
     // Create active instance record (preserve reconnectAttempts if reconnecting)

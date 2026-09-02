@@ -88,6 +88,25 @@ export interface Migration {
 
 const migrations: Migration[] = [initialSchema, skillsSchema, multicaIntegration, agentSkillsIntegration, costRecords, securityScans, longTermMemory, sandboxSessions, mcpServers, memoryFts, diffReview, multiSession, extensions, newFeatures, plandexFeatures, advancedFeatures, remainingFeatures, gooseFeatures, sentruxFeatures, sreFeatures, helmorFeatures, factoryFeatures, coderFeatures, groundingAudit, incrementalIndexing, chatMessagesOverflow, runtimeSandboxGuardrails, errorSizeSamples, pipelineEvents, metricSamples, errorSizeSamplesBackfill, specMessageMode, secretsV2, multiChatSessions, agentLoopMetrics, featureIntegration, traceProvenanceColumns, neuronestEnhanced, productionUxAudit, unifiedIntentGate, loopStorage, accessibilityFriction, semanticIndex, worktreeSessions, codeReviews, backgroundProcesses, networkPolicyLog, sessionExports, pluginSystem, adoptionMetrics, mcpMarketplace, diffTurns, featureGateStore, rememberedGrants, hookDefinitionsV2, crossSessionMemory, dispatchSource, gcfContext, kbTables, trainingPipeline, modelExportGrpo, enterpriseTraining, multiRepoAgentIntegration, gadgets, blueprints, gatekeeper, simulatedApproval, observations, contextLibrary, workflows, costBudgets, codeMode, agentSkillBundleEvidence, editorChatFoundations, legacyHistoryImport, enhancedChatUiFoundations, driftRunSnapshots];
 
+/** Return the canonical registered migration versions in deterministic order. */
+export function getRegisteredMigrationVersions(): readonly number[] {
+  return Object.freeze(migrations.map((migration) => migration.version).sort((a, b) => a - b));
+}
+
+/**
+ * Return the registered migrations in ascending version order.
+ *
+ * This is the runtime registry accessor the DatabaseAuthority uses to derive
+ * its migration count/contiguity at a named revision, rather than relying on a
+ * hard-coded total (NN-DATA-013). The observed 77 is an evidence snapshot, not
+ * an authority.
+ */
+export function getRegisteredMigrations(): readonly Migration[] {
+  return Object.freeze(
+    [...migrations].sort((a, b) => a.version - b.version),
+  );
+}
+
 /**
  * Validates the migration registry is contiguous (versions 1..N) and the
  * registered count matches the number of migration files in the migrations directory.

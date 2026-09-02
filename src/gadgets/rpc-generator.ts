@@ -543,7 +543,34 @@ export class RPCGeneratorImpl implements RPCGenerator {
   private parseSourceCode(sourceCode: string): RPCMethod[] {
     const methods: RPCMethod[] = [];
 
-    // Create a source file from the code
+    // createSourceFile() recovers from malformed input, so reject syntax errors
+    // before traversing an AST that may contain synthesized or missing names.
+    const syntaxCheck = ts.transpileModule(sourceCode, {
+      fileName: 'server.ts',
+      reportDiagnostics: true,
+      compilerOptions: {
+        target: ts.ScriptTarget.ESNext,
+        module: ts.ModuleKind.ESNext,
+      },
+    });
+    const syntaxDiagnostics = (syntaxCheck.diagnostics ?? []).filter(
+      (diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error,
+    );
+
+    if (syntaxDiagnostics.length > 0) {
+      const messages = syntaxDiagnostics.map((diagnostic) => {
+        const message = ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n');
+        if (!diagnostic.file || diagnostic.start === undefined) {
+          return `TS${diagnostic.code}: ${message}`;
+        }
+
+        const { line, character } = diagnostic.file.getLineAndCharacterOfPosition(diagnostic.start);
+        return `${diagnostic.file.fileName}:${line + 1}:${character + 1} TS${diagnostic.code}: ${message}`;
+      });
+      throw new Error(`Invalid TypeScript syntax: ${messages.join('; ')}`);
+    }
+
+    // Create a source file from the syntax-checked code.
     const sourceFile = ts.createSourceFile(
       'server.ts',
       sourceCode,
@@ -552,9 +579,23 @@ export class RPCGeneratorImpl implements RPCGenerator {
       ts.ScriptKind.TS,
     );
 
+    const assertSupportedParameterBindings = (
+      params: ts.NodeArray<ts.ParameterDeclaration>,
+    ): void => {
+      for (const param of params) {
+        if (!ts.isIdentifier(param.name) || param.name.text.length === 0) {
+          const binding = param.name.getText(sourceFile).trim() || '<missing>';
+          throw new Error(
+            `Unsupported RPC parameter binding "${binding}"; RPC parameters must use named identifiers`,
+          );
+        }
+      }
+    };
+
     // Walk the AST looking for exported async function declarations
     const visit = (node: ts.Node): void => {
       if (ts.isFunctionDeclaration(node) && this.isExportedAsyncFunction(node)) {
+        assertSupportedParameterBindings(node.parameters);
         const method = this.extractMethodFromFunction(node, sourceFile);
         if (method) {
           methods.push(method);
@@ -569,6 +610,9 @@ export class RPCGeneratorImpl implements RPCGenerator {
             decl.initializer &&
             this.isAsyncArrowOrFunction(decl.initializer)
           ) {
+            if (ts.isArrowFunction(decl.initializer) || ts.isFunctionExpression(decl.initializer)) {
+              assertSupportedParameterBindings(decl.initializer.parameters);
+            }
             const method = this.extractMethodFromVariableDecl(decl, sourceFile);
             if (method) {
               methods.push(method);

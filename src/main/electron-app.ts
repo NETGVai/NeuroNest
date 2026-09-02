@@ -40,7 +40,7 @@ import { startOllama, stopOllama } from './ollama-manager';
 import { stopOpenMythos } from './openmythos-manager';
 import { shutdownAgentSkillsService } from '../agent-skills/main-process-integration.js';
 import type { WindowState } from '../shared/types';
-import { hardenWindow, installCSP, getSecureWebPreferences, DEFAULT_SECURITY_POLICY, generateCSPNonce, injectCSPNonceMeta } from './security/window-hardener';
+import { hardenWindow, installCSP, getSecureWebPreferences, DEFAULT_SECURITY_POLICY, generateCSPNonce, injectCSPNonceMeta, enableLegacyWebviewGuest, type WebviewGuestPolicy } from './security/window-hardener';
 import { migrateLegacyData, getDataDirectory } from '../storage/data-directory';
 import { bootstrapGCF, shutdownGCF } from '../context/gcf-bootstrap.js';
 import { initDatabase } from '../storage/database';
@@ -279,6 +279,62 @@ function ensureLegacyProviderKeyMigrationService(): LegacyProviderKeyMigrationSe
   return service;
 }
 
+/**
+ * Whether this release profile enables the legacy guest webview
+ * (NN-SEC-017). The in-app browser panel and the Stripe checkout surface are
+ * legacy guests that must remain enabled; they run ONLY under the guarded
+ * NN-SEC-017 guest-controls path. Set to `false` to fully disable the guest
+ * (the capability then reports UNAVAILABLE). This is a fixed release-profile
+ * constant, never a renderer-controllable value.
+ */
+const LEGACY_WEBVIEW_GUEST_ENABLED = true;
+
+/**
+ * FUT-PKG-02-FOUNDATION/T-006 — whether the phased startup coordinator runs on
+ * this launch. Additive and developer-profile gated (D-23 rollout: developer
+ * profile then internal opt-in). When enabled the coordinator composes the
+ * D-09 boot phases (lease/root → capability probe → database/schema/migration
+ * → reconciliation → contract registration → required projections → hardened
+ * window/bootstrap) in an OBSERVER role beside the existing startup: it
+ * produces a truthful scoped readiness report and, when a required authority/
+ * schema/integrity phase blocks, a diagnostic-only signal, WITHOUT replacing
+ * the legacy startup or weakening the 3.1 security posture. It never gates the
+ * legacy app; it is a measured, reversible foundation gate. Off by default;
+ * enable with `NEURONEST_FOUNDATION_STARTUP=1` (developer profile).
+ */
+function isFoundationStartupEnabled(): boolean {
+  const flag = process.env.NEURONEST_FOUNDATION_STARTUP;
+  return flag === '1' || flag === 'true';
+}
+
+/**
+ * Build the NN-SEC-017 policy for the legacy guest webview. The guest runs in
+ * a dedicated non-persistent isolated partition with a minimal constrained
+ * preload, no Node integration, denied permissions/downloads/new-windows, and
+ * enforced navigation policy. `allowAnyWebOrigin` reflects that the browser
+ * panel is a general-purpose web surface; all other controls still apply, and
+ * the checkout surface's initial Stripe origin is in the explicit allowlist.
+ */
+function buildLegacyWebviewGuestPolicy(): WebviewGuestPolicy {
+  return {
+    // A fresh in-memory partition dedicated to guest content; NOT the app's
+    // own default/main partition.
+    partition: 'nn-legacy-webview-guest',
+    guestPreloadPath: path.join(__dirname, '..', 'renderer', 'webview-guest-preload.js'),
+    // Initial attach targets: the app site and Stripe checkout hosts.
+    allowedGuestOrigins: [
+      'https://neuronest.cc',
+      'https://checkout.stripe.com',
+      'https://js.stripe.com',
+    ],
+    // The guest is granted no host permissions.
+    allowedPermissions: [],
+    allowDownloads: false,
+    // The browser panel is a general-purpose web browser surface.
+    allowAnyWebOrigin: true,
+  };
+}
+
 function createMainWindow(): BrowserWindow {
   const saved: WindowState = restoreWindowState();
 
@@ -295,11 +351,29 @@ function createMainWindow(): BrowserWindow {
     show: false,
     webPreferences: getSecureWebPreferences({
       preload: path.join(__dirname, '..', 'renderer', 'preload.js'),
-      webviewTag: true,
+      // NN-SEC-017 / D-16.1: webviewTag is DISABLED by default. The legacy
+      // guest webview (in-app browser panel + Stripe checkout) is enabled
+      // explicitly below under the guarded NN-SEC-017 guest-controls path, not
+      // by trusting an insecure default here.
+      webviewTag: LEGACY_WEBVIEW_GUEST_ENABLED,
     }),
   });
 
-  // Apply window hardening (navigation blocking, new-window interception)
+  // NN-SEC-017 legacy guest: install the guarded guest controls (isolated
+  // partition, constrained preload, attach validation, and
+  // navigation/window-open/permission/download/network policy) BEFORE the
+  // window is hardened/loaded. If the policy is incomplete the guest stays
+  // disabled and the capability is UNAVAILABLE — the app never silently
+  // enables an unguarded guest.
+  if (LEGACY_WEBVIEW_GUEST_ENABLED) {
+    const guestApproved = enableLegacyWebviewGuest(win, buildLegacyWebviewGuestPolicy());
+    if (!guestApproved) {
+      console.warn('[Security] Legacy webview guest policy incomplete; guest disabled (UNAVAILABLE)');
+    }
+  }
+
+  // Apply window hardening (fail-fast security-preference validation + navigation
+  // blocking + new-window interception). Throws if the window is not secure.
   hardenWindow(win, DEFAULT_SECURITY_POLICY);
 
   // Generate per-window CSP nonce and install nonce-based CSP
@@ -528,6 +602,52 @@ app.whenReady().then(async () => {
     console.error('[Startup] Legacy data migration threw unexpectedly:', migrationErr);
   }
 
+  // ── Phased Startup Coordinator (FUT-PKG-02-FOUNDATION/T-006) ──
+  // Developer-profile gated, additive, OBSERVER-only foundation gate. Composes
+  // the D-09 boot phases and logs a truthful scoped readiness report (and a
+  // diagnostic-only signal when a required authority/schema/integrity phase
+  // blocks). It runs BESIDE the legacy startup below and never replaces it,
+  // gates it, or alters the 3.1 security hardening. Any failure here is
+  // non-fatal: the legacy app proceeds exactly as before.
+  if (isFoundationStartupEnabled()) {
+    try {
+      const { runFoundationStartup } = await import('./startup-foundation.js');
+      const foundation = await runFoundationStartup();
+      const { startup } = foundation;
+      console.log(
+        `[Foundation] Phased startup: mode=${startup.mode} mutationAllowed=${startup.mutationAllowed} ready=${startup.readiness.ready}`,
+      );
+      if (startup.mode === 'diagnostic-only' && startup.firstRequiredFailure) {
+        const f = startup.firstRequiredFailure;
+        console.warn(
+          `[Foundation] Diagnostic-only startup — required phase '${f.phase}' blocked: ${f.failure?.reason ?? 'UNKNOWN'} (${f.failure?.message ?? ''})`,
+        );
+      }
+      for (const isolated of startup.isolatedFailures) {
+        console.warn(
+          `[Foundation] Isolated (scoped) phase failure '${isolated.phase}': ${isolated.failure?.reason ?? 'UNKNOWN'} — core boot unaffected`,
+        );
+      }
+      if (startup.readiness.notReadyCapabilities.length > 0) {
+        console.log(
+          `[Foundation] Not-ready capabilities: ${startup.readiness.notReadyCapabilities.join(', ')}`,
+        );
+      }
+      // The coordinator holds a single-instance lease for observation; release
+      // it immediately so it never contends with the legacy instance lock.
+      foundation.instanceLease?.release();
+      // Close any database handle the observer opened so it never holds a
+      // second connection while the legacy `initDatabase()` path runs. The
+      // schema/migration work is idempotent and WAL-safe; the observer only
+      // needs to have opened it to attest readiness, not to keep it.
+      if (foundation.database && foundation.database.ok) {
+        foundation.database.db.close();
+      }
+    } catch (foundationErr) {
+      console.error('[Foundation] Phased startup observer failed (non-fatal):', foundationErr);
+    }
+  }
+
   const processLaunchKind = getProcessLaunchKind();
 
   if (processLaunchKind === 'cli') {
@@ -698,7 +818,7 @@ app.whenReady().then(async () => {
     let isWorkspaceDocument = false;
     try {
       isWorkspaceDocument = new URL(mainWindow.webContents.getURL()).pathname.endsWith('/index.html');
-    } catch {}
+    } catch { /* Invalid or transient URLs are retried after the next page load. */ }
     if (!isWorkspaceDocument) {
       mainWindow.webContents.once('did-finish-load', initializeLoadedWorkspace);
       return;

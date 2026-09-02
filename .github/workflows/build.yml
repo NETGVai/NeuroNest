@@ -115,7 +115,7 @@ jobs:
 
       # ── ESLint across all workspace packages ──
       - name: ESLint across all workspace packages
-        run: npx eslint --ext .ts,.tsx src/ packages/ || true
+        run: npx eslint src/ packages/ || true
 
       # ── Formatting ──
       - name: Prettier format check
@@ -292,16 +292,16 @@ jobs:
         run: |
           # Create a temporary keychain
           KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
-          security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
-          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
 
           # Import certificate
-          echo "$MACOS_CERTIFICATE" | base64 --decode > $RUNNER_TEMP/certificate.p12
-          security import $RUNNER_TEMP/certificate.p12 -P "$MACOS_CERTIFICATE_PWD" \
-            -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
-          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
-          security list-keychain -d user -s $KEYCHAIN_PATH
+          echo "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security import "$RUNNER_TEMP/certificate.p12" -P "$MACOS_CERTIFICATE_PWD" \
+            -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
 
       - name: Package macOS (universal, signed)
         timeout-minutes: 30
@@ -322,7 +322,7 @@ jobs:
           echo "Verifying DMG: $DMG_FILE"
           # Mount the DMG and verify the app signature
           hdiutil attach "$DMG_FILE" -nobrowse -quiet
-          APP_PATH=$(find /Volumes -name "*.app" -maxdepth 2 | head -1)
+          APP_PATH=$(find /Volumes -type d -name "*.app" -prune | head -1)
           echo "Verifying app: $APP_PATH"
           codesign --verify --deep --strict "$APP_PATH"
           codesign -dv --verbose=4 "$APP_PATH" 2>&1 | grep -E "Authority|TeamIdentifier"
@@ -334,7 +334,7 @@ jobs:
         if: always()
         run: |
           KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
-          security delete-keychain $KEYCHAIN_PATH || true
+          security delete-keychain "$KEYCHAIN_PATH" || true
 
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v5
@@ -556,8 +556,9 @@ jobs:
       - name: Install cross-compilation tools (arm64)
         if: matrix.arch == 'arm64'
         run: |
-          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
-          sudo apt-get install -y libsecret-1-dev:arm64 || true
+          sudo dpkg --add-architecture arm64
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libsecret-1-dev:arm64
 
       - name: Install dependencies
         run: npm ci --ignore-scripts

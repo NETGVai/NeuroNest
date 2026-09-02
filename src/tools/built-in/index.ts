@@ -322,7 +322,7 @@ async function bashExecute(input: unknown, context: ToolContext): Promise<ToolRe
           // The group may already be gone; fall back to the direct child.
         }
       }
-      try { proc.kill(signal); } catch {}
+      try { proc.kill(signal); } catch { /* The child may already have exited. */ }
     };
 
     const onAbort = () => {

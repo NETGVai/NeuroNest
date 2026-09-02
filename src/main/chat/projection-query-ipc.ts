@@ -281,7 +281,7 @@ export function registerProjectionQueryIPC(
     channel: ProjectionQueryChannel,
     handler: (event: ProjectionQueryInvokeEvent, request: unknown) => Promise<unknown>,
   ): void => {
-    try { dependencies.ipcMain.removeHandler(channel); } catch {}
+    try { dependencies.ipcMain.removeHandler(channel); } catch { /* Removing a missing handler is expected during idempotent registration/disposal. */ }
     dependencies.ipcMain.handle(channel, handler);
   };
 
@@ -384,7 +384,7 @@ export function registerProjectionQueryIPC(
       activeControllers.clear();
       if (registrations.get(dependencies.ipcMain as object) !== registration) return;
       for (const channel of PROJECTION_QUERY_CHANNELS) {
-        try { dependencies.ipcMain.removeHandler(channel); } catch {}
+        try { dependencies.ipcMain.removeHandler(channel); } catch { /* Removing a missing handler is expected during idempotent registration/disposal. */ }
       }
       registrations.delete(dependencies.ipcMain as object);
     },

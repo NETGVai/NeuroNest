@@ -127,24 +127,8 @@ export class LaunchModeWindowGate {
       this.scheduleWorkspaceLoad(this.selectionWindow);
     }
 
-    // Hot-swap: notify the running workspace window so it can apply the mode
-    // change immediately without requiring a restart.
-    if (this.bootstrapSnapshot && settings.mode) {
-      this.bootstrapSnapshot = {
-        ...this.bootstrapSnapshot,
-        launchMode: settings.mode,
-      } as AppBootstrapSnapshot;
-
-      // Find the workspace window (any non-selector window that has loaded)
-      const { BrowserWindow } = require('electron') as typeof import('electron');
-      const allWindows = BrowserWindow.getAllWindows();
-      for (const win of allWindows) {
-        if (!win.isDestroyed() && win !== this.selectionWindow) {
-          win.webContents.send('launch-mode:changed', settings.mode);
-        }
-      }
-    }
-
+    // Persisted changes apply when the workspace is next launched. An already
+    // loaded renderer keeps its bootstrap snapshot and topology unchanged.
     return settings;
   }
 

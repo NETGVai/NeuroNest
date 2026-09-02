@@ -95,7 +95,7 @@ export function createAgentLoopSwarmWorkerFactory(
     return {
       execute: async () => {
         const abortWorkerLLM = () => {
-          try { request.llmClient.abort(); } catch {}
+          try { request.llmClient.abort(); } catch { /* Abort is best-effort for an already-closed client. */ }
         };
         request.signal?.addEventListener('abort', abortWorkerLLM, { once: true });
         try {

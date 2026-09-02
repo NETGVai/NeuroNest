@@ -397,8 +397,12 @@ export class BrowserAdapter extends BaseChannelAdapter {
       });
       text = await this.page.$eval(selector, (el: Element) => el.textContent?.trim() ?? '');
     } else {
-      // Extract all body text
-      text = await this.page.evaluate(() => document.body.innerText?.trim() ?? '');
+      // Execute in Puppeteer's page realm without referencing a browser global
+      // from the Electron main-process adapter source.
+      text = await this.page.$eval(
+        'body',
+        (element: Element) => (element as HTMLElement).innerText?.trim() ?? '',
+      );
     }
 
     const currentUrl = this.page.url();

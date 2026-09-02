@@ -488,38 +488,14 @@ function registerAllPanels() {
     }),
   });
 
-  // ────────────────────────────────────────────────────────────────
-  // 21. File Tree Panel (sidebar)
-  // ────────────────────────────────────────────────────────────────
-  registry.register({
-    id: 'file-tree',
-    label: 'File Tree',
-    icon: '\uD83D\uDCC1',  // 📁
-    featureGate: 'file_tree_panel',
-    group: 'tools',
-    commandPaletteAction: 'Open File Tree',
-    load: createWindowPanelLoader('./file-tree-panel.js', 'FileTreePanel', function (container) {
-      return [container];
-    }),
-  });
+  // File Tree is registered by the module renderer (`main.ts` →
+  // `panels/file-tree`) and is not emitted as a classic window-global script.
+  // Spec Viewer likewise has no classic bundle in the release renderer yet.
+  // Do not register fabricated `file-tree-panel.js` / `spec-viewer-panel.js`
+  // paths here: those files are not produced by either renderer build.
 
   // ────────────────────────────────────────────────────────────────
-  // 22. Spec Viewer Panel
-  // ────────────────────────────────────────────────────────────────
-  registry.register({
-    id: 'spec-viewer',
-    label: 'Spec Viewer',
-    icon: '\uD83D\uDCCB',  // 📋
-    featureGate: 'spec_viewer_panel',
-    group: 'tools',
-    commandPaletteAction: 'Open Spec Viewer',
-    load: createWindowPanelLoader('./spec-viewer-panel.js', 'SpecViewerPanel', function (container) {
-      return [container];
-    }),
-  });
-
-  // ────────────────────────────────────────────────────────────────
-  // 23. Metrics Panel (migrated from unmanaged <script> tag)
+  // Metrics Panel (migrated from unmanaged <script> tag)
   //
   // Previously loaded exclusively via `<script src="./metrics-panel.js">`
   // in index.html. Now registered through the common registry path per

@@ -16,12 +16,13 @@
  * Requirements: 15.5, 15.6
  */
 
-import { ipcMain, type BrowserWindow } from 'electron';
+import { ipcMain, type BrowserWindow, type IpcMainInvokeEvent } from 'electron';
 import type Database from 'better-sqlite3';
 import type { ExtendedBudgetManager } from '../pipeline/budget-manager-extended';
 import type { CapabilityGrantSystem } from '../devops-engine/capability-grant';
 import type { AuditChainInterface } from '../devops-engine/audit-chain';
 import type { AuthSessionManager } from './auth/session-manager';
+import { deriveCallerIdentity, trustedSenderFromWindows } from './security/ipc-caller-identity';
 
 import { getAgentById } from '../agents/agent-registry';
 
@@ -392,11 +393,18 @@ export function registerOpsDashboardIPC(deps: OpsDashboardIPCDependencies): void
   // Runtime flag re-read on each invocation for graceful degradation (Req 21.9, 22.2).
   ipcMain.handle(
     'ops:approve-grant',
-    async (_event, args: { grantId: string; decision: 'approve' | 'deny'; authToken?: string; approverIdentity?: string; __ipcTier?: string }) => {
-      // ── IPC Privilege Tier Enforcement (Req 28.2, 28.4) ──
-      // Verify the caller passed through the admin-tier preload gate.
-      // Reject immediately if the admin tier tag is missing.
-      if (!args || typeof args !== 'object' || args.__ipcTier !== 'admin') {
+    async (_event: IpcMainInvokeEvent, args: { grantId: string; decision: 'approve' | 'deny'; authToken?: string; approverIdentity?: string; __ipcTier?: string }) => {
+      // ── Main-attested caller identity (Req 28.2, 28.4; FUT-PKG-04-SECURITY/T-001) ──
+      // The caller must be the app's own trusted main window, attested from the
+      // sender WebContents in the main process — NOT from a renderer-supplied
+      // `__ipcTier` marker (D-16.2 anti-pattern). Admin authorization itself is
+      // still enforced below by validating the auth token in the main process.
+      const identity = deriveCallerIdentity(_event, args, {
+        isTrustedSender: trustedSenderFromWindows(() =>
+          mainWindow && !mainWindow.isDestroyed() ? [mainWindow.webContents] : [],
+        ),
+      });
+      if (identity.attestedTier === 'public') {
         return { error: true, code: 'UNAUTHORIZED', message: 'Admin access required for grant approvals' };
       }
 

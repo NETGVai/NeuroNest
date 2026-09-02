@@ -127,3 +127,50 @@ export function registerBuiltIns(registry: AdapterRegistry): void {
   registry.registerAdapter('camera', () => new CameraAdapter());
   registry.registerAdapter('canvas', () => new CanvasAdapter());
 }
+
+// ─── Registry-derived availability (CD-014 resolution) ──────────
+// Historically each of the 36 catalog-only adapters above declared
+// `capabilities.implementationStatus: 'available'`, and this bootstrap
+// registered all 43 as if connectable. That static per-adapter whitelist is a
+// SUCCESS-SHAPED LIE for the catalog-only entries: the canonical
+// ChannelRegistryAuthority (the single source of truth) keeps only the seven
+// REAL adapters `available` and the 36 catalog-only entries `coming-soon`
+// (UNAVAILABLE). Per FUT-PKG-09-RETIREMENT/T-005 (NN-INV-014, CD-014) the
+// catalog-only/real distinction MUST be registry-derived, never taken from the
+// static adapter whitelist. The helper below is the ONE availability query
+// every consumer should use so a catalog-only id is never advertised
+// `available`; it defers to the registry's REAL_CHANNEL_IDS rather than the
+// adapter's self-declared status.
+
+import { REAL_CHANNEL_IDS } from '../channel-registry-authority';
+
+/**
+ * The registry-derived set of REAL (connectable) channel ids. This is the
+ * authoritative availability truth; the per-adapter `implementationStatus`
+ * field is NOT consulted (NN-INV-014, CD-014).
+ */
+const REAL_CHANNEL_ID_SET: ReadonlySet<string> = new Set<string>(REAL_CHANNEL_IDS);
+
+/**
+ * Whether a channel id is a REAL, connectable adapter according to the CANONICAL
+ * registry — NOT according to the static per-adapter whitelist. A catalog-only
+ * id always returns `false` here even though its adapter self-declares
+ * `implementationStatus: 'available'`, resolving the CD-014 false-success
+ * (NN-INV-014). Consumers deriving availability MUST use this rather than
+ * reading `adapter.capabilities.implementationStatus`.
+ *
+ * @satisfies NN-INV-014, CD-014
+ */
+export function isRegistryAvailableChannel(channelId: string): boolean {
+  return REAL_CHANNEL_ID_SET.has(channelId);
+}
+
+/**
+ * The registry-derived count of REAL, connectable channels (NN-DATA-013,
+ * NN-IDENT-004). This is the authoritative "available" total; it is derived
+ * from the registry baseline, never a static constant such as 43 (all-declared
+ * available) or a historic count.
+ */
+export function registryAvailableChannelCount(): number {
+  return REAL_CHANNEL_ID_SET.size;
+}

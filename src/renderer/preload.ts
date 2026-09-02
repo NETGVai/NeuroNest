@@ -514,8 +514,6 @@ const RECEIVE_CHANNELS = [
   'training:progress-update', 'training:job-state-changed', 'training:metrics-update', 'training:export-progress',
   // Agent Catalog updates (deferred import completed)
   'agents:catalog-updated',
-  // Launch mode hot-swap (Classic ↔ Advanced without restart)
-  'launch-mode:changed',
   // Knowledge Base Panel — real-time indexing/status updates (Main → Renderer)
   'kb:indexing-progress', 'kb:source-status-changed', 'kb:search-results',
   // User profile request (Main → Renderer, response via 'user-profile-response' send channel)
@@ -720,14 +718,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
     if (!INVOKE_CHANNELS.includes(channel)) {
       return Promise.reject(new Error(`Channel not allowed: ${channel}`));
     }
-    // ─── IPC Privilege Tier Enforcement (Req 28.1, 28.4) ──────────────
-    // Admin-tier channels are tagged so the main-process handler can verify
-    // caller authorization. The tier metadata is injected into the request
-    // payload as a non-enumerable property that the handler checks.
+    // ─── IPC tier marker — telemetry only, NON-AUTHORIZING (Req 28.1; T-001) ──
+    // NOTE: as of FUT-PKG-04-SECURITY/T-001 the main process derives caller
+    // authorization from the sender WebContents / main-validated auth token and
+    // NEVER trusts this marker (D-16.2, NN-SEC-009). The marker is retained only
+    // so the main handler can DETECT a forged-tier attempt; it grants nothing.
     const tier = getChannelTier(channel);
     if (tier === 'admin') {
-      // For admin channels, wrap the first argument to include tier context
-      // so the main-process handler can verify authorization (Req 28.2, 28.3).
       const payload = args[0] && typeof args[0] === 'object' ? args[0] : {};
       const enrichedPayload = { ...payload, __ipcTier: 'admin' };
       return ipcRenderer.invoke(channel, enrichedPayload, ...args.slice(1));

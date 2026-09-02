@@ -43,6 +43,8 @@
   --nn-color-content-bg-raised: var(--surface-container-highest);
   --nn-color-content-link: var(--accent);
   --nn-color-content-link-hover: var(--accent-hover);
+  --nn-color-surface-hover: var(--surface-hover, rgba(255, 255, 255, 0.04));
+  --nn-color-shadow-soft: rgba(0, 0, 0, 0.12);
 
   /* ── Borders ── */
   --nn-color-border-subtle: var(--border-color);

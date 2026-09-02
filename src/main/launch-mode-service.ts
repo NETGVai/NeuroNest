@@ -197,12 +197,23 @@ export class LaunchModeService {
   }
 
   private normalizeSettingsInTransaction(
-    _installationClass: InstallationClass,
+    installationClass: InstallationClass,
   ): NormalizedSettings {
     const row = this.readConfig(UI_LAUNCH_MODE_CONFIG_KEY);
     if (!row) {
-      // No config row exists yet — show the selector so the user makes an
-      // explicit choice, regardless of whether this is a new or existing install.
+      if (installationClass === 'existing') {
+        const settings = this.createAdvancedSettings(1);
+        this.writeConfig(UI_LAUNCH_MODE_CONFIG_KEY, settings);
+        return {
+          settings,
+          resolution: {
+            state: 'resolved',
+            mode: 'advanced',
+            source: 'legacy-default',
+          },
+        };
+      }
+
       const settings = LaunchModeSettingsSchema.parse({
         mode: null,
         revision: 1,
@@ -225,28 +236,28 @@ export class LaunchModeService {
 
     if (validated?.success) {
       const settings = validated.data;
-      if (settings.mode && settings.revision > 1) {
-        // Mode was explicitly chosen by the user (revision > 1 means the mode
-        // was updated via the selector UI after the initial null-mode write).
+      if (settings.mode) {
         return {
           settings,
           resolution: { state: 'resolved', mode: settings.mode, source: 'saved' },
         };
       }
 
-      // No mode explicitly chosen yet — show the selector regardless of
-      // installation class so both new and existing users make an explicit choice.
-      // This also handles legacy-defaulted modes (revision 1, auto-set to advanced)
-      // by re-prompting the user to confirm their preference.
-      // Present settings with mode: null so the renderer selector UI knows to
-      // wait for user input instead of immediately finishing.
-      const selectionSettings = LaunchModeSettingsSchema.parse({
-        mode: null,
-        revision: settings.revision,
-        updatedAt: settings.updatedAt,
-      });
+      if (installationClass === 'existing') {
+        const defaulted = this.createAdvancedSettings(settings.revision + 1);
+        this.writeConfig(UI_LAUNCH_MODE_CONFIG_KEY, defaulted);
+        return {
+          settings: defaulted,
+          resolution: {
+            state: 'resolved',
+            mode: 'advanced',
+            source: 'legacy-default',
+          },
+        };
+      }
+
       return {
-        settings: selectionSettings,
+        settings,
         resolution: {
           state: 'selection-required',
           installationClass: 'new',

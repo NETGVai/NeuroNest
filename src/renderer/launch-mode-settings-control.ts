@@ -136,7 +136,7 @@ LaunchModeSettingsControl.prototype.render = function () {
     'margin:10px 0 0;font-size:11px;line-height:1.45;color:var(--text-dim);',
     { 'data-launch-mode-next-launch': 'true' },
   );
-  restartNotice.textContent = 'Mode switches instantly — no restart required.';
+  restartNotice.textContent = 'Applies on next launch. The current workspace remains unchanged.';
   this.container.appendChild(restartNotice);
 
   this.load();
@@ -232,7 +232,7 @@ LaunchModeSettingsControl.prototype.save = function () {
     self.pendingMode = settings.mode;
     self.updateSelectionState();
     self.setBusy(false);
-    self.setStatus(lmscModeName(settings.mode) + ' mode applied.', 'var(--green)');
+    self.setStatus(lmscModeName(settings.mode) + ' is saved. Applies on next launch.', 'var(--green)');
     return settings;
   }).catch(function () {
     if (self.destroyed) return null;

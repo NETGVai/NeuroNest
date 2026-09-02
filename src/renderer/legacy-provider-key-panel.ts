@@ -54,7 +54,7 @@ LegacyProviderKeyPanel.prototype.render = function () {
   if (this.destroyed) return this;
   this.renderShell('Loading legacy provider keys\u2026');
   var self = this;
-  Promise.resolve().then(function () { return self.reload(); }).catch(function () {});
+  Promise.resolve().then(function () { return self.reload(); }).catch(function () { /* The panel reports failures through its normal status path. */ });
   return this;
 };
 
@@ -199,7 +199,7 @@ LegacyProviderKeyPanel.prototype.buildRow = function (record) {
   button.style.cssText = 'padding:6px 12px;font-size:12px;border-radius:6px;border:1px solid var(--border-color);background:var(--bg-primary);color:var(--text-primary);cursor:pointer;';
   button.disabled = !!this.pendingDeleteIds[record.providerId];
   button.addEventListener('click', function () {
-    self.handleDelete(record).catch(function () {});
+    self.handleDelete(record).catch(function () { /* The panel reports failures through its normal status path. */ });
   });
   row.appendChild(button);
 

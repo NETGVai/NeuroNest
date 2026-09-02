@@ -131,7 +131,7 @@ export function registerAppBootstrapIPC(
   ): void => {
     try {
       dependencies.ipcMain.removeHandler(channel);
-    } catch {}
+    } catch { /* Removing a missing handler is expected during idempotent registration/disposal. */ }
     dependencies.ipcMain.handle(channel, handler);
   };
 
@@ -242,7 +242,7 @@ export function registerAppBootstrapIPC(
       for (const channel of APP_BOOTSTRAP_IPC_CHANNELS) {
         try {
           dependencies.ipcMain.removeHandler(channel);
-        } catch {}
+        } catch { /* Removing a missing handler is expected during idempotent registration/disposal. */ }
       }
       registrations.delete(dependencies.ipcMain as object);
     },

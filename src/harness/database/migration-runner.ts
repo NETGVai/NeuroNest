@@ -143,9 +143,13 @@ export class MigrationRunner {
    * Returns the list of applied migration versions.
    */
   applyAll(): number[] {
+    const discovered = this.discoverMigrations();
+    if (discovered.length === 0) {
+      throw new Error(`No harness SQL migrations found in required directory: ${this.migrationsDir}`);
+    }
+
     this.ensureMigrationTable();
 
-    const discovered = this.discoverMigrations();
     const applied = new Set(
       this.getAppliedMigrations()
         .filter(m => m.state === 'applied')

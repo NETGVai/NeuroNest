@@ -19,8 +19,9 @@
  * Requirements: 9.1, 10.2, 10.7–10.10, 15.1, 15.2, 15.9
  */
 
-import type {
-  AttachmentBlockV1,
+import {
+  ResponseBlockV1Schema,
+  type AttachmentBlockV1,
   CodeBlockV1,
   ContextBlockV1,
   DecisionBlockV1,
@@ -118,7 +119,28 @@ export function createCanonicalBlockRenderer(
   const diffSurface = new DiffSurface(doc);
   const dataSurface = new DataSurface(doc);
 
-  return function renderCanonicalBlock(block: ResponseBlockV1): HTMLElement {
+  return function renderCanonicalBlock(rawBlock: ResponseBlockV1): HTMLElement {
+    let block: ResponseBlockV1;
+    try {
+      const parsed = ResponseBlockV1Schema.safeParse(rawBlock);
+      if (!parsed.success) {
+        return renderSafeGenericSurface({
+          scope: 'block',
+          status: 'unavailable',
+          correlationId: 'unavailable',
+        }).element;
+      }
+      block = parsed.data;
+    } catch {
+      // Runtime inputs can contain hostile proxies/getters. Never inspect or
+      // reflect malformed payload data in the fallback surface.
+      return renderSafeGenericSurface({
+        scope: 'block',
+        status: 'unavailable',
+        correlationId: 'unavailable',
+      }).element;
+    }
+
     switch (block.kind) {
       case 'narrative': {
         const handle = narrativeSurface.render(block as NarrativeBlockV1, {

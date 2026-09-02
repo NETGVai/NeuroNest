@@ -36,3 +36,30 @@ export {
   type CompatibilityMapping,
   buildCompatibilityMappings,
 } from './registrars';
+
+export {
+  ContractRegistry,
+  CONTRACT_TIERS,
+  tierRank,
+  contractNameToMethod,
+  contractNameToChannel,
+  type ContractTier,
+  type ContractDirection,
+  type ReceiptBehavior,
+  type ContractAlias,
+  type ContractDescriptor,
+  type FacadeDescriptor,
+  type HandlerDescriptor,
+  type ParityReport,
+  type CallerIdentity,
+  type DispatchDecision,
+  type DispatchAuthorized,
+  type DispatchRejected,
+  type AliasTelemetrySample,
+} from './contract-registry';
+
+export {
+  FOUNDATION_CONTRACTS,
+  FOUNDATION_ALIAS_CHANNELS,
+  buildFoundationContractRegistry,
+} from './foundation-contract-catalog';

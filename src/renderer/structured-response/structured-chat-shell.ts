@@ -48,11 +48,26 @@ import type {
   ScopedChatProjectionDeltaV1,
 } from '../types/structured-chat-preload';
 import {
+  METADATA_CSS_CLASS,
+  METADATA_FIELD_CSS_CLASS,
+  METADATA_SEPARATOR_CSS_CLASS,
+  renderMetadata,
+  renderProjectedAssistantMetadata,
+  type ChatMetadata,
+} from './response-metadata-renderer';
+import {
   createProjectionRenderScheduler,
   deltaHasTerminalTransition,
   type ProjectionRenderScheduler,
   type ProjectionRenderSchedulerOptions,
 } from './projection-render-scheduler';
+
+export {
+  METADATA_CSS_CLASS,
+  METADATA_FIELD_CSS_CLASS,
+  METADATA_SEPARATOR_CSS_CLASS,
+  type ChatMetadata,
+} from './response-metadata-renderer';
 
 // ─── Layout Constants ───────────────────────────────────────────
 
@@ -65,7 +80,6 @@ export const EMPTY_STATE_CSS_CLASS = 'nn-structured-chat-shell__empty';
 export const USER_MESSAGE_CSS_CLASS = 'nn-structured-chat-shell__user-message';
 export const ASSISTANT_COMPOSITION_CSS_CLASS = 'nn-structured-chat-shell__assistant-composition';
 export const BLOCK_WRAPPER_CSS_CLASS = 'nn-structured-chat-shell__block';
-export const METADATA_CSS_CLASS = 'nn-structured-chat-shell__metadata';
 export const OVERFLOW_WRAPPER_CSS_CLASS = 'nn-structured-chat-shell__overflow-wrapper';
 export const TURN_GROUP_CSS_CLASS = 'nn-structured-chat-shell__turn-group';
 export const STATUS_REGION_CSS_CLASS = 'nn-structured-chat-shell__status';
@@ -91,15 +105,6 @@ export interface ShellLayoutBounds {
   readonly maxReadingWidth: number;
   /** Minimum reading column width in pixels */
   readonly minReadingWidth: number;
-}
-
-export interface ChatMetadata {
-  readonly agent?: string;
-  readonly provider?: string;
-  readonly model?: string;
-  readonly channel?: string;
-  readonly branch?: string;
-  readonly timestamp?: string;
 }
 
 export interface UserMessageDescriptor {
@@ -199,89 +204,8 @@ export interface StructuredChatShellHandle {
   dispose(): void;
 }
 
-// ─── Metadata Rendering ─────────────────────────────────────────
-
-/** Per-field metadata sub-class so individual fields are queryable/styleable. */
-export const METADATA_FIELD_CSS_CLASS = `${METADATA_CSS_CLASS}__field`;
-/** Non-semantic separator between rendered metadata fields. */
-export const METADATA_SEPARATOR_CSS_CLASS = `${METADATA_CSS_CLASS}__separator`;
-
-/**
- * Fields rendered by {@link renderMetadata}, in display order. `branch` is
- * rendered as `branch: <value>` and `timestamp` uses a `<time>` element so
- * assistive technology can identify it as a machine-readable timestamp.
- * Requirement 9.4: display responding agent, selected provider, and selected
- * model when available. Empty/missing values are omitted (no fabricated
- * placeholders — requirement 9.3).
- */
-const METADATA_FIELD_ORDER: ReadonlyArray<keyof ChatMetadata> = [
-  'agent',
-  'model',
-  'provider',
-  'channel',
-  'branch',
-  'timestamp',
-];
-
-function metadataFieldDisplayValue(
-  field: keyof ChatMetadata,
-  raw: string,
-): string {
-  if (field === 'branch') return `branch: ${raw}`;
-  return raw;
-}
-
-function renderMetadata(metadata: ChatMetadata): HTMLElement | null {
-  const entries: Array<{ field: keyof ChatMetadata; value: string }> = [];
-  for (const field of METADATA_FIELD_ORDER) {
-    const raw = metadata[field];
-    if (typeof raw === 'string' && raw.length > 0) {
-      entries.push({ field, value: raw });
-    }
-  }
-  if (entries.length === 0) return null;
-
-  const el = document.createElement('div');
-  el.className = METADATA_CSS_CLASS;
-  el.setAttribute('role', 'note');
-  el.setAttribute('aria-label', 'Message metadata');
-  // Task 11.3: metadata rows wrap on narrow widths so long localized
-  // agent/provider/model strings never force page-level horizontal
-  // scroll (Requirement 9.7, 14.10). The style is applied inline so the
-  // guarantee holds even if the canonical stylesheet fails to load
-  // (Requirement 15.9).
-  el.style.display = 'flex';
-  el.style.flexWrap = 'wrap';
-  el.style.minWidth = '0';
-  el.style.maxWidth = '100%';
-
-  entries.forEach((entry, index) => {
-    if (index > 0) {
-      const sep = document.createElement('span');
-      sep.className = METADATA_SEPARATOR_CSS_CLASS;
-      sep.setAttribute('aria-hidden', 'true');
-      sep.textContent = ' · ';
-      el.appendChild(sep);
-    }
-    // Timestamps get semantic `<time>` for AT identification and datetime
-    // preservation. All other fields render as `<span>`. Requirement 9.4.
-    const fieldEl =
-      entry.field === 'timestamp'
-        ? document.createElement('time')
-        : document.createElement('span');
-    fieldEl.className = `${METADATA_FIELD_CSS_CLASS} ${METADATA_FIELD_CSS_CLASS}--${entry.field}`;
-    fieldEl.dataset['field'] = entry.field;
-    fieldEl.style.minWidth = '0';
-    fieldEl.style.maxWidth = '100%';
-    if (entry.field === 'timestamp') {
-      (fieldEl as HTMLTimeElement).dateTime = entry.value;
-    }
-    fieldEl.textContent = metadataFieldDisplayValue(entry.field, entry.value);
-    el.appendChild(fieldEl);
-  });
-
-  return el;
-}
+// Metadata rendering lives in response-metadata-renderer.ts and is re-exported
+// above to preserve this module's public facade.
 
 // ─── User Message Rendering ─────────────────────────────────────
 
@@ -1806,37 +1730,10 @@ export function createProjectionDrivenChatShell(
     // 2a. Metadata header (agent, provider, model) — extracted from passthrough
     //     fields on the assistant node when available.
     if (assistantNode) {
-      const nodeAny = assistantNode as Record<string, unknown>;
-      const metaFields: string[] = [];
-      if (typeof nodeAny['agent'] === 'string' && nodeAny['agent']) {
-        metaFields.push(String(nodeAny['agent']));
-      }
-      if (typeof nodeAny['provider'] === 'string' && nodeAny['provider']) {
-        metaFields.push(String(nodeAny['provider']));
-      }
-      if (typeof nodeAny['model'] === 'string' && nodeAny['model']) {
-        metaFields.push(String(nodeAny['model']));
-      }
-      if (metaFields.length > 0) {
-        const metaEl = document.createElement('div');
-        metaEl.className = METADATA_CSS_CLASS;
-        metaEl.style.minWidth = '0';
-        metaEl.style.maxWidth = '100%';
-        metaEl.style.overflowWrap = 'anywhere';
-        for (let fi = 0; fi < metaFields.length; fi++) {
-          const fieldText = metaFields[fi] ?? '';
-          if (fi > 0) {
-            const sep = document.createElement('span');
-            sep.className = METADATA_SEPARATOR_CSS_CLASS;
-            sep.textContent = ' · ';
-            sep.setAttribute('aria-hidden', 'true');
-            metaEl.appendChild(sep);
-          }
-          const field = document.createElement('span');
-          field.className = `${METADATA_CSS_CLASS}__field`;
-          field.textContent = fieldText;
-          metaEl.appendChild(field);
-        }
+      const metaEl = renderProjectedAssistantMetadata(
+        assistantNode as unknown as Readonly<Record<string, unknown>>,
+      );
+      if (metaEl) {
         rg.chromeElements.push(metaEl);
         desiredChildren.push(metaEl);
       }
