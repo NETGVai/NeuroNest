@@ -9,7 +9,7 @@
  * Requirements: 13.1, 13.2, 13.3, 13.4, 13.5, 13.6, 13.7, 13.8
  */
 
-import * as ts from 'typescript';
+import type * as ts from 'typescript';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { execFile } from 'node:child_process';
@@ -17,6 +17,35 @@ import { promisify } from 'node:util';
 import type { ValidationResult, Diagnostic } from './types.js';
 
 const execFileAsync = promisify(execFile);
+
+/**
+ * The TypeScript compiler is an OPTIONAL runtime capability. It is a
+ * devDependency (used by the build/typecheck tooling and the test suite) and is
+ * NOT bundled into the packaged Electron app, which ships only production
+ * `dependencies`. Importing it eagerly at module load crashed the packaged app
+ * on startup with "Cannot find module 'typescript'". We therefore load it
+ * lazily and treat its absence like the ESLint path below: runtime TS
+ * type-checking is simply skipped (graceful degradation), never a crash.
+ *
+ * Cached to avoid repeated resolution attempts. `undefined` = not yet attempted,
+ * `null` = attempted and unavailable.
+ */
+let cachedTs: typeof ts | null | undefined;
+
+function loadTypeScript(): typeof ts | null {
+  if (cachedTs !== undefined) return cachedTs;
+  try {
+    // The main process is compiled to CommonJS (tsconfig.main.json:
+    // "module": "CommonJS"), so `require` is available natively at runtime.
+    // A dynamic (non-literal) specifier keeps bundlers from treating this as a
+    // hard dependency edge.
+    const moduleName = 'typescript';
+    cachedTs = (require as NodeRequire)(moduleName) as typeof ts;
+  } catch {
+    cachedTs = null;
+  }
+  return cachedTs;
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -275,6 +304,14 @@ export class ResponseValidator {
    */
   private runTypeCheck(targets: FileTarget[]): Diagnostic[] {
     const diagnostics: Diagnostic[] = [];
+
+    // TypeScript is an optional runtime capability (dev-only dependency, not
+    // shipped in the packaged app). If it is unavailable, skip TS type-checking
+    // entirely — same graceful-degradation contract as the ESLint path.
+    const ts = loadTypeScript();
+    if (!ts) {
+      return diagnostics;
+    }
 
     // Find tsconfig.json in the project directory
     const tsconfigPath = ts.findConfigFile(
