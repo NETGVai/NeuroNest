@@ -61,9 +61,20 @@ const INVITATION_CODE_REGEX = /^PQC-[A-Z0-9]{8}-[A-Z0-9]{8}$/;
 
 const API_BASE_URL = 'https://neuronest.cc';
 
-/** Retrieves the bearer token from the application secret store. */
+/**
+ * Retrieves the bearer token from the application secret store. BEARER_TOKEN is
+ * an optional secret (the client boots without it), so this throws a clear,
+ * feature-scoped error when it is absent rather than assuming presence. Callers
+ * are IPC handlers that surface the error to the user instead of crashing.
+ */
 function getApiBearerToken(): string {
-  return getAppSecretStore().get('BEARER_TOKEN');
+  const token = getAppSecretStore().getOptional('BEARER_TOKEN');
+  if (!token) {
+    throw new Error(
+      'This feature requires a configured BEARER_TOKEN, which is not available in this build.',
+    );
+  }
+  return token;
 }
 
 /**

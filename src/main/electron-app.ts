@@ -864,9 +864,9 @@ app.whenReady().then(async () => {
             const db2 = initDatabase();
             const row = db2.prepare("SELECT value FROM config WHERE key = 'license:invitationCode'").get() as any;
             const inviteCode = row?.value || '';
-            if (inviteCode) {
+            const bearerToken = getAppSecretStore().getOptional('BEARER_TOKEN');
+            if (inviteCode && bearerToken) {
               const os = require('node:os');
-              const bearerToken = getAppSecretStore().get('BEARER_TOKEN');
               const plat = os.platform() === 'darwin' ? (os.arch() === 'arm64' ? 'macos-arm64' : 'macos-intel') : os.platform() === 'win32' ? (os.arch() === 'arm64' ? 'windows-arm64' : 'windows-x64') : (os.arch() === 'arm64' ? 'linux-arm64' : 'linux-x64');
               const ver = app.getVersion() || '0.0.0';
               fetch(`https://neuronest.cc/api/service/keys/${encodeURIComponent(inviteCode)}?platform=${encodeURIComponent(plat)}&version=${encodeURIComponent(ver)}`, {

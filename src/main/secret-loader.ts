@@ -84,9 +84,21 @@ export function loadSecrets(options: SecretLoaderOptions): SecretStore {
 }
 
 /**
- * Default required keys for the NeuroNest application.
+ * Secrets the NeuroNest desktop client MAY use, all treated as OPTIONAL.
+ *
+ * The shipped Electron client must boot on an end-user machine that has no
+ * server infrastructure, so NONE of these can be a hard startup requirement:
+ *   - BEARER_TOKEN — used lazily by optional license/referral API calls; those
+ *     features surface a typed error when it is absent rather than crashing.
+ *   - DATABASE_URL / TIMESCALE_URL / RABBITMQ_URL / JWT_SECRET — backend/server
+ *     concerns with no runtime consumer in the desktop client.
+ *
+ * Making all of them optional lets initAppSecrets() succeed (the GUI opens);
+ * a feature that genuinely needs one reads it via getOptional() and degrades
+ * gracefully. In a server/dev deployment the same keys can still be provided
+ * via the environment and are picked up here.
  */
-export const REQUIRED_SECRET_KEYS = [
+export const OPTIONAL_SECRET_KEYS = [
   'BEARER_TOKEN',
   'DATABASE_URL',
   'TIMESCALE_URL',
@@ -95,8 +107,18 @@ export const REQUIRED_SECRET_KEYS = [
 ] as const;
 
 /**
- * Convenience function: loads secrets with the application's default required keys.
+ * The desktop client hard-requires no secrets at startup. Retained (empty) so
+ * a server build can override the required set without changing call sites.
+ */
+export const REQUIRED_SECRET_KEYS = [] as const;
+
+/**
+ * Convenience function: loads the application's secrets. All known keys are
+ * optional so a missing secret never prevents the client from starting.
  */
 export function loadAppSecrets(): SecretStore {
-  return loadSecrets({ requiredKeys: [...REQUIRED_SECRET_KEYS] });
+  return loadSecrets({
+    requiredKeys: [...REQUIRED_SECRET_KEYS],
+    optionalKeys: [...OPTIONAL_SECRET_KEYS],
+  });
 }
