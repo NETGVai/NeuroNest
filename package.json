@@ -1,14 +1,14 @@
 {
   "name": "neuronest",
-  "version": "0.2.907",
+  "version": "0.2.911",
   "description": "NeuroNest - The AI Coding SuperAgent",
   "author": "NeuroNest <admin@neuronest.cc>",
   "license": "BUSL-1.1",
   "private": true,
   "main": "dist/main/electron-app.js",
   "scripts": {
-    "build": "node scripts/bump-version.mjs && node scripts/compile-main.mjs && npm run bundle:preload && npm run bundle:guest-preload && node scripts/copy-renderer.mjs",
-    "build:nobump": "node scripts/compile-main.mjs && npm run bundle:preload && npm run bundle:guest-preload && node scripts/copy-renderer.mjs",
+    "build": "node scripts/bump-version.mjs && node scripts/compile-main.mjs && npm run bundle:preload && npm run bundle:guest-preload && node scripts/copy-renderer.mjs && node scripts/write-bundled-secrets.mjs",
+    "build:nobump": "node scripts/compile-main.mjs && npm run bundle:preload && npm run bundle:guest-preload && node scripts/copy-renderer.mjs && node scripts/write-bundled-secrets.mjs",
     "bundle:preload": "esbuild src/renderer/preload.ts --bundle --platform=node --format=cjs --external:electron --outfile=dist/renderer/preload.js --sourcemap",
     "bundle:guest-preload": "esbuild src/renderer/webview-guest-preload.ts --bundle --platform=node --format=cjs --external:electron --outfile=dist/renderer/webview-guest-preload.js --sourcemap",
     "start": "npx @electron/rebuild -f -w better-sqlite3,onnxruntime-node && npm run build && electron .",

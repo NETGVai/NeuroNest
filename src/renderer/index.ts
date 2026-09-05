@@ -3166,6 +3166,49 @@ function setupIPC() {
     });
   }
 
+  // Launch Mode hot-swap — apply mode change immediately without restart
+  api.on('launch-mode:changed', function(newMode) {
+    if (!newMode || (newMode !== 'classic' && newMode !== 'advanced')) return;
+    var appEl = document.getElementById('app');
+    window.__neuronestLaunchMode = newMode;
+    if (window.InspectorFactory && typeof window.InspectorFactory.switchLaunchMode === 'function') {
+      window.InspectorFactory.switchLaunchMode(appEl, newMode);
+    } else if (appEl) {
+      appEl.setAttribute('data-launch-mode', newMode);
+    }
+    // If switching to classic, reset the main panel if showing an advanced-only view
+    if (newMode === 'classic') {
+      var advancedOnlyViews = ['agents', 'channels', 'skills', 'design', 'dashboard', 'settings'];
+      if (typeof activeView !== 'undefined' && advancedOnlyViews.indexOf(activeView) !== -1) {
+        switchToChatView();
+        // Clear active state on activity buttons without hiding the sidebar
+        var allBtns = document.querySelectorAll('.activity-btn');
+        for (var bi = 0; bi < allBtns.length; bi++) {
+          allBtns[bi].classList.remove('active');
+        }
+        activeView = 'chat';
+        try { localStorage.setItem('nn-active-view', ''); } catch (e) {}
+      }
+    }
+    // If switching to advanced, initialize Inspector-gated features
+    if (newMode === 'advanced') {
+      loadProdAuthStatus();
+      populateInspectorTools();
+      api.invoke('get-departments').then(function(depts) {
+        renderDepartments(depts || []);
+        for (var di = 0; di < (depts || []).length; di++) {
+          var dept = depts[di];
+          var agents = dept.agents || [];
+          for (var ai = 0; ai < agents.length; ai++) {
+            if (agents[ai].name && agents[ai].emoji) {
+              agentEmojiCache[agents[ai].name] = agents[ai].emoji;
+            }
+          }
+        }
+      }).catch(function() {});
+    }
+  });
+
   // Agent Loop progress — turn off brain on completion
   api.on('agent-progress', function(data) {
     if (data && data.status === 'complete') {
@@ -22813,8 +22856,69 @@ function initActivityBar() {
     setActiveView(initialView);
   }
 
-  // Launch mode is configured in Settings and applied on the next launch;
-  // the running activity-bar topology is intentionally immutable.
+  // ── Mode toggle buttons in activity bar ──
+  // Classic/Advanced quick switch. Edition-neutral (both modes available in
+  // every edition). Persists via the fixed launch-settings preload methods and
+  // stays in sync with the 'launch-mode:changed' hot-swap event. The change
+  // applies to the running Inspector topology via InspectorFactory as well as
+  // being saved for the next launch.
+  (function() {
+    var classicBtn = document.getElementById('mode-classic-btn');
+    var advancedBtn = document.getElementById('mode-advanced-btn');
+    if (!classicBtn || !advancedBtn) return;
+
+    function updateModeButtons(mode) {
+      classicBtn.classList.toggle('active', mode === 'classic');
+      advancedBtn.classList.toggle('active', mode === 'advanced');
+    }
+
+    // Set initial state
+    var currentMode = window.__neuronestLaunchMode || 'advanced';
+    updateModeButtons(currentMode);
+
+    function switchMode(newMode) {
+      if (newMode === (window.__neuronestLaunchMode || 'advanced')) return;
+      var api = eapi();
+      if (!api) return;
+
+      // Use the typed preload methods (not raw invoke — channels are restricted)
+      if (typeof api.getLaunchModeSettings !== 'function' || typeof api.updateLaunchMode !== 'function') return;
+
+      api.getLaunchModeSettings().then(function(settings) {
+        if (!settings) return;
+        return api.updateLaunchMode({
+          schemaVersion: 1,
+          mode: newMode,
+          expectedRevision: settings.revision,
+        });
+      }).then(function(result) {
+        if (result && result.mode) {
+          updateModeButtons(result.mode);
+        }
+      }).catch(function(err) {
+        console.warn('[ModeToggle] Failed to switch mode:', err);
+      });
+    }
+
+    classicBtn.addEventListener('click', function(e) {
+      e.stopPropagation();
+      switchMode('classic');
+    });
+    advancedBtn.addEventListener('click', function(e) {
+      e.stopPropagation();
+      switchMode('advanced');
+    });
+
+    // Listen for hot-swap events to keep buttons in sync
+    var api = eapi();
+    if (api && typeof api.on === 'function') {
+      api.on('launch-mode:changed', function(newMode) {
+        if (newMode === 'classic' || newMode === 'advanced') {
+          updateModeButtons(newMode);
+        }
+      });
+    }
+  })();
 
   // Initialize tippy.js tooltips on activity bar buttons
   if (typeof tippy === 'function') {

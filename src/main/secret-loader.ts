@@ -15,6 +15,59 @@ export interface SecretLoaderOptions {
   optionalKeys?: string[];
 }
 
+/**
+ * Secrets baked into the shipped build at package time by
+ * `scripts/write-bundled-secrets.mjs` (written to `dist/main/bundled-secrets.json`,
+ * which is next to this compiled module). These are app-level credentials the
+ * end user cannot supply via their environment — e.g. the license API
+ * BEARER_TOKEN. Loaded ONCE and used only as a fallback: a real environment
+ * variable of the same name always takes precedence.
+ *
+ * Reading is defensive: a missing/malformed file yields an empty map (dev
+ * builds simply have no bundle), and this never throws.
+ */
+let cachedBundledSecrets: Record<string, string> | undefined;
+
+function readBundledSecrets(): Record<string, string> {
+  if (cachedBundledSecrets !== undefined) return cachedBundledSecrets;
+  cachedBundledSecrets = {};
+  try {
+    // Resolve relative to the compiled module location (dist/main/), and via
+    // require so this works under the CommonJS main-process output without
+    // taking a hard dependency on the file existing.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const nodePath = require('node:path') as typeof import('node:path');
+    const nodeFs = require('node:fs') as typeof import('node:fs');
+    const bundlePath = nodePath.join(__dirname, 'bundled-secrets.json');
+    if (nodeFs.existsSync(bundlePath)) {
+      const parsed = JSON.parse(nodeFs.readFileSync(bundlePath, 'utf8')) as unknown;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+          if (typeof value === 'string' && value.length > 0) {
+            cachedBundledSecrets[key] = value;
+          }
+        }
+      }
+    }
+  } catch {
+    // Non-fatal — absence of a bundle just means "use env only".
+    cachedBundledSecrets = {};
+  }
+  return cachedBundledSecrets;
+}
+
+/**
+ * Resolve a secret value: a real environment variable wins; otherwise fall back
+ * to the value baked into the shipped build (if any).
+ */
+function resolveSecretValue(key: string): string | undefined {
+  const fromEnv = process.env[key];
+  if (fromEnv !== undefined && fromEnv !== '') return fromEnv;
+  const fromBundle = readBundledSecrets()[key];
+  if (fromBundle !== undefined && fromBundle !== '') return fromBundle;
+  return undefined;
+}
+
 export interface SecretStore {
   /** Returns the value for a required key. Throws if the key was not loaded. */
   get(key: string): string;
@@ -37,8 +90,8 @@ export function loadSecrets(options: SecretLoaderOptions): SecretStore {
   const missingKeys: string[] = [];
 
   for (const key of requiredKeys) {
-    const value = process.env[key];
-    if (value === undefined || value === '') {
+    const value = resolveSecretValue(key);
+    if (value === undefined) {
       missingKeys.push(key);
     } else {
       secrets.set(key, value);
@@ -55,8 +108,8 @@ export function loadSecrets(options: SecretLoaderOptions): SecretStore {
 
   // Load optional keys (no error if absent)
   for (const key of optionalKeys) {
-    const value = process.env[key];
-    if (value !== undefined && value !== '') {
+    const value = resolveSecretValue(key);
+    if (value !== undefined) {
       secrets.set(key, value);
     }
   }
